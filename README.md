@@ -176,16 +176,16 @@ Ghostty can send a key sequence for a key binding. Use this to map `Cmd` shortcu
 ```ini
 # cmux: Cmd+key sends the prefix Ctrl-b (\x02) and a cmux key
 # Tabs: Cmd+1..9 selects a tab, Cmd+0 selects tab 10
-keybind = cmd+1=text:\x021
-keybind = cmd+2=text:\x022
-keybind = cmd+3=text:\x023
-keybind = cmd+4=text:\x024
-keybind = cmd+5=text:\x025
-keybind = cmd+6=text:\x026
-keybind = cmd+7=text:\x027
-keybind = cmd+8=text:\x028
-keybind = cmd+9=text:\x029
-keybind = cmd+0=text:\x020
+keybind = cmd+digit_1=text:\x021
+keybind = cmd+digit_2=text:\x022
+keybind = cmd+digit_3=text:\x023
+keybind = cmd+digit_4=text:\x024
+keybind = cmd+digit_5=text:\x025
+keybind = cmd+digit_6=text:\x026
+keybind = cmd+digit_7=text:\x027
+keybind = cmd+digit_8=text:\x028
+keybind = cmd+digit_9=text:\x029
+keybind = cmd+digit_0=text:\x020
 keybind = cmd+t=text:\x02c
 keybind = cmd+w=text:\x02x
 keybind = cmd+shift+w=text:\x02d
