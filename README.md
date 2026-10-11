@@ -144,6 +144,59 @@ The short tmux aliases (`neww`, `killw`, `renamew`, …) also work.
 
 </details>
 
+### Ghostty: Cmd keys without the prefix
+
+Ghostty can send a key sequence for a key binding. Use this to map `Cmd` shortcuts to the cmux prefix and a key, so that `Cmd-t` opens a new session and `Cmd-1` goes to tab 1. Add these lines to your Ghostty config (`~/.config/ghostty/config`, or `~/Library/Application Support/com.mitchellh.ghostty/config` on macOS):
+
+```ini
+# cmux: Cmd+key sends the prefix Ctrl-b (\x02) and a cmux key
+# Tabs: Cmd+1..9 selects a tab, Cmd+0 selects tab 10
+keybind = cmd+1=text:\x021
+keybind = cmd+2=text:\x022
+keybind = cmd+3=text:\x023
+keybind = cmd+4=text:\x024
+keybind = cmd+5=text:\x025
+keybind = cmd+6=text:\x026
+keybind = cmd+7=text:\x027
+keybind = cmd+8=text:\x028
+keybind = cmd+9=text:\x029
+keybind = cmd+0=text:\x020
+keybind = cmd+t=text:\x02c
+keybind = cmd+w=text:\x02x
+keybind = cmd+shift+w=text:\x02d
+keybind = cmd+shift+[=text:\x02p
+keybind = cmd+shift+]=text:\x02n
+keybind = cmd+shift+left=text:\x02<
+keybind = cmd+shift+right=text:\x02>
+keybind = cmd+r=text:\x02,
+keybind = cmd+s=text:\x02w
+keybind = cmd+shift+c=text:\x02[
+# Shell, lazygit, new session in another directory, tabs with an alert
+keybind = cmd+shift+t=text:\x02t
+keybind = cmd+g=text:\x02g
+keybind = cmd+shift+o=text:\x02C
+keybind = cmd+j=text:\x02\x1bn
+keybind = cmd+shift+j=text:\x02\x1bp
+# Claude: Shift+Enter inserts a newline
+keybind = shift+enter=text:\n
+```
+
+| Shortcut                        | Action                                    |
+|---------------------------------|-------------------------------------------|
+| `Cmd-1`…`Cmd-9`, `Cmd-0`        | Go to a tab                               |
+| `Cmd-t`                         | New Claude session                        |
+| `Cmd-Shift-o`                   | New session in another directory          |
+| `Cmd-Shift-t` / `Cmd-g`         | New shell / lazygit                       |
+| `Cmd-Shift-[` / `Cmd-Shift-]`   | Previous / next tab                       |
+| `Cmd-j` / `Cmd-Shift-j`         | Next / previous tab with an alert         |
+| `Cmd-Shift-←` / `Cmd-Shift-→`   | Move the tab                              |
+| `Cmd-r`                         | Rename the tab                            |
+| `Cmd-s`                         | List the open tabs                        |
+| `Cmd-Shift-c`                   | Scroll back through output                |
+| `Cmd-w` / `Cmd-Shift-w`         | Stop the session / quit cmux              |
+
+The bindings send `Ctrl-b` (`\x02`). If you use another prefix, change `\x02` to the matching control byte, for example `\x01` for `Ctrl-a`. The bindings apply to every Ghostty window, also when cmux does not run. Put them in a separate file and load it with `config-file` if you want to switch them on and off.
+
 ## How it works
 
 - [`portable-pty`](https://crates.io/crates/portable-pty) runs each `claude` process.
