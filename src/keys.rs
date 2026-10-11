@@ -2,6 +2,14 @@
 //! (prefix commands, picker, prompts). Input for a pane is forwarded verbatim.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dir {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Char(char),
     Ctrl(char),
@@ -15,6 +23,8 @@ pub enum Key {
     Down,
     Left,
     Right,
+    CtrlArrow(Dir),
+    AltArrow(Dir),
     PageUp,
     PageDown,
     Home,
@@ -72,7 +82,14 @@ fn parse_escape(b: &[u8]) -> (Key, usize) {
             };
             (k, 3)
         }
-        0x1b => (Key::Esc, 1),
+        // ESC ESC [ A: Alt+arrow in terminals that prefix ESC for Alt.
+        0x1b => match parse_csi_at(&b[1..]) {
+            Some((Key::Up, n)) => (Key::AltArrow(Dir::Up), 1 + n),
+            Some((Key::Down, n)) => (Key::AltArrow(Dir::Down), 1 + n),
+            Some((Key::Left, n)) => (Key::AltArrow(Dir::Left), 1 + n),
+            Some((Key::Right, n)) => (Key::AltArrow(Dir::Right), 1 + n),
+            _ => (Key::Esc, 1),
+        },
         _ => {
             let (k, n) = parse_one(&b[1..]);
             match k {
@@ -82,6 +99,10 @@ fn parse_escape(b: &[u8]) -> (Key, usize) {
             }
         }
     }
+}
+
+fn parse_csi_at(b: &[u8]) -> Option<(Key, usize)> {
+    (b.len() >= 3 && b[0] == 0x1b && b[1] == b'[').then(|| parse_csi(b))
 }
 
 fn parse_csi(b: &[u8]) -> (Key, usize) {
@@ -94,6 +115,19 @@ fn parse_csi(b: &[u8]) -> (Key, usize) {
         return (Key::Unknown, b.len());
     }
     let params = &b[2..i];
+    let dir = match b[i] {
+        b'A' => Some(Dir::Up),
+        b'B' => Some(Dir::Down),
+        b'C' => Some(Dir::Right),
+        b'D' => Some(Dir::Left),
+        _ => None,
+    };
+    // xterm modifier parameter: 1;3 is Alt, 1;5 is Ctrl.
+    match (dir, params) {
+        (Some(d), b"1;5") => return (Key::CtrlArrow(d), i + 1),
+        (Some(d), b"1;3") => return (Key::AltArrow(d), i + 1),
+        _ => {}
+    }
     let k = match (b[i], params) {
         (b'A', _) => Key::Up,
         (b'B', _) => Key::Down,
@@ -213,6 +247,10 @@ mod tests {
         assert_eq!(find_mouse(b"ab\x1b[<0;1;1m"), Some(2));
         assert!(parse_mouse(b"\x1b[<0;1;1m").unwrap().0.unwrap().release);
         assert_eq!(parse_all(b"\x1bx"), vec![Key::Alt('x')]);
+        assert_eq!(
+            parse_all(b"\x1b[1;5A\x1b[1;3D\x1b\x1b[C"),
+            vec![Key::CtrlArrow(Dir::Up), Key::AltArrow(Dir::Left), Key::AltArrow(Dir::Right)]
+        );
         assert_eq!(parse_all(b"\x1b[200~hi\x1b[201~"), vec![Key::Unknown, Key::Char('h'), Key::Char('i'), Key::Unknown]);
     }
 }

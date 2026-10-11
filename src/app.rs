@@ -6,9 +6,13 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use ratatui::layout::Rect;
+
 use crate::history::{self, LiveSession, SessionInfo, SharedIndex};
-use crate::keys::{self, Key, Mouse};
-use crate::tab::{Kind, SpawnSpec, Status, Tab};
+use crate::keys::{self, Dir, Key, Mouse};
+use crate::layout::{self, Axis, Node, PRESETS};
+use crate::pane::{Kind, Pane, SpawnSpec, Status};
+use crate::window::Window;
 use crate::{Event, Options};
 
 pub enum Mode {
@@ -33,6 +37,7 @@ pub enum PromptKind {
     NewDir,
     ConfirmQuit,
     ConfirmKill,
+    ConfirmKillPane,
     Command,
     SelectIndex,
 }
@@ -44,10 +49,18 @@ impl PromptKind {
             PromptKind::NewDir => "new session in",
             PromptKind::ConfirmQuit => "quit cmux and stop all sessions? (y/n)",
             PromptKind::ConfirmKill => "kill-window? (y/n)",
+            PromptKind::ConfirmKillPane => "kill-pane? (y/n)",
             PromptKind::Command => ":",
             PromptKind::SelectIndex => "index",
         }
     }
+}
+
+/// Where a new process goes: a new window (tab), or a split of the focused pane.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    Window,
+    Split(Axis),
 }
 
 pub struct Picker {
@@ -62,9 +75,9 @@ pub struct Picker {
 pub struct App {
     pub opts: Options,
     events: Sender<Event>,
-    pub tabs: Vec<Tab>,
+    pub windows: Vec<Window>,
     pub active: usize,
-    last_active_id: Option<u64>,
+    last_window_id: Option<u64>,
     next_id: u64,
     pub mode: Mode,
     pub rows: u16,
@@ -78,6 +91,8 @@ pub struct App {
     pub quit: bool,
     redraw: bool,
     passthrough: Vec<u8>,
+    /// A divider that the mouse drags: its path in the layout tree and axis.
+    drag: Option<(Vec<bool>, Axis)>,
     // Input modes currently set on the outer terminal.
     outer_app_cursor: bool,
     outer_bracketed_paste: bool,
@@ -90,9 +105,9 @@ impl App {
         App {
             opts,
             events,
-            tabs: Vec::new(),
+            windows: Vec::new(),
             active: 0,
-            last_active_id: None,
+            last_window_id: None,
             next_id: 1,
             mode: Mode::Normal,
             rows,
@@ -113,6 +128,7 @@ impl App {
             quit: false,
             redraw: true,
             passthrough: Vec::new(),
+            drag: None,
             outer_app_cursor: false,
             outer_bracketed_paste: false,
             outer_app_keypad: false,
@@ -125,24 +141,24 @@ impl App {
         if self.opts.continue_last {
             let cwd = self.home_cwd.clone();
             let args = vec!["--continue".to_string()];
-            self.open_tab(cwd, args, None);
+            self.open_claude(cwd, args, None, Place::Window);
         }
         for dir in self.opts.dirs.clone() {
-            self.new_session(dir);
+            self.new_session(dir, Place::Window);
         }
         if self.opts.resume_picker {
             self.open_picker();
-        } else if self.tabs.is_empty() && !self.opts.continue_last {
-            self.new_session(self.home_cwd.clone());
+        } else if self.windows.is_empty() && !self.opts.continue_last {
+            self.new_session(self.home_cwd.clone(), Place::Window);
         }
-        if self.tabs.is_empty() {
+        if self.windows.is_empty() {
             self.open_picker();
         }
     }
 
     pub fn shutdown(&mut self) {
-        for t in &mut self.tabs {
-            t.kill();
+        for p in self.windows.iter_mut().flat_map(|w| w.panes.iter_mut()) {
+            p.kill();
         }
     }
 
@@ -153,11 +169,13 @@ impl App {
     /// Bytes to send to the outer terminal after a frame: input mode changes,
     /// OSC 52 clipboard writes and bells.
     pub fn take_passthrough(&mut self) -> Vec<u8> {
-        if let Some(t) = self.tabs.get(self.active) {
+        if let Some(t) = self.active_pane() {
             let p = t.parser.lock().unwrap();
             let s = p.screen();
             let pane_input = matches!(self.mode, Mode::Normal | Mode::Prefix);
             let (ac, bp, kp) = (s.application_cursor(), s.bracketed_paste() || !pane_input, s.application_keypad());
+            let am = self.opts.mouse && pane_input && s.mouse_protocol_mode() == vt100::MouseProtocolMode::AnyMotion;
+            drop(p);
             if ac != self.outer_app_cursor {
                 self.passthrough.extend_from_slice(if ac { b"\x1b[?1h" } else { b"\x1b[?1l" });
                 self.outer_app_cursor = ac;
@@ -170,7 +188,6 @@ impl App {
                 self.passthrough.extend_from_slice(if kp { b"\x1b=" } else { b"\x1b>" });
                 self.outer_app_keypad = kp;
             }
-            let am = self.opts.mouse && pane_input && s.mouse_protocol_mode() == vt100::MouseProtocolMode::AnyMotion;
             if am != self.outer_any_motion {
                 self.passthrough.extend_from_slice(if am { b"\x1b[?1003h" } else { b"\x1b[?1003l" });
                 self.outer_any_motion = am;
@@ -179,8 +196,40 @@ impl App {
         std::mem::take(&mut self.passthrough)
     }
 
-    pub fn pane_size(&self) -> (u16, u16) {
-        (self.rows.saturating_sub(2).max(1), self.cols.max(1))
+    /// The screen area between the tab bar and the status line.
+    pub fn body_area(&self) -> Rect {
+        Rect { x: 0, y: 1, width: self.cols.max(1), height: self.rows.saturating_sub(2).max(1) }
+    }
+
+    pub fn active_pane(&self) -> Option<&Pane> {
+        self.windows.get(self.active).map(Window::pane)
+    }
+
+    fn active_pane_mut(&mut self) -> Option<&mut Pane> {
+        let w = self.windows.get_mut(self.active)?;
+        let id = w.active;
+        w.get_mut(id)
+    }
+
+    fn active_pane_id(&self) -> Option<u64> {
+        self.active_pane().map(|p| p.id)
+    }
+
+    pub fn panes(&self) -> impl Iterator<Item = &Pane> {
+        self.windows.iter().flat_map(|w| w.panes.iter())
+    }
+
+    /// Give every visible pane the PTY size of its place in the layout.
+    fn relayout(&mut self) {
+        let area = self.body_area();
+        for w in &mut self.windows {
+            for a in w.areas(area) {
+                if let Some(p) = w.get_mut(a.id) {
+                    p.resize(a.body.height.max(1), a.body.width.max(1));
+                }
+            }
+        }
+        self.redraw = true;
     }
 
     pub fn flash(&mut self, msg: impl Into<String>) {
@@ -208,10 +257,7 @@ impl App {
                 if let Ok((c, r)) = ratatui::crossterm::terminal::size() {
                     self.rows = r;
                     self.cols = c;
-                    let (pr, pc) = self.pane_size();
-                    for t in &self.tabs {
-                        t.resize(pr, pc);
-                    }
+                    self.relayout();
                 }
                 self.redraw = true;
             }
@@ -221,56 +267,60 @@ impl App {
     }
 
     fn on_output(&mut self, id: u64) {
-        let active_id = self.tabs.get(self.active).map(|t| t.id);
-        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) else { return };
-        tab.dirty.store(false, Ordering::Release);
-        tab.last_output = Instant::now();
-        let mut p = tab.parser.lock().unwrap();
+        let active_id = self.active_pane_id();
+        let visible = self.windows.get(self.active).is_some_and(|w| w.get(id).is_some());
+        let Some(pane) = self.windows.iter_mut().flat_map(|w| w.panes.iter_mut()).find(|p| p.id == id) else { return };
+        pane.dirty.store(false, Ordering::Release);
+        pane.last_output = Instant::now();
+        let mut p = pane.parser.lock().unwrap();
         let cb = p.callbacks_mut();
         if let Some(title) = cb.title.take() {
-            tab.title = Some(title);
+            pane.title = Some(title);
             self.redraw = true;
         }
         self.passthrough.extend(cb.clipboard.drain(..).flatten());
         if std::mem::take(&mut cb.bell) && active_id != Some(id) {
-            tab.attention = true;
+            pane.attention = true;
             self.redraw = true;
         }
         drop(p);
-        if active_id == Some(id) {
+        if visible {
             self.redraw = true;
         }
     }
 
     fn on_exit(&mut self, id: u64) {
-        let Some(i) = self.tabs.iter().position(|t| t.id == id) else { return };
-        let mut tab = self.tabs.remove(i);
-        let name = tab.name();
-        tab.kill();
-        if i < self.active || self.active >= self.tabs.len() {
-            self.active = self.active.saturating_sub(1);
+        let Some(wi) = self.windows.iter().position(|w| w.get(id).is_some()) else { return };
+        let Some(mut pane) = self.windows[wi].take(id) else { return };
+        let name = pane.name();
+        pane.kill();
+        if self.windows[wi].panes.is_empty() {
+            self.windows.remove(wi);
+            if wi < self.active || self.active >= self.windows.len() {
+                self.active = self.active.saturating_sub(1);
+            }
         }
         self.flash(format!("session \"{name}\" ended"));
-        if self.tabs.is_empty() {
+        if self.windows.is_empty() {
             self.open_picker();
         }
-        self.redraw = true;
+        self.relayout();
     }
 
     fn on_tick(&mut self) {
         self.tick += 1;
         if self.tick % 4 == 0 {
             self.refresh_live();
-            for t in &mut self.tabs {
-                if t.has_exited() {
-                    let _ = self.events.send(Event::Exited(t.id));
+            for p in self.windows.iter_mut().flat_map(|w| w.panes.iter_mut()) {
+                if p.has_exited() {
+                    let _ = self.events.send(Event::Exited(p.id));
                 }
             }
         }
         if self.tick % 20 == 0
-            && let Some(t) = self.tabs.get_mut(self.active)
+            && let Some(p) = self.active_pane_mut()
         {
-            t.branch = crate::tab::git_branch(&t.cwd);
+            p.branch = crate::pane::git_branch(&p.cwd);
         }
         if let Some((_, at)) = &self.message
             && at.elapsed() > Duration::from_secs(4)
@@ -279,12 +329,12 @@ impl App {
             self.redraw = true;
         }
         // Animate spinners.
-        if self.tabs.iter().any(|t| self.is_busy(t)) || self.picker.loading {
+        if self.panes().any(|p| self.is_busy(p)) || self.picker.loading {
             self.redraw = true;
         }
     }
 
-    pub fn is_busy(&self, t: &Tab) -> bool {
+    pub fn is_busy(&self, t: &Pane) -> bool {
         if !t.is_claude() {
             return false;
         }
@@ -295,12 +345,12 @@ impl App {
         }
     }
 
-    /// Poll ~/.claude/sessions for the status of each tab's Claude process.
+    /// Poll ~/.claude/sessions for the status of each pane's Claude process.
     fn refresh_live(&mut self) {
         self.live = history::live_sessions();
-        let active_id = self.tabs.get(self.active).map(|t| t.id);
+        let active_id = self.active_pane_id();
         let mut ring = false;
-        for t in self.tabs.iter_mut().filter(|t| t.is_claude()) {
+        for t in self.windows.iter_mut().flat_map(|w| w.panes.iter_mut()).filter(|t| t.is_claude()) {
             let found = self
                 .live
                 .iter()
@@ -330,34 +380,66 @@ impl App {
         }
     }
 
-    // ---- tabs ---------------------------------------------------------------
+    // ---- spawning -----------------------------------------------------------
 
-    fn open_tab(&mut self, cwd: PathBuf, args: Vec<String>, session_id: Option<String>) -> bool {
-        if !cwd.is_dir() {
-            self.flash(format!("directory not found: {}", history::tilde(&cwd)));
-            return false;
-        }
-        let mut full_args = args;
-        full_args.extend(self.opts.claude_args.iter().cloned());
-        let spec = SpawnSpec { kind: Kind::Claude, program: self.opts.claude.clone(), args: full_args, cwd, session_id };
-        self.spawn_tab(spec)
+    fn claude_spec(&self, cwd: PathBuf, mut args: Vec<String>, session_id: Option<String>) -> SpawnSpec {
+        args.extend(self.opts.claude_args.iter().cloned());
+        SpawnSpec { kind: Kind::Claude, program: self.opts.claude.clone(), args, cwd, session_id }
     }
 
-    fn spawn_tab(&mut self, spec: SpawnSpec) -> bool {
+    fn open_claude(&mut self, cwd: PathBuf, args: Vec<String>, session_id: Option<String>, place: Place) -> bool {
+        let spec = self.claude_spec(cwd, args, session_id);
+        self.spawn(spec, place)
+    }
+
+    /// Start a process in a new window or in a split of the focused pane.
+    fn spawn(&mut self, spec: SpawnSpec, place: Place) -> bool {
         if !spec.cwd.is_dir() {
             self.flash(format!("directory not found: {}", history::tilde(&spec.cwd)));
             return false;
         }
-        let (rows, cols) = self.pane_size();
         let id = self.next_id;
-        match Tab::spawn(id, spec, rows, cols, self.events.clone()) {
-            Ok(tab) => {
+        let area = self.body_area();
+        let split = match place {
+            Place::Split(axis) if !self.windows.is_empty() => Some(axis),
+            _ => None,
+        };
+        let (rows, cols) = match split {
+            Some(axis) => {
+                let w = &mut self.windows[self.active];
+                w.layout.split(w.active, id, axis);
+                let r = w.layout.layout(area).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r).unwrap_or_default();
+                // A split pane has a header row, so it needs one row more.
+                if r.height < 3 || r.width < 10 {
+                    w.layout.remove(id);
+                    self.flash("no space for a new pane");
+                    return false;
+                }
+                (r.height - 1, r.width)
+            }
+            None => (area.height, area.width),
+        };
+        match Pane::spawn(id, spec, rows, cols, self.events.clone()) {
+            Ok(pane) => {
                 self.next_id += 1;
-                self.tabs.push(tab);
-                self.select(self.tabs.len() - 1);
+                if split.is_some() {
+                    let w = &mut self.windows[self.active];
+                    w.zoomed = false;
+                    w.panes.push(pane);
+                    w.focus(id);
+                } else {
+                    let wid = self.next_id;
+                    self.next_id += 1;
+                    self.windows.push(Window::new(wid, pane));
+                    self.select_window(self.windows.len() - 1);
+                }
+                self.relayout();
                 true
             }
             Err(e) => {
+                if split.is_some() {
+                    self.windows[self.active].layout.remove(id);
+                }
                 self.flash(format!("{e:#}"));
                 false
             }
@@ -365,14 +447,14 @@ impl App {
     }
 
     /// A login shell, like a tmux window without a command.
-    fn open_shell(&mut self, cwd: PathBuf) {
+    fn open_shell(&mut self, cwd: PathBuf, place: Place) {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        self.spawn_tab(SpawnSpec { kind: Kind::Shell, program: shell, args: vec!["-l".into()], cwd, session_id: None });
+        self.spawn(SpawnSpec { kind: Kind::Shell, program: shell, args: vec!["-l".into()], cwd, session_id: None }, place);
     }
 
-    /// Run `command` through the shell, like `tmux new-window CMD`. The tab
+    /// Run `command` through the shell, like `tmux new-window CMD`. The pane
     /// closes when the command exits.
-    fn open_command(&mut self, cwd: PathBuf, command: &str) {
+    fn open_command(&mut self, cwd: PathBuf, command: &str, place: Place) {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let label = command.split_whitespace().next().unwrap_or(command).rsplit('/').next().unwrap_or(command);
         let spec = SpawnSpec {
@@ -382,18 +464,24 @@ impl App {
             cwd,
             session_id: None,
         };
-        self.spawn_tab(spec);
+        self.spawn(spec, place);
     }
 
-    fn new_session(&mut self, cwd: PathBuf) {
+    fn new_session(&mut self, cwd: PathBuf, place: Place) {
         let id = uuid::Uuid::new_v4().to_string();
-        self.open_tab(cwd, vec!["--session-id".into(), id.clone()], Some(id));
+        self.open_claude(cwd, vec!["--session-id".into(), id.clone()], Some(id), place);
     }
 
     fn resume_session(&mut self, s: &SessionInfo, fork: bool) {
-        if !fork && let Some(i) = self.tabs.iter().position(|t| t.session_id.as_deref() == Some(&s.id)) {
-            self.select(i);
-            self.flash("session is already open in this tab");
+        if !fork
+            && let Some(wi) = self.windows.iter().position(|w| w.panes.iter().any(|p| p.session_id.as_deref() == Some(&s.id)))
+        {
+            self.select_window(wi);
+            let w = &mut self.windows[wi];
+            if let Some(id) = w.panes.iter().find(|p| p.session_id.as_deref() == Some(&s.id)).map(|p| p.id) {
+                w.focus(id);
+            }
+            self.flash("session is already open in this pane");
             return;
         }
         let mut args = vec!["--resume".to_string(), s.id.clone()];
@@ -401,50 +489,176 @@ impl App {
             args.push("--fork-session".into());
         }
         let elsewhere = self.live.iter().any(|l| l.session_id == s.id);
-        if self.open_tab(s.cwd.clone(), args, if fork { None } else { Some(s.id.clone()) }) {
-            let i = self.active;
-            self.tabs[i].custom_name = None;
-            if elsewhere && !fork {
-                self.flash("note: this session is also running in another terminal");
-            }
+        if self.open_claude(s.cwd.clone(), args, if fork { None } else { Some(s.id.clone()) }, Place::Window)
+            && elsewhere
+            && !fork
+        {
+            self.flash("note: this session is also running in another terminal");
         }
     }
 
-    fn select(&mut self, i: usize) {
-        if i >= self.tabs.len() {
+    // ---- windows ------------------------------------------------------------
+
+    fn select_window(&mut self, i: usize) {
+        if i >= self.windows.len() {
             return;
         }
-        if let Some(cur) = self.tabs.get(self.active)
-            && self.active != i
-        {
-            self.last_active_id = Some(cur.id);
-        }
-        if let Some(cur) = self.tabs.get(self.active) {
-            cur.parser.lock().unwrap().screen_mut().set_scrollback(0);
+        if let Some(cur) = self.windows.get(self.active) {
+            if self.active != i {
+                self.last_window_id = Some(cur.id);
+            }
+            cur.pane().parser.lock().unwrap().screen_mut().set_scrollback(0);
         }
         self.active = i;
-        self.tabs[i].attention = false;
+        let w = &mut self.windows[i];
+        let id = w.active;
+        w.focus(id);
         self.redraw = true;
     }
 
     fn cycle(&mut self, delta: isize) {
-        let n = self.tabs.len() as isize;
+        let n = self.windows.len() as isize;
         if n > 0 {
-            self.select((self.active as isize + delta).rem_euclid(n) as usize);
+            self.select_window((self.active as isize + delta).rem_euclid(n) as usize);
         }
     }
 
-    fn move_tab(&mut self, delta: isize) {
-        let n = self.tabs.len() as isize;
+    fn move_window(&mut self, delta: isize) {
+        let n = self.windows.len() as isize;
         let j = self.active as isize + delta;
         if (0..n).contains(&j) {
-            self.tabs.swap(self.active, j as usize);
+            self.windows.swap(self.active, j as usize);
             self.active = j as usize;
         }
     }
 
-    fn current_cwd(&self) -> PathBuf {
-        self.tabs.get(self.active).map(|t| t.cwd.clone()).unwrap_or_else(|| self.home_cwd.clone())
+    pub fn current_cwd(&self) -> PathBuf {
+        self.active_pane().map(|t| t.cwd.clone()).unwrap_or_else(|| self.home_cwd.clone())
+    }
+
+    // ---- panes --------------------------------------------------------------
+
+    /// tmux `select-pane -L/-R/-U/-D`. Left and right past the edge of the
+    /// window go to the previous or next tab.
+    fn select_pane_dir(&mut self, dir: Dir) {
+        let area = self.body_area();
+        let Some(w) = self.windows.get_mut(self.active) else { return };
+        let target = if w.panes.len() > 1 { layout::neighbor(&w.layout.layout(area), w.active, dir) } else { None };
+        match (target, dir) {
+            (Some(id), _) => {
+                w.zoomed = false;
+                w.focus(id);
+                self.relayout();
+            }
+            (None, Dir::Left) => self.cycle(-1),
+            (None, Dir::Right) => self.cycle(1),
+            _ => {}
+        }
+    }
+
+    /// tmux `select-pane -t :.+`: the next pane in layout order.
+    fn cycle_pane(&mut self, delta: isize) {
+        let Some(w) = self.windows.get_mut(self.active) else { return };
+        let ids = w.layout.leaves();
+        if ids.len() < 2 {
+            return;
+        }
+        let i = ids.iter().position(|&id| id == w.active).unwrap_or(0) as isize;
+        w.zoomed = false;
+        w.focus(ids[(i + delta).rem_euclid(ids.len() as isize) as usize]);
+        self.relayout();
+    }
+
+    fn select_pane_index(&mut self, n: usize) {
+        let Some(w) = self.windows.get_mut(self.active) else { return };
+        match w.layout.leaves().get(n) {
+            Some(&id) => {
+                w.zoomed = false;
+                w.focus(id);
+                self.relayout();
+            }
+            None => self.flash(format!("no pane {n}")),
+        }
+    }
+
+    fn last_pane(&mut self) {
+        let Some(w) = self.windows.get_mut(self.active) else { return };
+        match w.last.filter(|id| w.get(*id).is_some()) {
+            Some(id) => {
+                w.zoomed = false;
+                w.focus(id);
+                self.relayout();
+            }
+            None => self.flash("no last pane"),
+        }
+    }
+
+    fn toggle_zoom(&mut self) {
+        let Some(w) = self.windows.get_mut(self.active) else { return };
+        if w.panes.len() > 1 {
+            w.zoomed = !w.zoomed;
+            self.relayout();
+        }
+    }
+
+    /// tmux `resize-pane -L/-R/-U/-D N`: move the pane's divider by N cells.
+    fn resize_pane(&mut self, dir: Dir, n: i32) {
+        let area = self.body_area();
+        let Some(w) = self.windows.get_mut(self.active) else { return };
+        let (axis, delta) = match dir {
+            Dir::Left => (Axis::Horizontal, -n),
+            Dir::Right => (Axis::Horizontal, n),
+            Dir::Up => (Axis::Vertical, -n),
+            Dir::Down => (Axis::Vertical, n),
+        };
+        w.zoomed = false;
+        w.layout.resize(w.active, axis, delta, area);
+        self.relayout();
+    }
+
+    /// tmux `swap-pane -U/-D`: exchange the pane with the previous or next one.
+    fn swap_pane(&mut self, delta: isize) {
+        let Some(w) = self.windows.get_mut(self.active) else { return };
+        let ids = w.layout.leaves();
+        if ids.len() < 2 {
+            return;
+        }
+        let i = ids.iter().position(|&id| id == w.active).unwrap_or(0) as isize;
+        let other = ids[(i + delta).rem_euclid(ids.len() as isize) as usize];
+        w.layout.swap(w.active, other);
+        self.relayout();
+    }
+
+    /// tmux `break-pane`: move the pane to a new window.
+    fn break_pane(&mut self) {
+        let Some(w) = self.windows.get_mut(self.active) else { return };
+        if w.panes.len() < 2 {
+            self.flash("the window has only one pane");
+            return;
+        }
+        let id = w.active;
+        let Some(pane) = w.take(id) else { return };
+        let wid = self.next_id;
+        self.next_id += 1;
+        self.windows.insert(self.active + 1, Window::new(wid, pane));
+        self.select_window(self.active + 1);
+        self.relayout();
+    }
+
+    /// tmux `select-layout`, or the next preset for `None` (tmux `next-layout`).
+    fn select_layout(&mut self, preset: Option<usize>) {
+        let Some(w) = self.windows.get_mut(self.active) else { return };
+        if w.panes.len() < 2 {
+            return;
+        }
+        let i = preset.unwrap_or_else(|| w.preset.map_or(0, |i| (i + 1) % PRESETS.len()));
+        if let Some(layout) = Node::preset(PRESETS[i], &w.layout.leaves()) {
+            w.layout = layout;
+            w.preset = Some(i);
+            w.zoomed = false;
+            self.flash(PRESETS[i]);
+            self.relayout();
+        }
     }
 
     // ---- picker -------------------------------------------------------------
@@ -463,7 +677,7 @@ impl App {
     }
 
     fn close_picker(&mut self) {
-        if self.tabs.is_empty() {
+        if self.windows.is_empty() {
             self.quit = true;
         }
         self.mode = Mode::Normal;
@@ -541,7 +755,7 @@ impl App {
                 if let Some(s) = self.picker_selection().cloned() {
                     self.mode = Mode::Normal;
                     self.resume_session(&s, k == Key::Ctrl('f'));
-                    if self.tabs.is_empty() {
+                    if self.windows.is_empty() {
                         self.mode = Mode::Picker;
                     }
                 }
@@ -550,8 +764,8 @@ impl App {
                 // New session in the selected session's directory.
                 if let Some(s) = self.picker_selection().cloned() {
                     self.mode = Mode::Normal;
-                    self.new_session(s.cwd);
-                    if self.tabs.is_empty() {
+                    self.new_session(s.cwd, Place::Window);
+                    if self.windows.is_empty() {
                         self.mode = Mode::Picker;
                     }
                 }
@@ -574,7 +788,7 @@ impl App {
                     };
                     let fwd = &bytes[..cut.unwrap_or(bytes.len())];
                     if !fwd.is_empty()
-                        && let Some(t) = self.tabs.get(self.active)
+                        && let Some(t) = self.active_pane()
                     {
                         // Typing snaps a scrolled-back pane to the bottom, like a terminal.
                         t.parser.lock().unwrap().screen_mut().set_scrollback(0);
@@ -604,7 +818,7 @@ impl App {
                 Mode::Prefix => {
                     self.mode = Mode::Normal;
                     if bytes[0] == self.opts.prefix {
-                        if let Some(t) = self.tabs.get(self.active) {
+                        if let Some(t) = self.active_pane() {
                             t.write(&[self.opts.prefix]);
                         }
                         bytes = &bytes[1..];
@@ -639,10 +853,10 @@ impl App {
         self.mode = Mode::Prompt(Prompt { kind, input });
     }
 
-    /// tmux default key table, mapped onto tabs (tmux windows).
+    /// tmux default key table. A tab is a tmux window.
     fn prefix_command(&mut self, k: Key) {
         match k {
-            Key::Char('c') => self.new_session(self.current_cwd()),
+            Key::Char('c') => self.new_session(self.current_cwd(), Place::Window),
             Key::Char('C') => {
                 let mut input = history::tilde(&self.current_cwd());
                 if !input.ends_with('/') {
@@ -650,33 +864,54 @@ impl App {
                 }
                 self.prompt(PromptKind::NewDir, input);
             }
-            Key::Char('n') | Key::Right => self.cycle(1),
-            Key::Char('p') | Key::Left => self.cycle(-1),
+            Key::Char('%') => self.new_session(self.current_cwd(), Place::Split(Axis::Horizontal)),
+            Key::Char('"') => self.new_session(self.current_cwd(), Place::Split(Axis::Vertical)),
+            Key::Char('n') => self.cycle(1),
+            Key::Char('p') => self.cycle(-1),
+            Key::Left => self.select_pane_dir(Dir::Left),
+            Key::Right => self.select_pane_dir(Dir::Right),
+            Key::Up => self.select_pane_dir(Dir::Up),
+            Key::Down => self.select_pane_dir(Dir::Down),
+            Key::CtrlArrow(d) => self.resize_pane(d, 1),
+            Key::AltArrow(d) => self.resize_pane(d, 5),
+            Key::Char('o') => self.cycle_pane(1),
+            Key::Char(';') => self.last_pane(),
+            Key::Char('z') => self.toggle_zoom(),
+            Key::Char('{') => self.swap_pane(-1),
+            Key::Char('}') => self.swap_pane(1),
+            Key::Char('!') => self.break_pane(),
+            Key::Char(' ') => self.select_layout(None),
+            Key::Alt(c @ '1'..='5') => self.select_layout(Some(c as usize - '1' as usize)),
             Key::Alt('n') => self.cycle_attention(1),
             Key::Alt('p') => self.cycle_attention(-1),
-            Key::Char('l') => self.last_tab(),
-            Key::Char('0') => self.select(9),
-            Key::Char(c @ '1'..='9') => self.select(c as usize - '1' as usize),
+            Key::Char('l') => self.last_window(),
+            Key::Char('0') => self.select_window(9),
+            Key::Char(c @ '1'..='9') => self.select_window(c as usize - '1' as usize),
             Key::Char('\'') => self.prompt(PromptKind::SelectIndex, String::new()),
-            Key::Char('t') => self.open_shell(self.current_cwd()),
-            Key::Char('g') => self.open_command(self.current_cwd(), "lazygit"),
+            Key::Char('t') => self.open_shell(self.current_cwd(), Place::Window),
+            Key::Char('g') => self.open_command(self.current_cwd(), "lazygit", Place::Window),
             Key::Char('w') => self.open_windows(String::new()),
             Key::Char('f') => self.open_windows(String::new()),
             Key::Char('s') | Key::Char('r') => self.open_picker(),
-            Key::Char('<') => self.move_tab(-1),
-            Key::Char('>') => self.move_tab(1),
-            Key::Char('&') | Key::Char('x') => {
-                if !self.tabs.is_empty() {
+            Key::Char('<') => self.move_window(-1),
+            Key::Char('>') => self.move_window(1),
+            Key::Char('&') => {
+                if !self.windows.is_empty() {
                     self.prompt(PromptKind::ConfirmKill, String::new());
                 }
             }
+            Key::Char('x') => {
+                if !self.windows.is_empty() {
+                    self.prompt(PromptKind::ConfirmKillPane, String::new());
+                }
+            }
             Key::Char(',') => {
-                if let Some(t) = self.tabs.get(self.active) {
-                    self.prompt(PromptKind::Rename, t.name());
+                if let Some(w) = self.windows.get(self.active) {
+                    self.prompt(PromptKind::Rename, w.name());
                 }
             }
             Key::Char('[') | Key::PageUp => {
-                if !self.tabs.is_empty() {
+                if !self.windows.is_empty() {
                     self.mode = Mode::Scroll;
                     if k == Key::PageUp {
                         self.scroll_key(k);
@@ -692,35 +927,44 @@ impl App {
         }
     }
 
-    fn last_tab(&mut self) {
-        match self.last_active_id.and_then(|id| self.tabs.iter().position(|t| t.id == id)) {
-            Some(i) => self.select(i),
+    fn last_window(&mut self) {
+        match self.last_window_id.and_then(|id| self.windows.iter().position(|w| w.id == id)) {
+            Some(i) => self.select_window(i),
             None => self.flash("no last window"),
         }
     }
 
-    /// tmux M-n / M-p: next tab with an alert.
+    /// tmux M-n / M-p: next window with an alert.
     fn cycle_attention(&mut self, delta: isize) {
-        let n = self.tabs.len() as isize;
+        let n = self.windows.len() as isize;
         for step in 1..n {
             let i = (self.active as isize + delta * step).rem_euclid(n) as usize;
-            if self.tabs[i].attention {
-                self.select(i);
+            if self.windows[i].attention() {
+                self.select_window(i);
                 return;
             }
         }
         self.flash("no window with an alert");
     }
 
-    fn kill_active(&mut self) {
-        if let Some(t) = self.tabs.get_mut(self.active) {
+    fn kill_pane(&mut self) {
+        if let Some(t) = self.active_pane_mut() {
             t.kill();
             self.flash("session stopped - resume it with prefix s");
         }
     }
 
+    fn kill_window(&mut self) {
+        if let Some(w) = self.windows.get_mut(self.active) {
+            for p in &mut w.panes {
+                p.kill();
+            }
+            self.flash("window stopped - resume its sessions with prefix s");
+        }
+    }
+
     fn display_info(&mut self) {
-        if let Some(t) = self.tabs.get(self.active) {
+        if let Some(t) = self.active_pane() {
             let msg = format!(
                 "pid {} · session {}",
                 t.pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
@@ -733,18 +977,21 @@ impl App {
     // ---- window chooser -----------------------------------------------------
 
     fn open_windows(&mut self, query: String) {
-        if !self.tabs.is_empty() {
+        if !self.windows.is_empty() {
             self.mode = Mode::Windows { query, selected: self.active };
         }
     }
 
-    /// Indices of the tabs that match the window chooser query.
+    /// Indices of the windows that match the window chooser query.
     pub fn window_matches(&self, query: &str) -> Vec<usize> {
         let q = query.to_lowercase();
-        (0..self.tabs.len())
+        (0..self.windows.len())
             .filter(|&i| {
-                let t = &self.tabs[i];
-                q.is_empty() || format!("{} {}", t.name(), t.cwd.display()).to_lowercase().contains(&q)
+                let w = &self.windows[i];
+                q.is_empty()
+                    || w.panes
+                        .iter()
+                        .any(|p| format!("{} {} {}", w.name(), p.name(), p.cwd.display()).to_lowercase().contains(&q))
             })
             .collect()
     }
@@ -776,18 +1023,18 @@ impl App {
             Key::Enter => {
                 self.mode = Mode::Normal;
                 if let Some(&i) = matches.get(pos) {
-                    self.select(i);
+                    self.select_window(i);
                 }
                 return;
             }
             Key::Char('x') | Key::Char('&') if cmd => {
-                self.select(selected);
+                self.select_window(selected);
                 self.prompt(PromptKind::ConfirmKill, String::new());
                 return;
             }
             Key::Char(c @ '1'..='9') if cmd => {
                 self.mode = Mode::Normal;
-                self.select(c as usize - '1' as usize);
+                self.select_window(c as usize - '1' as usize);
                 return;
             }
             Key::Backspace => {
@@ -805,62 +1052,114 @@ impl App {
 
     // ---- command prompt -----------------------------------------------------
 
+    /// Start `command` the way `new-window` and `split-window` do: no command
+    /// starts Claude, `shell` starts the login shell.
+    fn open_in(&mut self, dir: PathBuf, command: &str, place: Place) {
+        match command {
+            "" | "claude" => self.new_session(dir, place),
+            "shell" | "sh" => self.open_shell(dir, place),
+            cmd => self.open_command(dir, cmd, place),
+        }
+    }
+
     /// A small subset of tmux commands, with their aliases.
     fn run_command(&mut self, line: &str) {
         let words: Vec<&str> = line.split_whitespace().collect();
         let Some((&cmd, args)) = words.split_first() else { return };
+        let has = |f: &str| args.contains(&f);
         let flag = |name: &str| args.iter().position(|a| *a == name).and_then(|i| args.get(i + 1)).copied();
         let rest = || args.iter().filter(|a| !a.starts_with('-')).copied().collect::<Vec<_>>().join(" ");
+        // The command after the flags; -c, -n and -t take a value.
+        let command = || {
+            let mut out = Vec::new();
+            let mut it = args.iter();
+            while let Some(a) = it.next() {
+                match *a {
+                    "-c" | "-n" | "-t" => {
+                        it.next();
+                    }
+                    a if a.starts_with('-') && out.is_empty() => {}
+                    a => out.push(a),
+                }
+            }
+            out.join(" ")
+        };
+        let dir = || {
+            let dir = flag("-c").map(history::expand_tilde).unwrap_or_else(|| self.current_cwd());
+            std::fs::canonicalize(&dir).unwrap_or(dir)
+        };
+        let target = || flag("-t").and_then(|t| t.trim_start_matches([':', '.']).parse::<usize>().ok());
+        let dir_flag = || {
+            [("-L", Dir::Left), ("-R", Dir::Right), ("-U", Dir::Up), ("-D", Dir::Down)]
+                .into_iter()
+                .find(|(f, _)| args.contains(f))
+                .map(|(_, d)| d)
+        };
         match cmd {
             "new-window" | "neww" => {
-                let dir = flag("-c").map(history::expand_tilde).unwrap_or_else(|| self.current_cwd());
-                let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-                let mut command = Vec::new();
-                let mut it = args.iter();
-                while let Some(a) = it.next() {
-                    match *a {
-                        "-c" | "-n" => {
-                            it.next();
-                        }
-                        a if a.starts_with('-') && command.is_empty() => {}
-                        a => command.push(a),
-                    }
-                }
-                match command.join(" ").as_str() {
-                    "" | "claude" => self.new_session(dir),
-                    "shell" | "sh" => self.open_shell(dir),
-                    cmd => self.open_command(dir, cmd),
-                }
+                self.open_in(dir(), &command(), Place::Window);
                 if let Some(name) = flag("-n")
-                    && let Some(t) = self.tabs.get_mut(self.active)
+                    && let Some(w) = self.windows.get_mut(self.active)
                 {
-                    t.custom_name = Some(name.to_string());
+                    w.custom_name = Some(name.to_string());
                 }
             }
-            "kill-window" | "killw" | "kill-pane" | "killp" => self.kill_active(),
+            "split-window" | "splitw" => {
+                let axis = if has("-h") { Axis::Horizontal } else { Axis::Vertical };
+                self.open_in(dir(), &command(), Place::Split(axis));
+            }
+            "kill-window" | "killw" => self.kill_window(),
+            "kill-pane" | "killp" => self.kill_pane(),
             "rename-window" | "renamew" => {
                 let name = rest();
-                if let Some(t) = self.tabs.get_mut(self.active) {
-                    t.custom_name = (!name.is_empty()).then_some(name);
+                if let Some(w) = self.windows.get_mut(self.active) {
+                    w.custom_name = (!name.is_empty()).then_some(name);
                 }
             }
-            "select-window" | "selectw" => match flag("-t").and_then(|t| t.trim_start_matches(':').parse::<usize>().ok()) {
-                Some(n) if n >= 1 => self.select(n - 1),
+            "select-window" | "selectw" => match target() {
+                Some(n) if n >= 1 => self.select_window(n - 1),
                 _ => self.flash("usage: select-window -t N"),
+            },
+            "select-pane" | "selectp" => {
+                if let Some(d) = dir_flag() {
+                    self.select_pane_dir(d);
+                } else if has("-l") {
+                    self.last_pane();
+                } else if let Some(n) = target() {
+                    self.select_pane_index(n);
+                } else {
+                    self.flash("usage: select-pane -L|-R|-U|-D|-l|-t N");
+                }
+            }
+            "last-pane" | "lastp" => self.last_pane(),
+            "resize-pane" | "resizep" => {
+                if has("-Z") {
+                    self.toggle_zoom();
+                } else if let Some(d) = dir_flag() {
+                    let n = args.iter().filter_map(|a| a.parse::<i32>().ok()).next_back().unwrap_or(1);
+                    self.resize_pane(d, n);
+                } else {
+                    self.flash("usage: resize-pane -L|-R|-U|-D [N] | -Z");
+                }
+            }
+            "swap-pane" | "swapp" => self.swap_pane(if has("-U") { -1 } else { 1 }),
+            "break-pane" | "breakp" => self.break_pane(),
+            "next-layout" | "nextl" => self.select_layout(None),
+            "select-layout" | "selectl" => match PRESETS.iter().position(|p| *p == rest()) {
+                Some(i) => self.select_layout(Some(i)),
+                None => self.flash(format!("layouts: {}", PRESETS.join(", "))),
             },
             "next-window" | "next" => self.cycle(1),
             "previous-window" | "prev" => self.cycle(-1),
-            "last-window" | "last" => self.last_tab(),
-            "swap-window" | "swapw" | "move-window" | "movew" => {
-                match flag("-t").and_then(|t| t.trim_start_matches(':').parse::<usize>().ok()) {
-                    Some(n) if (1..=self.tabs.len()).contains(&n) => {
-                        let t = self.tabs.remove(self.active);
-                        self.tabs.insert(n - 1, t);
-                        self.active = n - 1;
-                    }
-                    _ => self.flash("usage: swap-window -t N"),
+            "last-window" | "last" => self.last_window(),
+            "swap-window" | "swapw" | "move-window" | "movew" => match target() {
+                Some(n) if (1..=self.windows.len()).contains(&n) => {
+                    let w = self.windows.remove(self.active);
+                    self.windows.insert(n - 1, w);
+                    self.active = n - 1;
                 }
-            }
+                _ => self.flash("usage: swap-window -t N"),
+            },
             "choose-tree" | "choose-window" | "find-window" | "findw" => self.open_windows(rest()),
             "choose-session" | "resume" => {
                 let id = rest();
@@ -870,7 +1169,7 @@ impl App {
                     self.resume_session(&s, false);
                 } else {
                     let cwd = self.current_cwd();
-                    self.open_tab(cwd, vec!["--resume".into(), id.clone()], Some(id));
+                    self.open_claude(cwd, vec!["--resume".into(), id.clone()], Some(id), Place::Window);
                 }
             }
             "display-message" | "display" => self.display_info(),
@@ -886,13 +1185,27 @@ impl App {
 
     fn handle_mouse(&mut self, m: Mouse) {
         const WHEEL_LINES: usize = 3;
+        let area = self.body_area();
+        // A divider drag holds the mouse until the button is released.
+        if let Some((path, axis)) = self.drag.clone() {
+            if m.release {
+                self.drag = None;
+            } else if m.is_motion()
+                && let Some(w) = self.windows.get_mut(self.active)
+            {
+                w.layout.drag(&path, if axis == Axis::Horizontal { m.col } else { m.row }, area);
+                w.preset = None;
+                self.relayout();
+            }
+            return;
+        }
         // Tab bar: click selects, wheel cycles.
         if m.row == 0 {
             if m.is_left_press()
                 && let Some(i) = crate::ui::tab_at(self, m.col)
             {
                 self.mode = Mode::Normal;
-                self.select(i);
+                self.select_window(i);
             } else if m.wheel_up() {
                 self.cycle(-1);
             } else if m.wheel_down() {
@@ -900,8 +1213,6 @@ impl App {
             }
             return;
         }
-        let (pane_rows, _) = self.pane_size();
-        let in_pane = m.row >= 1 && m.row <= pane_rows;
 
         match &mut self.mode {
             Mode::Picker => {
@@ -943,10 +1254,34 @@ impl App {
             Mode::Prompt(_) | Mode::Prefix => return,
             Mode::Normal => {}
         }
-        if !in_pane {
+
+        let Some(w) = self.windows.get_mut(self.active) else { return };
+        if m.is_left_press() && w.is_split() {
+            let hit = w.layout.dividers(area).into_iter().find(|d| match d.axis {
+                Axis::Horizontal => m.col == d.at && (d.area.y..d.area.bottom()).contains(&m.row),
+                Axis::Vertical => m.row == d.at && (d.area.x..d.area.right()).contains(&m.col),
+            });
+            if let Some(d) = hit {
+                // A vertical divider is the header row of the lower pane.
+                if let Some((id, _)) = w.pane_at(area, m.col, m.row) {
+                    w.focus(id);
+                }
+                self.drag = Some((d.path, d.axis));
+                return;
+            }
+        }
+        let Some((id, on_header)) = w.pane_at(area, m.col, m.row) else { return };
+        // A click on another pane or on a header only moves the focus.
+        if m.is_left_press() && (id != w.active || on_header) {
+            w.focus(id);
             return;
         }
-        let Some(t) = self.tabs.get(self.active) else { return };
+        if on_header {
+            return;
+        }
+        let focused = id == w.active;
+        let Some(body) = w.areas(area).into_iter().find(|a| a.id == id).map(|a| a.body) else { return };
+        let Some(t) = w.get(id) else { return };
         let mut p = t.parser.lock().unwrap();
         let screen = p.screen();
         let mode = screen.mouse_protocol_mode();
@@ -956,7 +1291,11 @@ impl App {
 
         if mode != vt100::MouseProtocolMode::None && screen.scrollback() == 0 {
             drop(p);
-            if let Some(bytes) = encode_mouse(m, m.row - 1, mode, encoding) {
+            // The wheel goes to the pane under the mouse, everything else
+            // only to the focused pane.
+            if (focused || m.is_wheel())
+                && let Some(bytes) = encode_mouse(m, m.row - body.y, m.col - body.x, mode, encoding)
+            {
                 t.write(&bytes);
             }
             return;
@@ -984,11 +1323,11 @@ impl App {
     }
 
     fn scroll_key(&mut self, k: Key) {
-        let Some(t) = self.tabs.get(self.active) else {
+        let Some(t) = self.active_pane() else {
             self.mode = Mode::Normal;
             return;
         };
-        let page = self.pane_size().0 as usize;
+        let page = t.size.0 as usize;
         let mut p = t.parser.lock().unwrap();
         let cur = p.screen().scrollback();
         let next = match k {
@@ -1013,13 +1352,14 @@ impl App {
 
     fn prompt_key(&mut self, k: Key) {
         let Mode::Prompt(prompt) = &mut self.mode else { return };
-        if matches!(prompt.kind, PromptKind::ConfirmQuit | PromptKind::ConfirmKill) {
+        if matches!(prompt.kind, PromptKind::ConfirmQuit | PromptKind::ConfirmKill | PromptKind::ConfirmKillPane) {
             let kind = prompt.kind;
             self.mode = Mode::Normal;
             if matches!(k, Key::Char('y') | Key::Char('Y')) {
                 match kind {
                     PromptKind::ConfirmQuit => self.quit = true,
-                    _ => self.kill_active(),
+                    PromptKind::ConfirmKill => self.kill_window(),
+                    _ => self.kill_pane(),
                 }
             }
             return;
@@ -1036,22 +1376,22 @@ impl App {
                 let Mode::Prompt(p) = std::mem::replace(&mut self.mode, Mode::Normal) else { return };
                 match p.kind {
                     PromptKind::Rename => {
-                        if let Some(t) = self.tabs.get_mut(self.active) {
+                        if let Some(w) = self.windows.get_mut(self.active) {
                             let name = p.input.trim();
-                            t.custom_name = (!name.is_empty()).then(|| name.to_string());
+                            w.custom_name = (!name.is_empty()).then(|| name.to_string());
                         }
                     }
                     PromptKind::NewDir => {
                         let dir = history::expand_tilde(p.input.trim());
                         let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-                        self.new_session(dir);
+                        self.new_session(dir, Place::Window);
                     }
                     PromptKind::Command => self.run_command(&p.input),
                     PromptKind::SelectIndex => match p.input.trim().parse::<usize>() {
-                        Ok(n) if n >= 1 => self.select(n - 1),
+                        Ok(n) if n >= 1 => self.select_window(n - 1),
                         _ => self.flash("not a window index"),
                     },
-                    PromptKind::ConfirmQuit | PromptKind::ConfirmKill => {}
+                    PromptKind::ConfirmQuit | PromptKind::ConfirmKill | PromptKind::ConfirmKillPane => {}
                 }
             }
             _ => {}
@@ -1059,9 +1399,9 @@ impl App {
     }
 }
 
-/// Encode a mouse event for a child, in the protocol it asked for. `row` is
-/// relative to the pane. Returns `None` when the child's mode filters the event.
-fn encode_mouse(m: Mouse, row: u16, mode: vt100::MouseProtocolMode, enc: vt100::MouseProtocolEncoding) -> Option<Vec<u8>> {
+/// Encode a mouse event for a child, in the protocol it asked for. `row` and
+/// `col` are relative to the pane. Returns `None` when the child's mode filters the event.
+fn encode_mouse(m: Mouse, row: u16, col: u16, mode: vt100::MouseProtocolMode, enc: vt100::MouseProtocolEncoding) -> Option<Vec<u8>> {
     use vt100::MouseProtocolMode as M;
     let wanted = match mode {
         M::None => false,
@@ -1074,7 +1414,7 @@ fn encode_mouse(m: Mouse, row: u16, mode: vt100::MouseProtocolMode, enc: vt100::
     if !wanted {
         return None;
     }
-    let (x, y) = (m.col as u32 + 1, row as u32 + 1);
+    let (x, y) = (col as u32 + 1, row as u32 + 1);
     match enc {
         vt100::MouseProtocolEncoding::Sgr => {
             Some(format!("\x1b[<{};{};{}{}", m.button, x, y, if m.release { 'm' } else { 'M' }).into_bytes())

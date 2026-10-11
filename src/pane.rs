@@ -1,5 +1,5 @@
-//! A tab: one `claude` process on its own PTY plus a VT emulator that holds
-//! its screen state.
+//! A pane: one process (usually `claude`) on its own PTY plus a VT emulator
+//! that holds its screen state.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -102,7 +102,7 @@ pub enum Status {
     Other(String),
 }
 
-pub struct Tab {
+pub struct Pane {
     pub id: u64,
     pub parser: Arc<Mutex<vt100::Parser<Callbacks>>>,
     pub dirty: Arc<AtomicBool>,
@@ -114,7 +114,8 @@ pub struct Tab {
     /// from ~/.claude/sessions when Claude reports a different one (e.g. /clear).
     pub session_id: Option<String>,
     pub cwd: PathBuf,
-    pub custom_name: Option<String>,
+    /// PTY size as (rows, cols).
+    pub size: (u16, u16),
     pub title: Option<String>,
     pub status: Status,
     pub attention: bool,
@@ -123,7 +124,7 @@ pub struct Tab {
     pub kind: Kind,
 }
 
-/// What runs in a tab. Only Claude tabs get session status and history links.
+/// What runs in a pane. Only Claude panes get session status and history links.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
     Claude,
@@ -140,8 +141,8 @@ pub struct SpawnSpec {
     pub session_id: Option<String>,
 }
 
-impl Tab {
-    pub fn spawn(id: u64, spec: SpawnSpec, rows: u16, cols: u16, events: Sender<Event>) -> Result<Tab> {
+impl Pane {
+    pub fn spawn(id: u64, spec: SpawnSpec, rows: u16, cols: u16, events: Sender<Event>) -> Result<Pane> {
         let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
         let pair = native_pty_system().openpty(size).context("openpty failed")?;
 
@@ -195,7 +196,7 @@ impl Tab {
         }
 
         let branch = git_branch(&spec.cwd);
-        Ok(Tab {
+        Ok(Pane {
             id,
             parser,
             dirty,
@@ -206,7 +207,7 @@ impl Tab {
             session_id: spec.session_id,
             kind: spec.kind,
             cwd: spec.cwd,
-            custom_name: None,
+            size: (rows, cols),
             title: None,
             status: Status::Unknown,
             attention: false,
@@ -222,7 +223,11 @@ impl Tab {
         }
     }
 
-    pub fn resize(&self, rows: u16, cols: u16) {
+    pub fn resize(&mut self, rows: u16, cols: u16) {
+        if self.size == (rows, cols) {
+            return;
+        }
+        self.size = (rows, cols);
         let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
         self.parser.lock().unwrap().screen_mut().set_size(rows, cols);
     }
@@ -239,12 +244,9 @@ impl Tab {
         self.kind == Kind::Claude
     }
 
-    /// Display name: user-set name, else the terminal title the program sets,
-    /// else the directory name (Claude) or the program label.
+    /// Display name: the terminal title the program sets, else the directory
+    /// name (Claude) or the program label.
     pub fn name(&self) -> String {
-        if let Some(n) = &self.custom_name {
-            return n.clone();
-        }
         match &self.kind {
             Kind::Claude => {}
             Kind::Shell | Kind::Command(_) => {

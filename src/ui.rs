@@ -1,4 +1,4 @@
-//! Rendering: tab bar, active pane, status line and overlays.
+//! Rendering: tab bar, the panes of the active window, status line and overlays.
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -11,7 +11,8 @@ use unicode_width::UnicodeWidthStr;
 use crate::app::{App, Mode};
 use crate::history::{self, tilde};
 use crate::keys::prefix_name;
-use crate::tab::Status;
+use crate::pane::{Kind, Pane, Status};
+use crate::window::Window;
 
 const ACCENT: Color = Color::Rgb(217, 119, 87); // Claude orange
 const BAR_BG: Color = Color::Indexed(235);
@@ -31,17 +32,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_tabs(f, app, top);
     draw_status(f, app, bottom);
 
-    if let Some(tab) = app.tabs.get(app.active) {
-        let p = tab.parser.lock().unwrap();
-        let screen = p.screen();
-        f.render_widget(Pane(screen), body);
-        let show_cursor = matches!(app.mode, Mode::Normal | Mode::Prefix) && !screen.hide_cursor() && screen.scrollback() == 0;
-        if show_cursor {
-            let (r, c) = screen.cursor_position();
-            if r < body.height && c < body.width {
-                f.set_cursor_position(Position { x: body.x + c, y: body.y + r });
-            }
-        }
+    if let Some(w) = app.windows.get(app.active) {
+        draw_window(f, app, w, body);
     }
 
     match &app.mode {
@@ -58,8 +50,73 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
 }
 
+fn draw_window(f: &mut Frame, app: &App, w: &Window, area: Rect) {
+    let areas = w.areas(area);
+    for a in &areas {
+        let Some(pane) = w.get(a.id) else { continue };
+        let focused = a.id == w.active;
+        let p = pane.parser.lock().unwrap();
+        let screen = p.screen();
+        f.render_widget(Screen(screen), a.body);
+        if let Some(h) = a.header {
+            draw_pane_header(f, app, pane, focused, screen.scrollback(), h);
+        }
+        let show_cursor =
+            focused && matches!(app.mode, Mode::Normal | Mode::Prefix) && !screen.hide_cursor() && screen.scrollback() == 0;
+        if show_cursor {
+            let (r, c) = screen.cursor_position();
+            if r < a.body.height && c < a.body.width {
+                f.set_cursor_position(Position { x: a.body.x + c, y: a.body.y + r });
+            }
+        }
+    }
+    if !w.is_split() {
+        return;
+    }
+    // Vertical lines between side-by-side panes. The part next to the focused
+    // pane is drawn in the accent color, like tmux.
+    let focus = areas.iter().find(|a| a.id == w.active).map(|a| Rect { y: a.body.y - 1, height: a.body.height + 1, ..a.body });
+    let buf = f.buffer_mut();
+    for d in w.layout.dividers(area).iter().filter(|d| d.axis == crate::layout::Axis::Horizontal) {
+        for y in d.area.y..d.area.bottom() {
+            let next_to_focus = focus.is_some_and(|r| (r.y..r.bottom()).contains(&y) && (r.right() == d.at || r.x == d.at + 1));
+            let color = if next_to_focus { ACCENT } else { Color::Indexed(238) };
+            if let Some(cell) = buf.cell_mut((d.at, y)) {
+                cell.set_symbol("│");
+                cell.set_style(Style::default().fg(color).bg(Color::Reset));
+            }
+        }
+    }
+}
+
+/// The title row of a pane in a split window: status, name, directory.
+fn draw_pane_header(f: &mut Frame, app: &App, pane: &Pane, focused: bool, scrolled: usize, area: Rect) {
+    let style = if focused {
+        Style::default().bg(Color::Indexed(238)).fg(Color::White).add_modifier(Modifier::BOLD)
+    } else if pane.attention {
+        Style::default().bg(BAR_BG).fg(ACCENT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().bg(BAR_BG).fg(BAR_FG)
+    };
+    let w = area.width as usize;
+    let name = truncate(&pane.name(), w.saturating_sub(4).max(1));
+    let mut spans = vec![
+        Span::styled(" ", style),
+        status_glyph(app, pane).patch_style(Style::default().bg(style.bg.unwrap_or(BAR_BG))),
+        Span::styled(format!(" {name} "), style),
+    ];
+    let used = 4 + name.width();
+    if scrolled > 0 {
+        spans.push(Span::styled(format!(" +{scrolled} "), Style::default().bg(Color::Cyan).fg(Color::Black)));
+    } else if w > used + 4 {
+        let dir = truncate(&tilde(&pane.cwd), w - used - 2);
+        spans.push(Span::styled(format!(" {dir}"), style.fg(DIM).remove_modifier(Modifier::BOLD)));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)).style(style), area);
+}
+
 /// Copies a vt100 screen into the ratatui buffer.
-struct Pane<'a>(&'a vt100::Screen);
+struct Screen<'a>(&'a vt100::Screen);
 
 fn conv(c: vt100::Color) -> Color {
     match c {
@@ -69,7 +126,7 @@ fn conv(c: vt100::Color) -> Color {
     }
 }
 
-impl Widget for Pane<'_> {
+impl Widget for Screen<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let (rows, cols) = self.0.size();
         for r in 0..rows.min(area.height) {
@@ -122,15 +179,15 @@ fn truncate(s: &str, max: usize) -> String {
     out
 }
 
-fn status_glyph(app: &App, t: &crate::tab::Tab) -> Span<'static> {
+fn status_glyph(app: &App, t: &Pane) -> Span<'static> {
     let spin = SPINNER[(app.tick as usize) % SPINNER.len()];
     if t.attention {
         return Span::styled("●", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD));
     }
     match &t.kind {
-        crate::tab::Kind::Shell => return Span::styled("$", Style::default().fg(Color::Blue)),
-        crate::tab::Kind::Command(_) => return Span::styled("▸", Style::default().fg(Color::Blue)),
-        crate::tab::Kind::Claude => {}
+        Kind::Shell => return Span::styled("$", Style::default().fg(Color::Blue)),
+        Kind::Command(_) => return Span::styled("▸", Style::default().fg(Color::Blue)),
+        Kind::Claude => {}
     }
     match &t.status {
         Status::Busy => Span::styled(spin, Style::default().fg(Color::Yellow)),
@@ -141,20 +198,46 @@ fn status_glyph(app: &App, t: &crate::tab::Tab) -> Span<'static> {
     }
 }
 
+/// The glyph of a window: an alert in any pane, else any working Claude
+/// pane, else the focused pane's glyph.
+fn window_glyph(app: &App, w: &Window) -> Span<'static> {
+    let pick = w
+        .panes
+        .iter()
+        .find(|p| p.attention)
+        .or_else(|| w.panes.iter().find(|p| app.is_busy(p)))
+        .or_else(|| w.panes.iter().find(|p| matches!(p.status, Status::Other(_))))
+        .unwrap_or_else(|| w.pane());
+    status_glyph(app, pick)
+}
+
+/// Tab label: the window name, with the pane count and a zoom mark.
+fn tab_label(w: &Window, max: usize) -> String {
+    let mut flags = String::new();
+    if w.panes.len() > 1 {
+        flags.push_str(&format!(" ⊞{}", w.panes.len()));
+    }
+    if w.zoomed {
+        flags.push_str(" Z");
+    }
+    let name = truncate(&w.name(), max.saturating_sub(flags.width()).max(4));
+    format!(" {name}{flags} ")
+}
+
 const BRAND: &str = " cmux ";
 
 /// Max name width per tab so that all tabs fit: each tab costs " 1 ● " + name + " ".
 fn tab_name_width(app: &App, width: u16) -> usize {
     let room = (width as usize).saturating_sub(BRAND.len() + 1);
-    (room / app.tabs.len().max(1)).saturating_sub(6).clamp(4, 28)
+    (room / app.windows.len().max(1)).saturating_sub(6).clamp(4, 28)
 }
 
 /// The tab under column `col` of the tab bar. Mirrors the layout in `draw_tabs`.
 pub fn tab_at(app: &App, col: u16) -> Option<usize> {
     let per_tab = tab_name_width(app, app.cols);
     let mut x = BRAND.width() + 1;
-    for (i, t) in app.tabs.iter().enumerate() {
-        let w = format!(" {} ", i + 1).width() + 1 + format!(" {} ", truncate(&t.name(), per_tab)).width();
+    for (i, win) in app.windows.iter().enumerate() {
+        let w = format!(" {} ", i + 1).width() + 1 + tab_label(win, per_tab).width();
         if (x..x + w).contains(&(col as usize)) {
             return Some(i);
         }
@@ -170,21 +253,21 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
 
     let mut spans = vec![Span::styled(brand, Style::default().bg(ACCENT).fg(Color::Black).add_modifier(Modifier::BOLD))];
     spans.push(Span::styled(" ", bar));
-    for (i, t) in app.tabs.iter().enumerate() {
+    for (i, w) in app.windows.iter().enumerate() {
         let active = i == app.active;
         let style = if active {
             Style::default().bg(Color::Indexed(238)).fg(Color::White).add_modifier(Modifier::BOLD)
-        } else if t.attention {
+        } else if w.attention() {
             bar.fg(ACCENT).add_modifier(Modifier::BOLD)
         } else {
             bar
         };
-        let glyph = status_glyph(app, t).patch_style(Style::default().bg(style.bg.unwrap_or(BAR_BG)));
+        let glyph = window_glyph(app, w).patch_style(Style::default().bg(style.bg.unwrap_or(BAR_BG)));
         spans.push(Span::styled(format!(" {} ", i + 1), style.fg(if active { ACCENT } else { DIM })));
         spans.push(glyph);
-        spans.push(Span::styled(format!(" {} ", truncate(&t.name(), per_tab)), style));
+        spans.push(Span::styled(tab_label(w, per_tab), style));
     }
-    if app.tabs.is_empty() {
+    if app.windows.is_empty() {
         spans.push(Span::styled("no sessions", bar.fg(DIM)));
     }
     f.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
@@ -203,19 +286,19 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         }
         Mode::Prefix => {
             left.push(badge(&pfx, ACCENT));
-            left.push(Span::styled(" c new · n/p next/prev · w windows · s sessions · & kill · : command · ? keys", bar.fg(DIM)));
+            left.push(Span::styled(" c new · % \" split · ←→↑↓ pane · n/p tab · z zoom · s sessions · x kill · ? keys", bar.fg(DIM)));
         }
         Mode::Scroll => {
-            let off = app.tabs.get(app.active).map(|t| t.parser.lock().unwrap().screen().scrollback()).unwrap_or(0);
+            let off = app.active_pane().map(|t| t.parser.lock().unwrap().screen().scrollback()).unwrap_or(0);
             left.push(badge("SCROLL", Color::Cyan));
             left.push(Span::styled(format!(" +{off} lines · ↑↓ PgUp PgDn g G · q exit"), bar.fg(DIM)));
         }
         _ => {
-            let scrolled = app.tabs.get(app.active).map(|t| t.parser.lock().unwrap().screen().scrollback()).unwrap_or(0);
+            let scrolled = app.active_pane().map(|t| t.parser.lock().unwrap().screen().scrollback()).unwrap_or(0);
             if scrolled > 0 {
                 left.push(badge(&format!("+{scrolled}"), Color::Cyan));
                 left.push(Span::styled(" scrolled back · wheel down or type to return", bar.fg(DIM)));
-            } else if let Some(t) = app.tabs.get(app.active) {
+            } else if let Some(t) = app.active_pane() {
                 left.push(Span::styled(format!(" {}", tilde(&t.cwd)), bar.fg(Color::White)));
                 if let Some(b) = &t.branch {
                     left.push(Span::styled(format!("  {b}"), bar.fg(Color::Magenta)));
@@ -230,7 +313,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    let busy = app.tabs.iter().filter(|t| app.is_busy(t)).count();
+    let busy = app.panes().filter(|t| app.is_busy(t)).count();
     let right = match &app.message {
         Some((m, _)) => Span::styled(format!("  {m} "), bar.fg(ACCENT)),
         None if busy > 0 => Span::styled(format!("  {busy} working · {pfx} ? help "), bar.fg(DIM)),
@@ -246,7 +329,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 fn draw_picker(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     let p = &app.picker;
-    let scope = if p.all_dirs { "all projects".to_string() } else { tilde(&app.tabs.get(app.active).map(|t| t.cwd.clone()).unwrap_or_else(|| app.home_cwd.clone())) };
+    let scope = if p.all_dirs { "all projects".to_string() } else { tilde(&app.current_cwd()) };
     let title = format!(" Sessions · {scope} · {}/{} ", p.filtered.len(), p.sessions.len());
     let block = Block::default()
         .borders(Borders::ALL)
@@ -285,7 +368,7 @@ fn draw_picker(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let offset = p.selected.saturating_sub(h.saturating_sub(1));
-    let open_ids: Vec<&str> = app.tabs.iter().filter_map(|t| t.session_id.as_deref()).collect();
+    let open_ids: Vec<&str> = app.panes().filter_map(|t| t.session_id.as_deref()).collect();
     let w = inner.width as usize;
     let mut lines = Vec::with_capacity(h);
     for (row, &i) in p.filtered.iter().enumerate().skip(offset).take(h) {
@@ -355,12 +438,20 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         ("n  p", "next-window / previous-window"),
         ("M-n  M-p", "next / previous window with an alert"),
         ("0 … 9", "select-window by number"),
+        ("%  \"", "split-window: new Claude pane right / below"),
+        ("← → ↑ ↓", "select-pane in that direction"),
+        ("C-arrow M-arrow", "resize-pane by 1 / 5 cells"),
+        ("o  ;", "next pane / last pane"),
+        ("z", "zoom the pane (toggle)"),
+        ("{  }", "swap the pane with the previous / next one"),
+        ("!", "break-pane: move the pane to a new window"),
+        ("Space  M-1…5", "next-layout / select-layout"),
         ("'", "select-window by typed index"),
         ("l", "last-window"),
         ("w  f", "choose-window: list and filter open tabs"),
         ("s  r", "choose-session: resume or fork past sessions"),
         (",", "rename-window"),
-        ("&  x", "kill-window (asks first)"),
+        ("x  &", "kill-pane / kill-window (asks first)"),
         ("[  PgUp", "copy-mode: scroll back through output"),
         ("< >", "move window left / right"),
         (":", "command prompt (neww [-c DIR] [CMD], renamew, swapw -t N, …)"),
@@ -368,7 +459,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         ("d", "quit cmux (no server, so no detach)"),
         ("?", "list-keys"),
     ];
-    let w = 70u16.min(area.width);
+    let w = 76u16.min(area.width);
     let h = (rows.len() as u16 + 6).min(area.height);
     let r = Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h };
     f.render_widget(Clear, r);
@@ -386,7 +477,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     ];
     for (k, d) in rows {
         lines.push(Line::from(vec![
-            Span::styled(format!("  {k:<12}"), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {k:<16}"), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Span::raw(*d),
         ]));
     }
@@ -428,15 +519,15 @@ fn draw_windows(f: &mut Frame, app: &App, area: Rect, query: &str, selected: usi
     ];
     let width = inner.width as usize;
     for &i in &matches {
-        let t = &app.tabs[i];
+        let win = &app.windows[i];
         let sel = i == selected;
         let base = if sel { Style::default().bg(Color::Indexed(237)) } else { Style::default() };
-        let name = format!(" {}  ", truncate(&t.name(), 32));
+        let name = tab_label(win, 34);
         let spans = vec![
             Span::styled(format!(" {:>2} ", i + 1), base.fg(if i == app.active { ACCENT } else { DIM })),
-            status_glyph(app, t).patch_style(base),
+            window_glyph(app, win).patch_style(base),
             Span::styled(name.clone(), if sel { base.fg(Color::White).add_modifier(Modifier::BOLD) } else { base }),
-            Span::styled(truncate(&tilde(&t.cwd), width.saturating_sub(6 + name.width()).max(4)), base.fg(Color::Cyan)),
+            Span::styled(truncate(&tilde(&win.pane().cwd), width.saturating_sub(6 + name.width()).max(4)), base.fg(Color::Cyan)),
         ];
         let mut line = Line::from(spans);
         if sel {

@@ -1,8 +1,10 @@
 mod app;
 mod history;
 mod keys;
-mod tab;
+mod layout;
+mod pane;
 mod ui;
+mod window;
 
 use std::io::{Read, Write};
 use std::path::PathBuf;

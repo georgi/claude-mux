@@ -30,8 +30,8 @@ Claude Code works best when you run several sessions at once. A plain terminal o
 
 ## Features
 
-- **One tab per session.** Every Claude session runs on its own PTY.
-- **Live status in the tab bar.** Each tab shows if its session is working, idle, or finished but not seen.
+- **Tabs and panes.** Every Claude session runs on its own PTY. Split a tab into panes like in tmux, and watch several sessions at once.
+- **Live status everywhere.** Each tab and each pane header shows if its session is working, idle, or finished but not seen.
 - **Alerts.** A background session that finishes rings the terminal bell. `Prefix M-n` jumps to the next tab with an alert.
 - **Session picker.** Browse every past session from `~/.claude/projects`. Filter, resume, or fork a session in one key.
 - **tmux muscle memory.** The default key table, the `:` command prompt, and the short aliases (`neww`, `killw`, …) all work.
@@ -84,7 +84,7 @@ ENVIRONMENT:
 
 ## Keys
 
-cmux uses the tmux default key table. A tab is a tmux window. Press the prefix (default `Ctrl-b`), then a key. `Ctrl-b Ctrl-b` sends a literal `Ctrl-b` to Claude.
+cmux uses the tmux default key table. A tab is a tmux window, and a tab can hold several panes. Press the prefix (default `Ctrl-b`), then a key. `Ctrl-b Ctrl-b` sends a literal `Ctrl-b` to Claude.
 
 | Key            | tmux command         | Action                                           |
 |----------------|----------------------|--------------------------------------------------|
@@ -92,6 +92,15 @@ cmux uses the tmux default key table. A tab is a tmux window. Press the prefix (
 | `C`            |                      | New session in another directory (Tab completes) |
 | `t`            | `new-window`         | New shell in the current directory               |
 | `g`            | `new-window lazygit` | New lazygit in the current directory             |
+| `%` / `"`      | `split-window`       | New Claude pane to the right / below             |
+| `←` `→` `↑` `↓` | `select-pane`       | Go to the pane in that direction (`←` `→` at the edge go to the previous / next tab) |
+| `C-arrow` / `M-arrow` | `resize-pane` | Resize the pane by 1 / 5 cells                   |
+| `o` / `;`      | `select-pane`        | Next pane / last used pane                       |
+| `z`            | `resize-pane -Z`     | Zoom the pane to the full tab (toggle)           |
+| `{` / `}`      | `swap-pane`          | Swap the pane with the previous / next one       |
+| `!`            | `break-pane`         | Move the pane to a new tab                       |
+| `Space`        | `next-layout`        | Next preset layout                               |
+| `M-1`…`M-5`    | `select-layout`      | even-horizontal, even-vertical, main-vertical, main-horizontal, tiled |
 | `n` / `p`      | `next-window`        | Next / previous tab                              |
 | `M-n` / `M-p`  |                      | Next / previous tab with an alert                |
 | `0`…`9`        | `select-window`      | Go to a tab (`0` is tab 10)                      |
@@ -100,7 +109,8 @@ cmux uses the tmux default key table. A tab is a tmux window. Press the prefix (
 | `w` / `f`      | `choose-window`      | List and filter the open tabs                    |
 | `s` / `r`      | `choose-session`     | Resume or fork a past Claude session             |
 | `,`            | `rename-window`      | Rename the tab                                   |
-| `&` / `x`      | `kill-window`        | Stop the session in this tab (asks first)        |
+| `x`            | `kill-pane`          | Stop the session in this pane (asks first)       |
+| `&`            | `kill-window`        | Stop all sessions in this tab (asks first)       |
 | `[` / `PgUp`   | `copy-mode`          | Scroll back through output                       |
 | `<` / `>`      |                      | Move the tab                                     |
 | `:`            | `command-prompt`     | Run a command                                    |
@@ -118,7 +128,13 @@ cmux uses the tmux default key table. A tab is a tmux window. Press the prefix (
 | `Ctrl-o` | Start a new session in that directory              |
 | `Tab`    | Toggle between all projects and the current directory |
 
-Markers: `●` open in a cmux tab, `◆` running in another terminal.
+Markers: `●` open in cmux, `◆` running in another terminal.
+
+### Panes
+
+A split starts a new Claude session in the directory of the current pane. To split with a shell or another program, use the command prompt: `:splitw -h shell` or `:splitw lazygit`.
+
+When a tab has more than one pane, each pane gets a header row with its status, name and directory. Click a pane to focus it. Drag a divider, or the header row of a pane, to resize. The tab bar shows the pane count (`⊞3`) and a `Z` for a zoomed pane.
 
 ### Command prompt
 
@@ -128,14 +144,23 @@ Markers: `●` open in a cmux tab, `◆` running in another terminal.
 | Command | Action |
 |---|---|
 | `new-window [-c DIR] [-n NAME] [CMD]` | No `CMD` starts Claude. `shell` starts your shell. Any other `CMD` runs through `$SHELL -lc`, and the tab closes when it exits. |
-| `kill-window` | Stop the session in this tab |
+| `split-window [-h] [-c DIR] [CMD]` | Split the pane. `-h` puts the new pane to the right, else below. `CMD` works as for `new-window`. |
+| `kill-window` | Stop all sessions in this tab |
+| `kill-pane` | Stop the session in this pane |
+| `select-pane -L\|-R\|-U\|-D\|-l\|-t N` | Go to a pane by direction, the last pane, or index (from 0) |
+| `last-pane` | Go to the last used pane |
+| `resize-pane -L\|-R\|-U\|-D [N]` | Move the pane's divider by `N` cells (default 1) |
+| `resize-pane -Z` | Zoom the pane (toggle) |
+| `swap-pane -U\|-D` | Swap the pane with the previous / next one |
+| `break-pane` | Move the pane to a new tab |
+| `select-layout NAME` / `next-layout` | Apply a preset layout |
 | `rename-window NAME` | Rename the tab |
 | `select-window -t N` | Go to tab `N` |
 | `swap-window -t N` | Swap this tab with tab `N` |
 | `next-window` / `previous-window` / `last-window` | Move between tabs |
 | `find-window TEXT` | Find a tab by text |
 | `choose-session [ID]` | Open the picker, or resume a session by id |
-| `display-message` | Show pid and session id |
+| `display-message` | Show pid and session id of the pane |
 | `list-keys` | Help |
 | `copy-mode` | Scroll back through output |
 | `kill-server` | Quit |
@@ -171,6 +196,18 @@ keybind = cmd+shift+right=text:\x02>
 keybind = cmd+r=text:\x02,
 keybind = cmd+s=text:\x02w
 keybind = cmd+shift+c=text:\x02[
+# Panes: split right / below, move, resize, zoom
+keybind = cmd+d=text:\x02%
+keybind = cmd+shift+d=text:\x02"
+keybind = cmd+alt+h=text:\x02\x1b[D
+keybind = cmd+alt+j=text:\x02\x1b[B
+keybind = cmd+alt+k=text:\x02\x1b[A
+keybind = cmd+alt+l=text:\x02\x1b[C
+keybind = cmd+ctrl+h=text:\x02\x1b[1;3D
+keybind = cmd+ctrl+j=text:\x02\x1b[1;3B
+keybind = cmd+ctrl+k=text:\x02\x1b[1;3A
+keybind = cmd+ctrl+l=text:\x02\x1b[1;3C
+keybind = cmd+shift+enter=text:\x02z
 # Shell, lazygit, new session in another directory, tabs with an alert
 keybind = cmd+shift+t=text:\x02t
 keybind = cmd+g=text:\x02g
@@ -193,16 +230,21 @@ keybind = shift+enter=text:\n
 | `Cmd-r`                         | Rename the tab                            |
 | `Cmd-s`                         | List the open tabs                        |
 | `Cmd-Shift-c`                   | Scroll back through output                |
-| `Cmd-w` / `Cmd-Shift-w`         | Stop the session / quit cmux              |
+| `Cmd-d` / `Cmd-Shift-d`         | Split right / below                       |
+| `Cmd-Alt-h` `j` `k` `l`         | Go to the pane left / down / up / right   |
+| `Cmd-Ctrl-h` `j` `k` `l`        | Resize the pane by 5 cells                |
+| `Cmd-Shift-Enter`               | Zoom the pane                             |
+| `Cmd-w` / `Cmd-Shift-w`         | Stop the pane's session / quit cmux       |
 
 The bindings send `Ctrl-b` (`\x02`). If you use another prefix, change `\x02` to the matching control byte, for example `\x01` for `Ctrl-a`. The bindings apply to every Ghostty window, also when cmux does not run. Put them in a separate file and load it with `config-file` if you want to switch them on and off.
 
 ## How it works
 
 - [`portable-pty`](https://crates.io/crates/portable-pty) runs each `claude` process.
-- A [`vt100`](https://crates.io/crates/vt100) parser per tab keeps the screen state.
+- Each tab holds a binary split tree of panes, like tmux layout cells.
+- A [`vt100`](https://crates.io/crates/vt100) parser per pane keeps the screen state.
 - [`ratatui`](https://ratatui.rs) draws only the cells that changed.
-- Keyboard input goes to the active pane byte for byte. Only the prefix key is intercepted.
+- Keyboard input goes to the focused pane byte for byte. Only the prefix key is intercepted.
 - The status comes from `~/.claude/sessions/<pid>.json`. Tab titles come from the terminal title that Claude sets.
 
 ## License
