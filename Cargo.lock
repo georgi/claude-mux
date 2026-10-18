@@ -403,6 +403,7 @@ dependencies = [
 name = "cmuxd"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "axum",
  "axum-server",
  "base64 0.23.1",
@@ -411,6 +412,7 @@ dependencies = [
  "cmux-proto",
  "http-body-util",
  "libc",
+ "portable-pty",
  "qrcode",
  "rand 0.10.3",
  "rustls",
@@ -423,6 +425,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "vt100",
 ]
 
 [[package]]

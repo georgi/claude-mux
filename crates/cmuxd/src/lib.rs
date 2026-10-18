@@ -6,6 +6,7 @@
 //! - [`devices`]: paired devices, sessions, pairing codes
 //! - [`api`]: the `/v1` routers (`rest`, `auth`)
 //! - [`server`]: listeners and start-up; [`client`]: a tiny local HTTP client
+//! - [`term`]: PTY host and terminal hub
 //! - [`config`], [`diag`], [`cli`]
 
 pub mod actor;
@@ -17,6 +18,7 @@ pub mod devices;
 pub mod diag;
 pub mod server;
 pub mod store;
+pub mod term;
 #[cfg(feature = "tls")]
 pub mod tls;
 
