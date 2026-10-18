@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use cmux_core::glyph::Glyph;
 use cmux_proto::api::{NewTerminalKind, ProjectsResp};
-use cmux_proto::view::{AgentId, PlanId, TermId, TermKind, TerminalView};
+use cmux_proto::view::{AgentId, Level, PlanId, TermId, TermKind, TerminalView};
 use ratatui::layout::{Position, Rect};
 use serde_json::Value;
 
@@ -768,7 +768,12 @@ impl App {
                 (Some(p.clone()), first, None)
             }
             Node::Executor(p) => (Some(p.clone()), WindowKey::Executor(p.clone()), None),
-            Node::Task(p, t) => (Some(p.clone()), WindowKey::Task(p.clone(), *t), None),
+            // The task row is the task's own agent, not one of its sub-agents.
+            Node::Task(p, t) => (
+                Some(p.clone()),
+                WindowKey::Task(p.clone(), *t),
+                node.agent(sv),
+            ),
             Node::Sub(a) => {
                 let Some(t) = a.path().task_id() else {
                     return false;
@@ -787,7 +792,6 @@ impl App {
                 (r.plan.clone(), first, None)
             }
         };
-        let _ = sv;
         self.rebuild_to(Some((plan, key.clone())));
         let Some(idx) = self
             .remote
@@ -1047,7 +1051,12 @@ impl App {
         else {
             return;
         };
-        match Node::for_agent(&a).parent() {
+        let here = Node::for_agent(&a);
+        match here.parent() {
+            // A task goes up to the executor; the executor is the top.
+            Some(Node::Plan(_)) if matches!(here, Node::Executor(_)) => {
+                self.flash("already at the top");
+            }
             Some(Node::Plan(p)) => {
                 self.show_node(&Node::Executor(p));
             }
@@ -1500,10 +1509,12 @@ fn pane_key(p: &Pane) -> Option<String> {
 fn describe_pane(pane: &mut Pane, spec: &PaneSpec, sv: &cmux_proto::view::StateView) {
     let term = spec.term.and_then(|t| sv.terminal(t));
     pane.agent = spec.agent.clone();
+    pane.dim = false;
     pane.label = spec.agent.as_ref().map(agent_label);
     if let Some(a) = spec.agent.as_ref().and_then(|a| sv.agent(a)) {
         pane.kind = Kind::Claude;
         pane.cwd = a.cwd.clone();
+        pane.dim = spec.level == Some(Level::Sub) && (spec.finished || a.report.is_some());
     } else if let Some(t) = term {
         pane.kind = pane_kind(&t.kind);
         pane.cwd = t.cwd.clone();

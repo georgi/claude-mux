@@ -1,6 +1,6 @@
 //! Small text marks that several widgets share.
 
-use cmux_proto::view::{ClientId, StateView, TermId};
+use cmux_proto::view::{AgentView, ClientId, ReportStatus, StateView, TermId};
 
 /// `⇲ 120×40` when another client owns the terminal's size (UI design 3.4),
 /// to go in the pane header. `None` when `me` owns it or nobody does.
@@ -8,6 +8,18 @@ pub fn size_mark(sv: &StateView, term: TermId, me: &ClientId) -> Option<String> 
     let t = sv.terminal(term)?;
     let owner = t.size_owner.as_ref()?;
     (owner != me).then(|| format!("⇲ {}×{}", t.cols, t.rows))
+}
+
+/// `reported success` (or `blocked`, `failed`) for an agent that handed in its
+/// report, to go in the pane header instead of the directory (UI design 3.3).
+pub fn report_mark(a: &AgentView) -> Option<String> {
+    let r = a.report.as_ref()?;
+    let what = match r.status {
+        ReportStatus::Success => "success",
+        ReportStatus::Blocked => "blocked",
+        ReportStatus::Failed => "failed",
+    };
+    Some(format!("reported {what}"))
 }
 
 /// `✉N`, or an empty string when nothing is queued.

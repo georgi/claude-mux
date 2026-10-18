@@ -127,6 +127,10 @@ fn draw_window(f: &mut Frame, app: &App, w: &Window, area: Rect) {
         let p = pane.parser.lock().unwrap();
         let screen = p.screen();
         f.render_widget(Screen(screen), a.body);
+        if pane.dim {
+            f.buffer_mut()
+                .set_style(a.body, Style::default().add_modifier(Modifier::DIM));
+        }
         if let Some(h) = a.header {
             draw_pane_header(f, app, pane, focused, screen.scrollback(), h);
         }
@@ -187,7 +191,10 @@ fn draw_pane_header(
     scrolled: usize,
     area: Rect,
 ) {
-    let style = if focused {
+    let style = if pane.dim {
+        let bg = if focused { Color::Indexed(238) } else { BAR_BG };
+        Style::default().bg(bg).fg(DIM)
+    } else if focused {
         Style::default()
             .bg(Color::Indexed(238))
             .fg(Color::White)
@@ -224,9 +231,20 @@ fn draw_pane_header(
             Style::default().bg(Color::Cyan).fg(Color::Black),
         ));
     } else if w > used + 4 {
-        let dir = truncate(&tilde(&pane.cwd), w - used - 2);
+        // An agent that reported says so instead of showing its directory.
+        let report = app
+            .remote
+            .as_ref()
+            .and_then(|r| r.mirror.sv.agent(pane.agent.as_ref()?))
+            .and_then(marks::report_mark);
+        let (sep, what) = match (&pane.agent, report) {
+            (_, Some(r)) => ("· ", r),
+            (Some(_), None) => ("· ", tilde(&pane.cwd)),
+            (None, None) => (" ", tilde(&pane.cwd)),
+        };
+        let text = truncate(&what, (w - used).saturating_sub(2 + sep.len()).max(1));
         spans.push(Span::styled(
-            format!(" {dir}"),
+            format!("{sep}{text}"),
             style.fg(DIM).remove_modifier(Modifier::BOLD),
         ));
     }

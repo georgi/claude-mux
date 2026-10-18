@@ -171,6 +171,8 @@ pub struct Pane {
     pub agent: Option<cmux_proto::view::AgentId>,
     /// Remote panes: the name the server state gives the pane.
     pub label: Option<String>,
+    /// Remote panes: a finished sub-agent, drawn dimmed until it is closed.
+    pub dim: bool,
 }
 
 /// Where a pane's bytes come from and go to.
@@ -299,6 +301,7 @@ impl Pane {
             branch,
             agent: None,
             label: None,
+            dim: false,
         })
     }
 
@@ -323,6 +326,7 @@ impl Pane {
             branch: None,
             agent: None,
             label: None,
+            dim: false,
         }
     }
 

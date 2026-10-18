@@ -6,12 +6,14 @@
 //! behaves like a session:
 //!
 //! 1. starts the MCP server from `mcp.json` (as `cmuxd mcp`, with the env from
-//!    the file), initializes it and prints `TOOLS: a,b,c`;
+//!    the file), initializes it and prints `CWD: <dir>`, `SYSTEM: <first line
+//!    of the appended system prompt>` and `TOOLS: a,b,c`;
 //! 2. runs the `SessionStart` and `UserPromptSubmit` (kickoff) hooks from
 //!    `settings.json` through `sh -c`, as Claude does;
 //! 3. runs the agent's script, then the `Stop` hook; a `block` decision is
-//!    printed (`STOP-BLOCKED: <reason>`) and `Stop` runs again with
-//!    `stop_hook_active`;
+//!    printed (`STOP-BLOCKED: <reason>`), its reason becomes the prompt for the
+//!    `later` steps that have a `when` (Claude carries on with what the hook
+//!    said), and `Stop` runs again with `stop_hook_active`;
 //! 4. idles reading its terminal: every line is echoed (`ECHO <line>`, paste
 //!    markers removed), submitted as a prompt, answered by the `later` script
 //!    and ended with `Stop`. `/exit` runs `SessionEnd` and exits.
@@ -22,7 +24,9 @@
 //!
 //! - `{"tool": name, "args": {..}}`: an MCP `tools/call`; prints `TOOL <name>: <text>`
 //! - `{"permission": {"tool": "Bash", "input": {"command": ".."}}}`: runs
-//!   `PreToolUse` and `PermissionRequest`. A line `1` on the terminal while the
+//!   `PreToolUse`; if that denies (`permissionDecision`) it prints
+//!   `PRETOOL deny: <reason>` and stops there, as Claude does. Otherwise runs
+//!   `PermissionRequest`. A line `1` on the terminal while the
 //!   hook is open wins: the hook is killed (`PERM terminal`). Otherwise prints
 //!   `PERM allow`, `PERM deny: <message>` or `PERM none`
 //! - `{"sleep_ms": n}`, `{"wait_file": path}`, `{"print": text}`,
@@ -46,6 +50,7 @@ struct Args {
     session_id: String,
     settings: PathBuf,
     mcp_config: PathBuf,
+    system: String,
     kickoff: String,
 }
 
@@ -55,6 +60,7 @@ fn parse_args() -> Args {
         session_id: String::new(),
         settings: PathBuf::new(),
         mcp_config: PathBuf::new(),
+        system: String::new(),
         kickoff: argv.last().cloned().unwrap_or_default(),
     };
     let mut i = 0;
@@ -69,7 +75,11 @@ fn parse_args() -> Args {
                 a.settings = next.into();
                 i += 1;
             }
-            "--append-system-prompt" | "--permission-mode" | "--model" => i += 1,
+            "--append-system-prompt" => {
+                a.system = next;
+                i += 1;
+            }
+            "--permission-mode" | "--model" => i += 1,
             s if s.starts_with("--mcp-config=") => {
                 a.mcp_config = s["--mcp-config=".len()..].into();
             }
@@ -272,13 +282,32 @@ impl Session {
         }
     }
 
+    /// A prompt arriving mid-turn, through a `Stop` block: only the `later`
+    /// steps that wait for some text can tell it from the turn they are in.
+    fn carry_on(&mut self, reason: &str) {
+        self.set_prompt(reason);
+        let steps = self.script["later"].as_array().cloned().unwrap_or_default();
+        for s in steps.iter().filter(|s| s.get("when").is_some()) {
+            self.step(s);
+        }
+    }
+
     fn permission(&mut self, p: &Value) {
         let tool = p["tool"].as_str().unwrap_or("Bash");
         let input = p["input"].clone();
-        self.hooks.run(
+        let pre = self.hooks.run(
             "PreToolUse",
             json!({"tool_name": tool, "tool_input": input, "tool_use_id": "toolu_1"}),
         );
+        if let Some(o) = pre.as_ref().map(|o| &o["hookSpecificOutput"])
+            && o["permissionDecision"] == "deny"
+        {
+            say(format!(
+                "PRETOOL deny: {}",
+                o["permissionDecisionReason"].as_str().unwrap_or("")
+            ));
+            return;
+        }
         let Some((mut child, mut out)) = self.hooks.start(
             "PermissionRequest",
             json!({"tool_name": tool, "tool_input": input,
@@ -330,10 +359,10 @@ impl Session {
             );
             match out.as_ref().and_then(|o| o["decision"].as_str()) {
                 Some("block") => {
-                    say(format!(
-                        "STOP-BLOCKED: {}",
-                        out.as_ref().expect("some")["reason"].as_str().unwrap_or("")
-                    ));
+                    let reason = out.as_ref().expect("some")["reason"].as_str();
+                    let reason = reason.unwrap_or("").to_string();
+                    say(format!("STOP-BLOCKED: {reason}"));
+                    self.carry_on(&reason);
                     active = true;
                 }
                 _ => return,
@@ -341,15 +370,20 @@ impl Session {
         }
     }
 
-    fn submit(&mut self, prompt: &str) {
+    /// Sets the turn's prompt. A digest too long to paste names a file to
+    /// read, as Claude would.
+    fn set_prompt(&mut self, prompt: &str) {
         self.prompt = prompt.to_string();
-        // A digest too long to paste names a file to read, as Claude would.
         if let Some((_, path)) = prompt.rsplit_once("read ")
             && let Ok(text) = std::fs::read_to_string(path.trim())
         {
             self.prompt.push('\n');
             self.prompt.push_str(&text);
         }
+    }
+
+    fn submit(&mut self, prompt: &str) {
+        self.set_prompt(prompt);
         let out = self
             .hooks
             .run("UserPromptSubmit", json!({"prompt": prompt}));
@@ -380,6 +414,11 @@ fn main() {
 
     let mut mcp = Mcp::start(&read_json(&args.mcp_config));
     let tools = mcp.initialize();
+    say(format!("CWD: {cwd}"));
+    say(format!(
+        "SYSTEM: {}",
+        args.system.lines().next().unwrap_or("")
+    ));
     say(format!("TOOLS: {}", tools.join(",")));
 
     let (tx, lines) = mpsc::channel();
