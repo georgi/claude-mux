@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use cmux_core::glyph::Glyph;
 use cmux_proto::api::{NewTerminalKind, ProjectsResp};
-use cmux_proto::view::{AgentId, Level, PlanId, TermId, TermKind, TerminalView};
+use cmux_proto::view::{AgentId, Level, Life, PlanId, TermId, TermKind, TerminalView};
 use ratatui::layout::{Position, Rect};
 use serde_json::Value;
 
@@ -914,11 +914,16 @@ impl App {
         };
         match (agent, term) {
             (Some(a), _) => {
-                let finished = r
-                    .mirror
-                    .sv
-                    .agent(&a)
-                    .is_none_or(crate::tui::marks::agent_done);
+                // A sub-agent that reported is done though its process may
+                // linger; a task agent that reported goes on (PR, CI) and only
+                // an ended process is done.
+                let finished = r.mirror.sv.agent(&a).is_none_or(|v| {
+                    if v.level == Level::Sub {
+                        crate::tui::marks::agent_done(v)
+                    } else {
+                        matches!(v.life, Life::Exited { .. } | Life::Stopped)
+                    }
+                });
                 if finished {
                     r.view.closed.insert(a.to_string());
                     r.view_dirty = true;

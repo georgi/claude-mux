@@ -17,7 +17,7 @@ pub fn agent_done(a: &AgentView) -> bool {
     match a.life {
         Life::Exited { .. } | Life::Stopped => true,
         Life::Starting => false,
-        Life::Running => a.report.is_some() && a.activity != Activity::Working,
+        Life::Running => a.report.is_some() && a.activity == Activity::Idle,
     }
 }
 
@@ -72,5 +72,46 @@ mod tests {
         assert_eq!(size_mark(&sv, TermId(9), &me), None);
         assert_eq!(queue_mark(0), "");
         assert_eq!(queue_mark(3), "✉3");
+    }
+
+    #[test]
+    fn a_running_agent_is_done_only_when_idle_with_a_report() {
+        use cmux_core::ids::AgentPath;
+        use cmux_proto::view::Report;
+        let report = Report {
+            status: ReportStatus::Success,
+            summary: "x".into(),
+            pr_url: None,
+            attempt: 1,
+            implicit: false,
+            supersedes_blocked: false,
+        };
+        let plan = cmux_proto::view::PlanId::new(2026, 10, 18, "auth");
+        let mut a = AgentView {
+            id: cmux_proto::view::AgentId::new(plan, AgentPath::Executor),
+            path: AgentPath::Executor,
+            level: cmux_proto::view::Level::Executor,
+            parent: None,
+            task: None,
+            term: None,
+            cwd: "/".into(),
+            life: Life::Running,
+            activity: Activity::Idle,
+            report: Some(report),
+            tokens: Default::default(),
+            idle_since: None,
+        };
+        assert!(agent_done(&a));
+        for act in [
+            Activity::NeedsPermission,
+            Activity::Working,
+            Activity::Unknown,
+        ] {
+            a.activity = act;
+            assert!(!agent_done(&a), "{act:?}");
+        }
+        a.activity = Activity::Idle;
+        a.report = None;
+        assert!(!agent_done(&a));
     }
 }

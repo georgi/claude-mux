@@ -1,11 +1,11 @@
 //! The flat list of visible tree rows. Drawing, navigation and hit-testing
 //! all start from [`tree_rows`], so they agree on what row N is.
 
-use cmux_core::glyph::Glyph;
+use cmux_core::glyph::{Glyph, agent_state_glyph};
 use cmux_core::ids::AgentPath;
 use cmux_proto::view::{
     Activity, AgentView, Delivery, ItemKind, ItemView, Life, PlanState, PlanView, Recipient,
-    ReportStatus, StateView, TaskState, TaskView,
+    StateView, TaskState, TaskView,
 };
 use ratatui::style::Color;
 
@@ -224,51 +224,23 @@ fn task_glyph(sv: &StateView, vs: &ViewState, task: &TaskView, agent: Option<&Ag
 /// The agent glyph of UI design 2.1, from views. Same precedence as
 /// `cmux_core::glyph::glyph`, which works on the core model.
 pub fn agent_glyph(sv: &StateView, vs: &ViewState, a: &AgentView) -> Glyph {
-    let running = a.life == Life::Running;
     let asks = sv.items.iter().any(|i| {
         i.status == Delivery::Pending
             && i.to == Recipient::Human
             && i.from.as_ref() == Some(&a.id)
             && matches!(i.kind, ItemKind::Permission { .. } | ItemKind::Question)
     });
-    if asks || (running && a.activity == Activity::NeedsPermission) {
-        return Glyph::NeedsYou;
-    }
-    if running && vs.stalled.contains(&a.id) {
-        return Glyph::Stalled;
-    }
-    match a.life {
-        Life::Stopped
-        | Life::Exited { code: None }
-        | Life::Exited {
-            code: Some(1..) | Some(..=-1),
-        } => return Glyph::Failed,
-        Life::Starting => return Glyph::Working,
-        _ => {}
-    }
-    let working = running && a.activity == Activity::Working;
-    let finished = !running || a.report.is_some();
-    if finished && !working {
-        if !vs.seen.contains(&a.id) {
-            return Glyph::Unseen;
-        }
-        return match &a.report {
-            Some(r) if r.status == ReportStatus::Success => Glyph::Success,
-            Some(_) => Glyph::Failed,
-            None => Glyph::Idle,
-        };
-    }
-    if working {
-        Glyph::Working
-    } else if sv
-        .agents
-        .iter()
-        .any(|c| c.parent.as_ref() == Some(&a.id) && is_live(c))
-    {
-        Glyph::Parked
-    } else {
-        Glyph::Idle
-    }
+    agent_state_glyph(
+        a.life,
+        a.activity,
+        a.report.as_ref(),
+        asks,
+        vs.stalled.contains(&a.id),
+        vs.seen.contains(&a.id),
+        sv.agents
+            .iter()
+            .any(|c| c.parent.as_ref() == Some(&a.id) && is_live(c)),
+    )
 }
 
 // ---------------------------------------------------------------------------

@@ -1442,3 +1442,71 @@ fn a_resumed_sub_agent_on_a_new_terminal_keeps_its_pane_and_layout() {
     let w = &rig.app.windows[2];
     assert_eq!(w.get(w.active).unwrap().name(), "docs");
 }
+
+#[test]
+fn a_sub_agent_stopped_after_its_success_report_is_not_red() {
+    use cmux_core::glyph::Glyph;
+    use cmux_proto::view::{Activity, Life, ReportStatus};
+    let mut rig = Rig::new(120, 30);
+    rig.app.select_window(2);
+    let mut sv = state_with_subs(&["tests", "docs"]);
+    let a = sub_mut(&mut sv, "docs");
+    a.life = Life::Stopped;
+    a.activity = Activity::Idle;
+    a.report = Some(report_of(ReportStatus::Success));
+    rig.set_state(sv);
+    let glyphs = |rig: &Rig| {
+        let r = rig.app.remote.as_ref().unwrap();
+        let win = &rig.app.windows[rig.app.active];
+        let docs = win
+            .panes
+            .iter()
+            .find(|p| {
+                p.agent
+                    .as_ref()
+                    .is_some_and(|a| a.to_string().ends_with("/docs"))
+            })
+            .unwrap();
+        (r.pane_glyph(docs), r.window_glyph(win))
+    };
+    let (pane, window) = glyphs(&rig);
+    assert_eq!(pane, Some(Glyph::Unseen));
+    assert_ne!(window, Some(Glyph::Failed));
+    // A sub-agent stopped without a report is red.
+    let mut sv = rig.app.remote.as_ref().unwrap().mirror.sv.clone();
+    sub_mut(&mut sv, "docs").report = None;
+    rig.set_state(sv);
+    assert_eq!(glyphs(&rig).0, Some(Glyph::Failed));
+}
+
+#[test]
+fn killing_the_pane_of_a_reported_task_agent_stops_it() {
+    use cmux_proto::view::{Activity, ReportStatus};
+    let mut rig = Rig::new(120, 30);
+    let mut sv = state_with_subs(&["tests"]);
+    let task = AgentId::new(plan(), AgentPath::Task(t2()));
+    let a = sv.agents.iter_mut().find(|a| a.id == task).unwrap();
+    a.activity = Activity::Idle;
+    a.report = Some(report_of(ReportStatus::Success));
+    rig.set_state(sv);
+    rig.app.show_node(&Node::Task(plan(), t2()));
+    rig.take_calls();
+    rig.prefix(b"x");
+    rig.keys(b"y");
+    assert_eq!(
+        rig.take_calls(),
+        [post(
+            format!("/v1/agents/{}%2FT-0002/stop", plan()),
+            Value::Null
+        )]
+    );
+    assert!(
+        !rig.app
+            .remote
+            .as_ref()
+            .unwrap()
+            .view
+            .closed
+            .contains(&task.to_string())
+    );
+}
