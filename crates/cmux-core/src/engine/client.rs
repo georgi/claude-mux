@@ -1,10 +1,10 @@
 //! Client actions and the plan/task edits shared with the MCP tools.
 
 use super::*;
-use crate::ids::{AgentPath, ClientId};
+use crate::ids::{AgentPath, ClientId, TermId};
 use crate::model::{
-    Activity, Criterion, Life, PlanState, TaskState, TransitionSource, check_plan_transition,
-    check_task_transition,
+    Activity, Criterion, Life, PlanState, TaskState, Terminal, TransitionSource,
+    check_plan_transition, check_task_transition,
 };
 use crate::permissions::rule_for;
 
@@ -78,6 +78,41 @@ impl Ctx<'_> {
             }
             ClientAction::ResumeAgent { agent } => self.resume_agent(&agent, None),
             ClientAction::AnswerItem { item, action } => self.answer_item(&by, item, action),
+            ClientAction::CreateTerminal { kind, cwd, size } => {
+                let id = TermId(self.st.next_term_id.max(1));
+                self.st.next_term_id = id.0 + 1;
+                self.st.terminals.insert(
+                    id,
+                    Terminal {
+                        id,
+                        kind,
+                        agent: None,
+                        cwd,
+                        size,
+                        size_owner: None,
+                        title: None,
+                    },
+                );
+                self.st.loose.push(id);
+                self.touch(Change::Terminal(id));
+                text(id.0.to_string())
+            }
+            ClientAction::CloseTerminal { term } => {
+                match self.st.terminals.get(&term) {
+                    None => return err(ErrorKind::NotFound, format!("error: no terminal {term}")),
+                    Some(t) if t.agent.is_some() => {
+                        return err(
+                            ErrorKind::Invalid,
+                            format!("error: terminal {term} belongs to an agent; stop the agent"),
+                        );
+                    }
+                    Some(_) => {}
+                }
+                self.st.terminals.remove(&term);
+                self.st.loose.retain(|t| *t != term);
+                self.touch(Change::Removed(ObjectRef::Terminal(term)));
+                Ok(Reply::Ok)
+            }
             ClientAction::MarkHumanInput { agent } => {
                 let (pi, ai) = self.agent_idx(&agent)?;
                 let last = self.agent(pi, ai).last_human_input_at;

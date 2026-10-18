@@ -208,6 +208,16 @@ impl Devices {
         let _ = self.save(&mut g);
     }
 
+    /// A device's display name.
+    pub fn name_of(&self, id: &str) -> Option<String> {
+        let g = self.lock();
+        g.file
+            .devices
+            .iter()
+            .find(|d| d.id == id)
+            .map(|d| d.name.clone())
+    }
+
     pub fn list(&self, current: Option<&str>) -> Vec<DeviceView> {
         self.lock()
             .file

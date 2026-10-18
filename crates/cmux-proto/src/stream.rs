@@ -105,6 +105,14 @@ pub enum ServerMsg {
     Presence {
         clients: Vec<PresenceEntry>,
     },
+    /// The program in a subscribed terminal ended. Sent after its last output;
+    /// no more `Output` follows for it.
+    Exit {
+        term: TermId,
+        code: u32,
+        #[serde(default)]
+        signal: Option<String>,
+    },
     Error {
         code: ErrorCode,
         message: String,
@@ -320,6 +328,11 @@ mod tests {
         rt(ServerMsg::Deltas {
             rev: 5,
             items: vec![],
+        });
+        rt(ServerMsg::Exit {
+            term: TermId(1),
+            code: 0,
+            signal: Some("SIGTERM".into()),
         });
         rt(ServerMsg::Size {
             term: TermId(1),

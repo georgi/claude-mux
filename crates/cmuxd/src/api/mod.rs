@@ -10,6 +10,8 @@
 pub mod auth;
 mod idem;
 pub mod rest;
+pub mod stream;
+pub mod terminals;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
@@ -28,6 +30,7 @@ use crate::actor::{ActorGone, ActorHandle, Clock};
 use crate::config::Config;
 use crate::devices::{Devices, Pairing};
 use crate::diag::Diag;
+use crate::term::hub::Hub;
 
 pub use auth::Principal;
 
@@ -56,8 +59,13 @@ pub struct Shared {
     pub started: Instant,
     pub info: ServerInfo,
     pub data_dir: std::path::PathBuf,
-    /// Connected stream clients; step 5 keeps it current. Reported by `/status`.
+    /// Connected stream clients. Reported by `/status`.
     pub clients: AtomicU32,
+    /// Who is connected to the stream, for `presence` messages.
+    pub presence: stream::Presence,
+    /// The PTYs. Shared with whoever spawns terminals (loose terminals here,
+    /// agents in the effect runner); ids follow the engine's `TermId`s.
+    pub hub: Arc<Hub>,
     /// The URL put into pairing QR codes; set once the TCP listener is bound.
     pub base_url: std::sync::RwLock<String>,
     idem: idem::Cache,
@@ -77,6 +85,7 @@ impl AppState {
         config: Config,
         diag: Diag,
         data_dir: std::path::PathBuf,
+        hub: Arc<Hub>,
     ) -> AppState {
         let clock = actor.clock().clone();
         let p = &config.pairing;
@@ -98,6 +107,8 @@ impl AppState {
             info,
             data_dir,
             clients: AtomicU32::new(0),
+            presence: stream::Presence::default(),
+            hub,
             base_url,
         }))
     }
@@ -184,6 +195,7 @@ pub fn router_with(app: AppState, transport: Transport, extra: Extra) -> Router 
     // authenticate, then replay idempotent retries, then the handler.
     let protected = rest::routes()
         .merge(auth::routes())
+        .merge(terminals::routes())
         .merge(extra.authed)
         .layer(middleware::from_fn_with_state(
             app.clone(),
@@ -193,7 +205,10 @@ pub fn router_with(app: AppState, transport: Transport, extra: Extra) -> Router 
             (app.clone(), transport),
             auth::middleware,
         ));
-    let mut r = public.merge(protected).merge(extra.open);
+    let mut r = public
+        .merge(protected)
+        .merge(stream::routes(transport))
+        .merge(extra.open);
     if transport == Transport::Unix {
         r = r.merge(extra.unix_only);
     }

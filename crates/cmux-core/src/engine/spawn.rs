@@ -706,6 +706,28 @@ impl Ctx<'_> {
                     }
                 }
             }
+            RunnerEvent::TermSize {
+                term,
+                rows,
+                cols,
+                owner,
+            } => {
+                if let Some(t) = self.st.terminals.get_mut(&term)
+                    && (t.size != (cols, rows) || t.size_owner != owner)
+                {
+                    t.size = (cols, rows);
+                    t.size_owner = owner;
+                    self.touch(Change::Terminal(term));
+                }
+            }
+            RunnerEvent::TermTitle { term, title } => {
+                if let Some(t) = self.st.terminals.get_mut(&term)
+                    && t.title != title
+                {
+                    t.title = title;
+                    self.touch(Change::Terminal(term));
+                }
+            }
             RunnerEvent::Pr { plan, task, state } => {
                 let pi = self.plan_idx(&plan)?;
                 let ti = self.task_idx(pi, task)?;
