@@ -11,11 +11,13 @@
 
 pub mod actor;
 pub mod api;
+pub mod claude;
 pub mod cli;
 pub mod client;
 pub mod config;
 pub mod devices;
 pub mod diag;
+pub mod git;
 pub mod server;
 pub mod store;
 pub mod term;
