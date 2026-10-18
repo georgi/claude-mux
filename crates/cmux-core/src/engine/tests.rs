@@ -3903,7 +3903,7 @@ fn a_new_attempt_stops_the_previous_attempts_sub_agents() {
     let (pid, exec) = h.accepted_plan("sub-attempt", 1);
     let task = h.start(&pid, &exec, 1);
     let sub = start_sub(&mut h, &pid, &task, "a");
-    // The task agent was stopped by a person, then the task blocked and respawned.
+    // The task agent's process died (exit code 1), then the task blocked and respawned.
     h.runner(RunnerEvent::Exited {
         agent: task.clone(),
         term: h.term_of(&task),
@@ -4191,6 +4191,74 @@ fn an_expired_question_is_not_sent_to_a_dead_asker() {
         .life = Life::Stopped;
     h.tick(61 * MIN);
     assert!(h.items_to(&sub).iter().all(|i| !i.body.contains("expired")));
+}
+
+#[test]
+fn a_task_agent_that_reported_still_hears_that_its_question_expired() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("task-reported-expiry", 1);
+    h.stop(&exec, false);
+    let task = h.start(&pid, &exec, 1);
+    h.report(&task, ReportStatus::Success).unwrap();
+    assert!(h.agent(&task).is_live());
+    h.tool(
+        &task,
+        ToolCall::AskUser {
+            question: "merge it?".into(),
+        },
+    )
+    .unwrap();
+    h.tick(61 * MIN);
+    assert!(
+        h.items_to(&task)
+            .iter()
+            .any(|i| i.body.contains("expired") && i.body.contains("merge it?")),
+        "a task agent in its PR loop is told"
+    );
+}
+
+#[test]
+fn a_sub_agent_saved_without_an_attempt_is_current() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-legacy-attempt", 1);
+    let task = h.start(&pid, &exec, 1);
+    let sub = start_sub(&mut h, &pid, &task, "a");
+    let mut v = serde_json::to_value(h.agent(&sub)).unwrap();
+    v.as_object_mut().unwrap().remove("attempt");
+    let legacy: Agent = serde_json::from_value(v).unwrap();
+    assert_eq!(legacy.attempt, 0);
+    h.st.plans[0]
+        .agents
+        .iter_mut()
+        .find(|a| a.id == sub)
+        .map(|a| *a = legacy);
+    assert!(h.agent(&sub).in_attempt(1));
+    // Its report lands as the current attempt's, and it still counts.
+    h.report(&sub, ReportStatus::Success).unwrap();
+    h.stop(&sub, false);
+    assert!(h.agent(&sub).landed);
+}
+
+#[test]
+fn no_sub_agents_for_a_merged_or_cancelled_task() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-finished-task", 1);
+    let task = h.start(&pid, &exec, 1);
+    for state in [TaskState::Merged, TaskState::Cancelled] {
+        h.st.plans[0].tasks[0].state = state;
+        let e = h
+            .tool(
+                &task,
+                ToolCall::SpawnSubagent {
+                    name: "a".into(),
+                    prompt: "p".into(),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(e.kind, ErrorKind::Invalid, "{state:?}");
+        assert!(e.to_string().contains("already finished"), "{e}");
+    }
+    assert!(h.plan(&pid).agent(&sub_id(&pid, 1, "a")).is_none());
 }
 
 #[test]

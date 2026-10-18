@@ -332,18 +332,12 @@ impl Ctx<'_> {
         }
     }
 
-    /// Whether a message to `id` would reach a working agent: it runs and has not
-    /// handed in a final report.
+    /// Whether a message to `id` would reach an agent: its process runs. An
+    /// agent that is done for good (a sub-agent after its report) is stopped; a
+    /// task agent stays up after a success report for the PR and CI loop.
     fn can_hear(&self, id: &AgentId) -> bool {
-        let Ok((pi, ai)) = self.agent_idx(id) else {
-            return false;
-        };
-        let a = self.agent(pi, ai);
-        let done = a.landed
-            && a.report
-                .as_ref()
-                .is_some_and(|r| r.status != ReportStatus::Blocked);
-        a.is_live() && !done
+        self.agent_idx(id)
+            .is_ok_and(|(pi, ai)| self.agent(pi, ai).is_live())
     }
 
     /// The 1 s timer.

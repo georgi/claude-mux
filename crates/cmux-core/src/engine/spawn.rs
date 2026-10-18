@@ -417,6 +417,15 @@ impl Ctx<'_> {
                 "the plan is paused; sub-agents cannot start until it resumes",
             );
         }
+        let state = self.plan(pi).task(task).map(|t| t.state);
+        if matches!(state, Some(TaskState::Merged | TaskState::Cancelled)) {
+            return err(
+                ErrorKind::Invalid,
+                format!(
+                    "{task} is already finished; there is nothing left to spawn sub-agents for"
+                ),
+            );
+        }
         if self.plan(pi).agent(&id).is_some_and(Agent::is_live) {
             return err(
                 ErrorKind::Invalid,
