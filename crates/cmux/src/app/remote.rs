@@ -87,6 +87,8 @@ pub struct RemoteState {
     seen_state: bool,
     /// The server is cmuxd on this machine (Unix socket): our paths are its paths.
     local_server: bool,
+    /// `cmux attach <agent>`: the node to show once the first state is in.
+    pub open_on_start: Option<Node>,
 }
 
 impl RemoteState {
@@ -128,6 +130,7 @@ impl RemoteState {
             last_click: None,
             seen_state: false,
             local_server: false,
+            open_on_start: None,
         }
     }
 
@@ -363,9 +366,14 @@ impl App {
             StreamEvent::State(_) | StreamEvent::Deltas { .. } => {
                 nav::fix_selection(&r.mirror.sv, &mut r.vs);
                 let first = !std::mem::replace(&mut r.seen_state, true);
+                let open = if first { r.open_on_start.take() } else { None };
                 self.rebuild();
-                // Nothing to look at yet: start in the tree.
-                if first && self.windows.is_empty() && matches!(self.mode, Mode::Normal) {
+                if let Some(node) = open {
+                    if self.show_node(&node) {
+                        self.set_tree_focus(false);
+                    }
+                } else if first && self.windows.is_empty() && matches!(self.mode, Mode::Normal) {
+                    // Nothing to look at yet: start in the tree.
                     self.set_tree_focus(true);
                 }
             }

@@ -1,0 +1,40 @@
+---
+source: crates/cmux/src/conn/it_verbs.rs
+expression: "fx.stable(&plan, &json)"
+---
+[
+  {
+    "agent": null,
+    "attempt": 0,
+    "branch": null,
+    "criteria_done": 0,
+    "criteria_total": 2,
+    "deps": [],
+    "id": "T-0001",
+    "notes": 0,
+    "plan": "P-[DATE]-demo",
+    "pr": null,
+    "repo": 0,
+    "state": "todo",
+    "title": "first",
+    "worktree": null
+  },
+  {
+    "agent": null,
+    "attempt": 0,
+    "branch": null,
+    "criteria_done": 0,
+    "criteria_total": 0,
+    "deps": [
+      "T-0001"
+    ],
+    "id": "T-0002",
+    "notes": 0,
+    "plan": "P-[DATE]-demo",
+    "pr": null,
+    "repo": 0,
+    "state": "todo",
+    "title": "second",
+    "worktree": null
+  }
+]

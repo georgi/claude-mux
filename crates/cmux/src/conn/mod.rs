@@ -5,9 +5,13 @@ pub mod cli;
 pub mod http;
 pub mod servers;
 pub mod stream;
+pub mod verbs;
 
 #[cfg(test)]
 mod it;
 
 #[cfg(test)]
 mod it_plan;
+
+#[cfg(test)]
+mod it_verbs;
