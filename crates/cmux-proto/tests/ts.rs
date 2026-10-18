@@ -38,7 +38,8 @@ fn generate() -> String {
         CreatePlanReq, RepoSpec, PlanBody, CreateTaskReq, PatchTaskReq, SpawnTaskReq,
         TranscriptResp, MessageReq, AnswerAction, AnswerReq, NewTerminalKind,
         CreateTerminalReq, SessionSummary, ProjectsResp, ScrollbackResp, PairStartReq,
-        PairStartResp, PairCompleteReq, PairCompleteResp, DeviceView, DevicesResp,
+        PairStartResp, PairCompleteReq, PairCompleteResp, DeviceView, DevicesResp, RepoInfo,
+        ReposResp, AddRepoReq, LevelSettings, SettingsResp,
         AgentHookReq, AgentHookResp, AgentToolReq, AgentToolResp, serde_json::Value,
         // Stream
         ClientKind, TermPos, ClientMsg, ServerMsg, PresenceEntry,

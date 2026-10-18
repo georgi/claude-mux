@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::view::{
-    AgentId, ChatEntry, Repo, TaskId, TaskState, TermId, TermKind, TerminalView, Timestamp,
+    AgentId, ChatEntry, Level, Repo, TaskId, TaskState, TermId, TermKind, TerminalView, Timestamp,
 };
 
 /// Header on mutating requests; a retry with the same key replays the first
@@ -39,6 +39,10 @@ pub mod route {
     pub const PAIR_START: &str = "/v1/pair/start";
     pub const PAIR_COMPLETE: &str = "/v1/pair/complete";
     pub const DEVICES: &str = "/v1/devices";
+    /// `GET` (ReposResp); `POST` (AddRepoReq) clones or registers one.
+    pub const REPOS: &str = "/v1/repos";
+    /// `GET` (SettingsResp): the server's limits and Claude options.
+    pub const SETTINGS: &str = "/v1/settings";
     /// `POST` (bearer token) sets the web session cookie; `DELETE` clears it.
     pub const SESSION: &str = "/v1/session";
     pub const AGENT_HOOK: &str = "/v1/agent/hook";
@@ -500,6 +504,60 @@ pub struct DeviceView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct DevicesResp {
     pub devices: Vec<DeviceView>,
+}
+
+// ---------------------------------------------------------------------------
+// Repositories and settings
+// ---------------------------------------------------------------------------
+
+/// One repository the server knows: used by a plan, cloned or registered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RepoInfo {
+    /// Absolute path on the server.
+    pub path: String,
+    /// The branch new plans start from (`origin/HEAD`, else the checked-out one).
+    pub base_branch: String,
+    /// `origin`'s URL, if it has one.
+    pub remote_url: Option<String>,
+}
+
+/// `GET /repos`, sorted by path.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ReposResp {
+    pub repos: Vec<RepoInfo>,
+}
+
+/// `POST /repos`: give exactly one. `url` runs `git clone` into the data
+/// directory; `path` registers an existing repository on the server.
+/// The response is 201 with the [`RepoInfo`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct AddRepoReq {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub path: Option<String>,
+}
+
+/// The `claude` options for one agent level.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct LevelSettings {
+    pub level: Level,
+    /// `None`: Claude's own default model.
+    pub model: Option<String>,
+    pub permission_mode: String,
+}
+
+/// `GET /settings` (read only; `config.toml` sets them).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SettingsResp {
+    pub tasks_per_plan: u32,
+    pub subagents_per_task: u32,
+    /// Claude processes on the whole server.
+    pub live_processes: u32,
+    pub permission_wait_secs: u64,
+    pub claude: Vec<LevelSettings>,
 }
 
 // ---------------------------------------------------------------------------
