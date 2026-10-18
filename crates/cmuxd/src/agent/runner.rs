@@ -111,14 +111,21 @@ impl AgentRuntime {
 
     /// A terminal id the engine has not used and this runtime has not handed out.
     fn alloc_term(&self, engine_next: u32) -> TermId {
-        let n = self
-            .next_term
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |cur| {
-                Some(cur.max(engine_next) + 1)
-            })
-            .map(|prev| prev.max(engine_next))
-            .expect("closure always returns Some");
-        TermId(n)
+        // A compare-exchange loop rather than `fetch_update`, which newer
+        // toolchains deprecate under a new name older ones lack.
+        let mut cur = self.next_term.load(Ordering::SeqCst);
+        loop {
+            let n = cur.max(engine_next);
+            match self.next_term.compare_exchange_weak(
+                cur,
+                n + 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return TermId(n),
+                Err(actual) => cur = actual,
+            }
+        }
     }
 
     fn note_started(&self, id: &str) {
