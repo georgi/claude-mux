@@ -40,14 +40,9 @@ const GIT_VALUE_OPTS: [&str; 8] = [
     "--super-prefix",
 ];
 
-/// Where `git` is among the words of a simple command.
-fn git_pos(words: &[&str]) -> Option<usize> {
-    words.iter().position(|w| basename(w) == "git")
-}
-
 /// For `git [-C dir] <sub> args...`, the subcommand and its arguments.
 fn git_sub<'a>(words: &'a [&'a str]) -> Option<(&'a str, &'a [&'a str])> {
-    let mut i = git_pos(words)? + 1;
+    let mut i = words.iter().position(|w| basename(w) == "git")? + 1;
     while i < words.len() {
         match words[i] {
             w if GIT_VALUE_OPTS.contains(&w) => i += 2,
@@ -70,19 +65,20 @@ fn names_base(arg: &str, base: &str) -> bool {
     name == base || name.strip_prefix("origin/") == Some(base)
 }
 
-/// The branch a `git checkout|switch` creates, if it creates one: the word
-/// after `-b`/`-B` (checkout), `-c`/`-C`/`--create`/`--force-create` (switch) or
-/// `--orphan`, glued (`-bmain`, `--create=main`) or apart. `Some(None)` is a
-/// create flag with no name.
+/// The branch a `git checkout|switch` creates, if it creates one: the value of
+/// `-b`/`-B` (checkout), `-c`/`-C` (switch), `--create`/`--force-create` or
+/// `--orphan`. Short options may be grouped (`-qBmain`) and the value glued
+/// (`-bmain`, `--create=main`) or apart. `Some(None)` is a create flag with no
+/// name.
 fn created_branch<'a>(sub: &str, args: &[&'a str]) -> Option<Option<&'a str>> {
-    let short: &[&str] = if sub == "checkout" {
-        &["-b", "-B"]
+    let short: [char; 2] = if sub == "checkout" {
+        ['b', 'B']
     } else {
-        &["-c", "-C"]
+        ['c', 'C']
     };
     let long = ["--create", "--force-create", "--orphan"];
     args.iter().enumerate().find_map(|(i, a)| {
-        if short.contains(a) || long.contains(a) {
+        if long.contains(a) {
             return Some(args.get(i + 1).copied());
         }
         if let Some(v) = long
@@ -91,24 +87,29 @@ fn created_branch<'a>(sub: &str, args: &[&'a str]) -> Option<Option<&'a str>> {
         {
             return Some(Some(v));
         }
-        short
-            .iter()
-            .find_map(|f| a.strip_prefix(f).filter(|v| !v.is_empty()))
-            .map(Some)
+        let group = a.strip_prefix('-').filter(|g| !g.starts_with('-'))?;
+        let at = group.find(short)?;
+        let rest = &group[at + 1..];
+        Some(if rest.is_empty() {
+            args.get(i + 1).copied()
+        } else {
+            Some(rest)
+        })
     })
 }
 
 /// Whether `git checkout|switch <args>` moves to the base branch. Restoring
 /// files from it (`checkout main -- path`) and branching off it (`-b feat main`)
 /// leave the current branch alone; creating a branch named like it
-/// (`-B main origin/main` resets it) does not.
+/// (`-B main origin/main` resets it) does not. Only `checkout` takes pathspecs
+/// after `--`; `switch` has none, so `switch -- main` does switch.
 fn switches_to_base(sub: &str, args: &[&str], base: &str) -> bool {
     if let Some(created) = created_branch(sub, args) {
         return created.is_some_and(|n| names_base(n, base));
     }
     let (refs, paths) = match args.iter().position(|a| *a == "--") {
-        Some(at) => (&args[..at], &args[at + 1..]),
-        None => (args, &[][..]),
+        Some(at) if sub == "checkout" => (&args[..at], &args[at + 1..]),
+        _ => (args, &[][..]),
     };
     paths.is_empty()
         && refs

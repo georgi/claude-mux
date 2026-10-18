@@ -4320,7 +4320,7 @@ fn guard_rails_table() {
         (Level::Sub, "git commit -F - <<'EOF'\nfix it\nEOF", false),
         (Level::Sub, "git commit -m 'line one\nline two'", false),
         (Level::Sub, "git tag -a v1 -m 'a\nb'", false),
-        // Shell-executed text inside a message is still scanned.
+        // Commands chained or substituted around a message are still scanned.
         (Level::Sub, "git commit -m 'x' && git push", true),
         (Level::Sub, "git commit -m x; git push", true),
         (Level::Sub, "git tag x && git push --tags", true),
@@ -4392,8 +4392,6 @@ fn guard_rails_table() {
         ),
         // A known false positive of the conservative rule.
         (Level::Sub, "echo git; echo hi push", true),
-        // A known false positive of the conservative rule.
-        (Level::Sub, "echo git; echo hi push", true),
         // Base branch: every spelling, both levels.
         (Level::Task, "git checkout main", true),
         (Level::Sub, "git checkout main", true),
@@ -4426,6 +4424,12 @@ fn guard_rails_table() {
         // Not the base branch.
         (Level::Task, "git checkout claude/T-1", false),
         (Level::Task, "git checkout -b feat main", false),
+        (Level::Task, "git checkout -qb feat main", false),
+        (Level::Task, "git checkout -qBmain", true),
+        (Level::Task, "git switch -qCmain", true),
+        (Level::Task, "git switch -- main", true),
+        (Level::Task, "git switch -d -- main", true),
+        (Level::Task, "git switch --detach -- main", true),
         // Creating (or resetting) a branch named like the base is a switch to it.
         (Level::Task, "git checkout -B main", true),
         (Level::Task, "git checkout -B main origin/main", true),
