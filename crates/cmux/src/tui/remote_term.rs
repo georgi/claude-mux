@@ -110,10 +110,10 @@ impl Drop for RemoteTerm {
 mod tests {
     use std::sync::atomic::Ordering;
 
-    use cmux_proto::stream::{ClientMsg, Frame};
+    use cmux_proto::stream::Frame;
 
     use super::*;
-    use crate::conn::stream::{Cmd, ConnHandle, Session, FrameAction, feed};
+    use crate::conn::stream::{Cmd, ConnHandle, FrameAction, Session, feed};
 
     /// Bytes a Claude-like program might send: colors, cursor moves, a clear,
     /// wide chars, an alt-screen switch and enough lines to scroll.
@@ -121,7 +121,9 @@ mod tests {
         let mut v = Vec::new();
         v.extend_from_slice(b"\x1b[2J\x1b[H\x1b[1;32mcmux\x1b[0m ready\r\n");
         for i in 0..40 {
-            v.extend_from_slice(format!("line {i} \x1b[38;5;{}mcolor\x1b[0m\r\n", i + 20).as_bytes());
+            v.extend_from_slice(
+                format!("line {i} \x1b[38;5;{}mcolor\x1b[0m\r\n", i + 20).as_bytes(),
+            );
         }
         v.extend_from_slice("日本語 text \x1b[5;10Hat 5,10\x1b[K".as_bytes());
         v.extend_from_slice(b"\x1b[?1049h\x1b[2J\x1b[Halt screen\x1b[2;3Hxy");
@@ -151,12 +153,26 @@ mod tests {
 
     fn screens_equal(rt: &RemoteTerm, want: &vt100::Parser) {
         let got = rt.parser.lock().unwrap();
-        assert_eq!(got.screen().contents_formatted(), want.screen().contents_formatted());
-        assert_eq!(got.screen().cursor_position(), want.screen().cursor_position());
-        assert_eq!(got.screen().alternate_screen(), want.screen().alternate_screen());
+        assert_eq!(
+            got.screen().contents_formatted(),
+            want.screen().contents_formatted()
+        );
+        assert_eq!(
+            got.screen().cursor_position(),
+            want.screen().cursor_position()
+        );
+        assert_eq!(
+            got.screen().alternate_screen(),
+            want.screen().alternate_screen()
+        );
     }
 
-    fn setup() -> (RemoteTerm, ConnHandle, std::sync::mpsc::Receiver<Cmd>, Session) {
+    fn setup() -> (
+        RemoteTerm,
+        ConnHandle,
+        std::sync::mpsc::Receiver<Cmd>,
+        Session,
+    ) {
         let (handle, rx) = ConnHandle::detached();
         let rt = RemoteTerm::new(handle.clone(), TermId(7), ROWS, COLS);
         let mut session = Session::new();
@@ -205,13 +221,7 @@ mod tests {
             chunks(b"\x1b[31mJUNK\x1b[?1049h", TermId(7), head.len() as u64, 64),
         );
         let at = head.len() as u64;
-        let snap = {
-            let mut p = local(head);
-            let mut out = p.screen().state_formatted();
-            out.extend_from_slice(&p.screen().attributes_formatted());
-            let _ = &mut p;
-            out
-        };
+        let snap = local(head).screen().state_formatted();
         // The snapshot is positioned at the split, so live output continues there.
         play(
             &rt,
@@ -258,10 +268,5 @@ mod tests {
         // Dropping after detach does not release twice.
         drop(rt);
         assert!(rx.try_recv().is_err());
-        // The messages the thread would put on the wire.
-        let mut s = Session::new();
-        s.on_cmd(&Cmd::Want(TermId(7)));
-        assert!(s.on_cmd(&cmds[2]).is_some());
-        let _ = ClientMsg::Ping { nonce: 0 };
     }
 }

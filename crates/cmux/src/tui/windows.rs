@@ -184,11 +184,8 @@ pub fn derive(sv: &StateView, view: &ServerView) -> Derived {
         .iter()
         .map(|plan| {
             let mut windows = Vec::new();
-            let agents: Vec<&AgentView> = plan
-                .agents
-                .iter()
-                .filter_map(|id| sv.agent(id))
-                .collect();
+            let agents: Vec<&AgentView> =
+                plan.agents.iter().filter_map(|id| sv.agent(id)).collect();
 
             if let Some(exec) = agents.iter().find(|a| a.level == Level::Executor) {
                 let key = WindowKey::Executor(plan.id.clone());
@@ -299,7 +296,9 @@ pub struct ServerView {
 impl ServerView {
     pub fn load(path: &Path) -> Result<ServerView> {
         match std::fs::read_to_string(path) {
-            Ok(s) => toml::from_str(&s).with_context(|| format!("{}: bad view file", path.display())),
+            Ok(s) => {
+                toml::from_str(&s).with_context(|| format!("{}: bad view file", path.display()))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ServerView::default()),
             Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
         }
@@ -362,7 +361,14 @@ mod tests {
         // T-0005, T-0006 have none); loose terminals last.
         assert_eq!(
             titles,
-            ["executor", "T-0001 schema", "T-0002 api", "T-0004 perms", "zsh", "lazygit"]
+            [
+                "executor",
+                "T-0001 schema",
+                "T-0002 api",
+                "T-0004 perms",
+                "zsh",
+                "lazygit"
+            ]
         );
         let t2 = &ws.windows[2];
         assert_eq!(t2.task_state, Some(TaskState::Testing));
@@ -413,10 +419,12 @@ mod tests {
             rev: 8,
             change: ChangeView::Agent(a),
         });
-        let t2 = &derive(&sv2, &view).workspace(&plan).unwrap().windows[2];
+        let d2 = derive(&sv2, &view);
+        let t2 = &d2.workspace(&plan).unwrap().windows[2];
         assert_eq!(t2.panes.len(), 2);
         // Without the close it stays, dimmed.
-        let t2 = &derive(&sv2, &ServerView::default()).workspace(&plan).unwrap().windows[2];
+        let d3 = derive(&sv2, &ServerView::default());
+        let t2 = &d3.workspace(&plan).unwrap().windows[2];
         assert_eq!(t2.panes.len(), 3);
         assert!(t2.panes[2].finished);
     }
@@ -426,7 +434,8 @@ mod tests {
         let sv = fixture::state();
         let plan = fixture::plan_id();
         let mut view = ServerView::default();
-        view.window_mut(&WindowKey::Task(plan.clone(), TaskId::new(2))).name = Some("backend".into());
+        view.window_mut(&WindowKey::Task(plan.clone(), TaskId::new(2)))
+            .name = Some("backend".into());
         let d = derive(&sv, &view);
         assert_eq!(d.workspace(&plan).unwrap().windows[2].title, "backend");
 
@@ -436,9 +445,18 @@ mod tests {
         assert_eq!(k, Some(WindowKey::Executor(plan.clone())));
         // A remembered window that still exists wins; a stale one falls back.
         let mut v = ServerView::default();
-        v.set_current(Some(&plan), Some(&WindowKey::Task(plan.clone(), TaskId::new(4))));
-        assert_eq!(d.current(&v).1, Some(WindowKey::Task(plan.clone(), TaskId::new(4))));
-        v.set_current(Some(&plan), Some(&WindowKey::Task(plan.clone(), TaskId::new(3))));
+        v.set_current(
+            Some(&plan),
+            Some(&WindowKey::Task(plan.clone(), TaskId::new(4))),
+        );
+        assert_eq!(
+            d.current(&v).1,
+            Some(WindowKey::Task(plan.clone(), TaskId::new(4)))
+        );
+        v.set_current(
+            Some(&plan),
+            Some(&WindowKey::Task(plan.clone(), TaskId::new(3))),
+        );
         assert_eq!(d.current(&v).1, Some(WindowKey::Executor(plan)));
     }
 
@@ -479,10 +497,16 @@ mod tests {
         v.window_mut(&WindowKey::Loose(TermId(99))).name = Some("gone".into());
         v.save(&path).unwrap();
         assert_eq!(ServerView::load(&path).unwrap(), v);
-        assert_eq!(ServerView::load(&dir.path().join("none.toml")).unwrap(), ServerView::default());
+        assert_eq!(
+            ServerView::load(&dir.path().join("none.toml")).unwrap(),
+            ServerView::default()
+        );
 
         v.prune(&derive(&fixture::state(), &v));
         assert!(v.windows.contains_key(&key.encode()));
-        assert!(!v.windows.contains_key(&WindowKey::Loose(TermId(99)).encode()));
+        assert!(
+            !v.windows
+                .contains_key(&WindowKey::Loose(TermId(99)).encode())
+        );
     }
 }

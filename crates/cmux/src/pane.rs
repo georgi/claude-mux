@@ -141,6 +141,7 @@ enum Backend {
         child: Box<dyn Child + Send + Sync>,
     },
     /// A terminal of a cmuxd server, streamed over the protocol.
+    #[allow(dead_code)] // constructed by the client integration
     Remote(RemoteTerm),
 }
 
@@ -260,6 +261,7 @@ impl Pane {
     /// A pane showing a terminal of a cmuxd server. The parser and dirty flag
     /// are the ones the connection thread feeds; draw code reads them as it
     /// does for a local PTY.
+    #[allow(dead_code)] // used by the client integration
     pub fn remote(id: u64, term: RemoteTerm, kind: Kind, cwd: PathBuf) -> Pane {
         Pane {
             id,
@@ -280,6 +282,7 @@ impl Pane {
     }
 
     /// The remote terminal behind this pane, if it is one.
+    #[allow(dead_code)] // used by the client integration
     pub fn remote_term(&self) -> Option<&RemoteTerm> {
         match &self.backend {
             Backend::Remote(t) => Some(t),

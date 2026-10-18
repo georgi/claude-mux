@@ -98,6 +98,10 @@ pub enum StreamEvent {
     /// A subscribed terminal's parser changed (bytes or a snapshot). Coalesced:
     /// no second event comes until the UI clears the terminal's `dirty` flag.
     TermOutput(TermId),
+    /// The terminal's screen was rebuilt from a server snapshot (first
+    /// subscribe, or a resume the server's ring could not cover). Sent
+    /// before the matching `TermOutput`.
+    TermReset(TermId),
     /// The terminal's PTY size changed (the parser was resized already).
     Size {
         term: TermId,
@@ -106,8 +110,17 @@ pub enum StreamEvent {
         owner: Option<ClientId>,
     },
     Presence(Vec<PresenceEntry>),
+    /// The program in a subscribed terminal ended (after its last output).
+    Exit {
+        term: TermId,
+        code: u32,
+        signal: Option<String>,
+    },
     /// A protocol error from the server that did not end the connection.
-    Error { code: ErrorCode, message: String },
+    Error {
+        code: ErrorCode,
+        message: String,
+    },
     /// The server refused our token. Reconnecting stops; run `cmux login`.
     AuthFailed(String),
 }
@@ -172,7 +185,10 @@ impl Mirror {
                 self.sizes.insert(*term, (*rows, *cols, owner.clone()));
             }
             StreamEvent::Presence(p) => self.presence = p.clone(),
-            StreamEvent::TermOutput(_) | StreamEvent::Error { .. } => return false,
+            StreamEvent::TermOutput(_)
+            | StreamEvent::TermReset(_)
+            | StreamEvent::Exit { .. }
+            | StreamEvent::Error { .. } => return false,
         }
         true
     }
@@ -219,9 +235,18 @@ pub enum Cmd {
     Want(TermId),
     Release(TermId),
     Focus(TermId),
-    Resize { term: TermId, rows: u16, cols: u16 },
+    Resize {
+        term: TermId,
+        rows: u16,
+        cols: u16,
+    },
     /// Keyboard bytes. Dropped while disconnected, never queued.
-    Input { term: TermId, data: Vec<u8> },
+    Input {
+        term: TermId,
+        data: Vec<u8>,
+    },
+    /// Drop the socket and reconnect now (resuming from `rev` and `seq`).
+    Reconnect,
     Shutdown,
 }
 
@@ -281,12 +306,7 @@ impl Session {
             terms: self
                 .terms
                 .iter()
-                .filter_map(|(id, next)| {
-                    next.map(|since_seq| TermPos {
-                        id: *id,
-                        since_seq,
-                    })
-                })
+                .filter_map(|(id, next)| next.map(|since_seq| TermPos { id: *id, since_seq }))
                 .collect(),
         }
     }
@@ -306,7 +326,11 @@ impl Session {
         if let Some(t) = self.focus.filter(|t| self.terms.contains_key(t)) {
             out.push(ClientMsg::Focus { term: t });
             if let Some(&(rows, cols)) = self.sizes.get(&t) {
-                out.push(ClientMsg::Resize { term: t, rows, cols });
+                out.push(ClientMsg::Resize {
+                    term: t,
+                    rows,
+                    cols,
+                });
             }
         }
         out
@@ -350,7 +374,7 @@ impl Session {
                 term: *term,
                 data: data.clone(),
             })),
-            Cmd::Shutdown => None,
+            Cmd::Reconnect | Cmd::Shutdown => None,
         }
     }
 
@@ -387,6 +411,9 @@ impl Session {
                 owner,
             }],
             ServerMsg::Presence { clients } => vec![StreamEvent::Presence(clients)],
+            ServerMsg::Exit { term, code, signal } => {
+                vec![StreamEvent::Exit { term, code, signal }]
+            }
             ServerMsg::Error { code, message } => {
                 if code == ErrorCode::Unauthorized {
                     vec![StreamEvent::AuthFailed(message)]
@@ -526,11 +553,15 @@ pub fn run_session<W: Wire>(
             if cmd == Cmd::Shutdown {
                 return End::Shutdown;
             }
+            if cmd == Cmd::Reconnect {
+                return End::Lost("reconnect requested".into());
+            }
             let out = session.on_cmd(&cmd);
-            if *welcomed && let Some(out) = out {
-                if let Err(e) = wire.send(&out) {
-                    return End::Lost(wire_err(e));
-                }
+            if *welcomed
+                && let Some(out) = out
+                && let Err(e) = wire.send(&out)
+            {
+                return End::Lost(wire_err(e));
             }
         }
         match wire.recv() {
@@ -610,7 +641,13 @@ fn wire_err(e: WireError) -> String {
 }
 
 /// Feeds bytes (or a snapshot) to a terminal's parser and flags it dirty.
-pub fn feed(terms: &TermTable, term: TermId, reset: bool, data: &[u8], notify: &dyn Fn(StreamEvent)) {
+pub fn feed(
+    terms: &TermTable,
+    term: TermId,
+    reset: bool,
+    data: &[u8],
+    notify: &dyn Fn(StreamEvent),
+) {
     let Some(shared) = terms.lock().unwrap().get(&term).cloned() else {
         return;
     };
@@ -622,12 +659,21 @@ pub fn feed(terms: &TermTable, term: TermId, reset: bool, data: &[u8], notify: &
         }
         p.process(data);
     }
+    if reset {
+        notify(StreamEvent::TermReset(term));
+    }
     if !shared.dirty.swap(true, Ordering::AcqRel) {
         notify(StreamEvent::TermOutput(term));
     }
 }
 
-fn resize_local(terms: &TermTable, term: TermId, rows: u16, cols: u16, notify: &dyn Fn(StreamEvent)) {
+fn resize_local(
+    terms: &TermTable,
+    term: TermId,
+    rows: u16,
+    cols: u16,
+    notify: &dyn Fn(StreamEvent),
+) {
     let Some(shared) = terms.lock().unwrap().get(&term).cloned() else {
         return;
     };
@@ -647,8 +693,8 @@ fn resize_local(terms: &TermTable, term: TermId, rows: u16, cols: u16, notify: &
 // ---------------------------------------------------------------------------
 
 pub enum WsWire {
-    Unix(tungstenite::WebSocket<UnixStream>),
-    Tcp(tungstenite::WebSocket<MaybeTlsStream<TcpStream>>),
+    Unix(Box<tungstenite::WebSocket<UnixStream>>),
+    Tcp(Box<tungstenite::WebSocket<MaybeTlsStream<TcpStream>>>),
 }
 
 #[derive(Debug)]
@@ -708,12 +754,16 @@ impl WsWire {
             Endpoint::Unix(path) => {
                 let s = UnixStream::connect(path)
                     .map_err(|e| ConnectError::Other(format!("{}: {e}", path.display())))?;
-                s.set_read_timeout(Some(CONNECT_TIMEOUT)).map_err(|e| other(&e))?;
-                s.set_write_timeout(Some(CONNECT_TIMEOUT)).map_err(|e| other(&e))?;
+                s.set_read_timeout(Some(CONNECT_TIMEOUT))
+                    .map_err(|e| other(&e))?;
+                s.set_write_timeout(Some(CONNECT_TIMEOUT))
+                    .map_err(|e| other(&e))?;
                 let url = format!("ws://localhost{}", route::STREAM);
                 let (ws, _) = tungstenite::client(url.as_str(), s).map_err(handshake_err)?;
-                ws.get_ref().set_read_timeout(Some(POLL)).map_err(|e| other(&e))?;
-                Ok(WsWire::Unix(ws))
+                ws.get_ref()
+                    .set_read_timeout(Some(POLL))
+                    .map_err(|e| other(&e))?;
+                Ok(WsWire::Unix(Box::new(ws)))
             }
             Endpoint::Remote { url, .. } => {
                 let ws_url = ws_url(url);
@@ -723,13 +773,16 @@ impl WsWire {
                 let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
                 let tcp = connect_tcp(host, port).map_err(|e| other(&e))?;
                 let _ = tcp.set_nodelay(true);
-                tcp.set_read_timeout(Some(CONNECT_TIMEOUT)).map_err(|e| other(&e))?;
-                tcp.set_write_timeout(Some(CONNECT_TIMEOUT)).map_err(|e| other(&e))?;
-                let (ws, _) = tungstenite::client_tls(ws_url.as_str(), tcp).map_err(handshake_err)?;
+                tcp.set_read_timeout(Some(CONNECT_TIMEOUT))
+                    .map_err(|e| other(&e))?;
+                tcp.set_write_timeout(Some(CONNECT_TIMEOUT))
+                    .map_err(|e| other(&e))?;
+                let (ws, _) =
+                    tungstenite::client_tls(ws_url.as_str(), tcp).map_err(handshake_err)?;
                 if let Some(tcp) = tcp_of(ws.get_ref()) {
                     tcp.set_read_timeout(Some(POLL)).map_err(|e| other(&e))?;
                 }
-                Ok(WsWire::Tcp(ws))
+                Ok(WsWire::Tcp(Box::new(ws)))
             }
         }
     }
@@ -871,6 +924,12 @@ impl ConnHandle {
             term,
             data: data.to_vec(),
         });
+    }
+
+    /// Drops the socket and reconnects at once (no backoff wait is skipped:
+    /// the first retry delay is 250 ms).
+    pub fn reconnect(&self) {
+        let _ = self.cmds.send(Cmd::Reconnect);
     }
 
     pub fn focus(&self, term: TermId) {
@@ -1050,7 +1109,8 @@ mod tests {
                 .push_back(Ok(Some(Incoming::Text(serde_json::to_string(m).unwrap()))));
         }
         fn frame(&mut self, f: Frame) {
-            self.incoming.push_back(Ok(Some(Incoming::Binary(f.encode()))));
+            self.incoming
+                .push_back(Ok(Some(Incoming::Binary(f.encode()))));
         }
     }
 
@@ -1080,7 +1140,7 @@ mod tests {
                 version: "1".into(),
                 name: "fake".into(),
             },
-            client_id: "c1".parse().unwrap(),
+            client_id: ClientId("c1".into()),
             scope: Scope::Full,
         }
     }
@@ -1116,7 +1176,10 @@ mod tests {
         // Unknown terminal: ignored.
         assert_eq!(s.on_frame(out(9, 0, b"x")), FrameAction::Ignore);
         // First output at 0 is fine; next_seq advances.
-        assert!(matches!(s.on_frame(out(1, 0, b"abc")), FrameAction::Feed { reset: false, .. }));
+        assert!(matches!(
+            s.on_frame(out(1, 0, b"abc")),
+            FrameAction::Feed { reset: false, .. }
+        ));
         assert_eq!(s.next_seq(t(1)), Some(3));
         // Overlapping retransmit: only the new tail is fed.
         match s.on_frame(out(1, 1, b"bcde")) {
@@ -1134,7 +1197,10 @@ mod tests {
             seq: 500,
             data: b"s".to_vec(),
         };
-        assert!(matches!(s.on_frame(snap), FrameAction::Feed { reset: true, .. }));
+        assert!(matches!(
+            s.on_frame(snap),
+            FrameAction::Feed { reset: true, .. }
+        ));
         assert_eq!(s.next_seq(t(1)), Some(500));
     }
 
@@ -1199,10 +1265,20 @@ mod tests {
         assert_eq!(
             w.sent[1..],
             [
-                Outgoing::Msg(ClientMsg::Subscribe { term: t(1), since_seq: None }),
-                Outgoing::Msg(ClientMsg::Subscribe { term: t(2), since_seq: None }),
+                Outgoing::Msg(ClientMsg::Subscribe {
+                    term: t(1),
+                    since_seq: None
+                }),
+                Outgoing::Msg(ClientMsg::Subscribe {
+                    term: t(2),
+                    since_seq: None
+                }),
                 Outgoing::Msg(ClientMsg::Focus { term: t(1) }),
-                Outgoing::Msg(ClientMsg::Resize { term: t(1), rows: 30, cols: 100 }),
+                Outgoing::Msg(ClientMsg::Resize {
+                    term: t(1),
+                    rows: 30,
+                    cols: 100
+                }),
             ]
         );
         assert_eq!(session.rev, Some(9));
@@ -1275,10 +1351,25 @@ mod tests {
         w.text(&welcome());
         // Typed after welcome (during the 3rd recv): sent.
         w.incoming.push_back(Ok(None));
-        w.inject.push((3, Cmd::Input { term: t(1), data: b"ls\r".to_vec() }));
+        w.incoming.push_back(Ok(None));
+        w.inject.push((
+            3,
+            Cmd::Input {
+                term: t(1),
+                data: b"ls\r".to_vec(),
+            },
+        ));
         w.tx = Some(handle.cmds.clone());
         let mut welcomed = false;
-        run_session(&mut w, &mut session, &id(), &cmds, handle.terms(), &|_| {}, &mut welcomed);
+        run_session(
+            &mut w,
+            &mut session,
+            &id(),
+            &cmds,
+            handle.terms(),
+            &|_| {},
+            &mut welcomed,
+        );
         let inputs: Vec<_> = w
             .sent
             .iter()

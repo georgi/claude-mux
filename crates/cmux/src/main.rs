@@ -1,4 +1,7 @@
 mod app;
+// Connection to cmuxd; wired into the event loop by the client integration.
+#[allow(dead_code)]
+mod conn;
 mod history;
 mod keys;
 mod layout;
@@ -47,6 +50,7 @@ cmux - a terminal multiplexer for Claude Code sessions
 
 USAGE:
     cmux [OPTIONS] [DIR...] [-- CLAUDE_ARGS...]
+    cmux login URL | logout [NAME] | servers    Pair with and manage cmuxd servers
 
 ARGS:
     DIR...            Open a new Claude session in each directory (default: current dir)
@@ -136,6 +140,13 @@ fn restore_terminal() {
 }
 
 fn main() -> Result<()> {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    match argv.first().map(String::as_str) {
+        Some("login") => return conn::cli::login(&argv[1..]),
+        Some("servers") => return conn::cli::servers(&argv[1..], false),
+        Some("logout") => return conn::cli::servers(&argv[1..], true),
+        _ => {}
+    }
     let opts = parse_args()?;
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         bail!("cmux needs an interactive terminal");

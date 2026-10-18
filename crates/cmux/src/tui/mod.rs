@@ -18,9 +18,11 @@ pub mod hit;
 pub mod intent;
 pub mod marks;
 pub mod nav;
+pub mod remote_term;
 pub mod rows;
 pub mod state;
 pub mod theme;
+pub mod windows;
 
 #[cfg(test)]
 mod fixture;

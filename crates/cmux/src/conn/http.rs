@@ -226,7 +226,10 @@ fn check(resp: Response) -> Result<Response, HttpError> {
     Err(HttpError::Api {
         status: resp.status,
         body: serde_json::from_slice(&resp.body).ok(),
-        text: String::from_utf8_lossy(&resp.body).chars().take(300).collect(),
+        text: String::from_utf8_lossy(&resp.body)
+            .chars()
+            .take(300)
+            .collect(),
     })
 }
 
@@ -268,10 +271,10 @@ fn unix_request(
         head.push_str("Content-Length: 0\r\n");
     }
     head.push_str("\r\n");
-    s.write_all(head.as_bytes()).map_err(te)?;
-    if let Some(b) = body {
-        s.write_all(b).map_err(te)?;
-    }
+    // One write, so a server that reads once sees the whole request.
+    let mut msg = head.into_bytes();
+    msg.extend_from_slice(body.unwrap_or_default());
+    s.write_all(&msg).map_err(te)?;
     let mut raw = Vec::new();
     s.read_to_end(&mut raw).map_err(te)?;
     parse_response(&raw).map_err(HttpError::Transport)
@@ -423,7 +426,7 @@ mod tests {
         let e = http
             .post::<_, serde_json::Value>("/v1/z", &serde_json::json!({}))
             .unwrap_err();
-        assert_eq!(e.status(), Some(403));
+        assert_eq!(e.status(), Some(403), "{e}");
         assert!(e.to_string().contains("read-only"), "{e}");
         let seen = h.join().unwrap();
         let key = |s: &str| {

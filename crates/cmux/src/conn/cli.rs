@@ -132,7 +132,11 @@ fn device_name() -> String {
     } else {
         String::new()
     };
-    let host = if host.is_empty() { "cmux".to_string() } else { host };
+    let host = if host.is_empty() {
+        "cmux".to_string()
+    } else {
+        host
+    };
     format!("{host} (cmux)")
 }
 
@@ -176,7 +180,10 @@ fn remove(cfg: &mut ClientConfig, path: &Path, name: &str, out: &mut dyn Write) 
         bail!("no server named {name:?} (see `cmux servers`)");
     }
     cfg.save(path)?;
-    writeln!(out, "Removed {name}. (Revoke the device on the server to invalidate its token.)")?;
+    writeln!(
+        out,
+        "Removed {name}. (Revoke the device on the server to invalidate its token.)"
+    )?;
     Ok(())
 }
 
@@ -184,7 +191,12 @@ fn list(cfg: &ClientConfig, socket: &Path, out: &mut dyn Write) -> Result<()> {
     let default = cfg.default.as_deref();
     let mark = |n: &str| if default == Some(n) { "*" } else { " " };
     if socket.exists() {
-        writeln!(out, "{} {LOCAL:<12} {} (this machine)", mark(LOCAL), socket.display())?;
+        writeln!(
+            out,
+            "{} {LOCAL:<12} {} (this machine)",
+            mark(LOCAL),
+            socket.display()
+        )?;
     }
     for s in &cfg.servers {
         writeln!(out, "{} {:<12} {}", mark(&s.name), s.name, s.url)?;
@@ -214,7 +226,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("client.toml");
         let sock = dir.path().join("none.sock");
-        assert!(run(&path, &sock, &[], false).unwrap().contains("No servers"));
+        assert!(
+            run(&path, &sock, &[], false)
+                .unwrap()
+                .contains("No servers")
+        );
 
         let mut cfg = ClientConfig::default();
         for n in ["a", "b"] {
@@ -230,7 +246,10 @@ mod tests {
         assert!(!listing.contains("t\n"), "tokens must not be printed");
 
         run(&path, &sock, &["default", "b"], false).unwrap();
-        assert_eq!(ClientConfig::load(&path).unwrap().default.as_deref(), Some("b"));
+        assert_eq!(
+            ClientConfig::load(&path).unwrap().default.as_deref(),
+            Some("b")
+        );
         assert!(run(&path, &sock, &["default", "zzz"], false).is_err());
 
         run(&path, &sock, &["remove", "b"], false).unwrap();
@@ -244,8 +263,14 @@ mod tests {
 
     #[test]
     fn url_normalizing() {
-        assert_eq!(normalize_url("box.example.ts.net/").unwrap(), "https://box.example.ts.net");
-        assert_eq!(normalize_url("http://127.0.0.1:7777").unwrap(), "http://127.0.0.1:7777");
+        assert_eq!(
+            normalize_url("box.example.ts.net/").unwrap(),
+            "https://box.example.ts.net"
+        );
+        assert_eq!(
+            normalize_url("http://127.0.0.1:7777").unwrap(),
+            "http://127.0.0.1:7777"
+        );
         assert!(normalize_url("ftp://x").is_err());
         assert_eq!(host_of("https://box.ts.net:8443"), "box.ts.net");
     }
@@ -257,7 +282,11 @@ mod tests {
         let server = std::thread::spawn(move || {
             let (mut c, _) = l.accept().unwrap();
             let mut buf = vec![0u8; 8192];
-            let n = c.read(&mut buf).unwrap();
+            // Headers and body may arrive in separate packets.
+            let mut n = 0;
+            while !String::from_utf8_lossy(&buf[..n]).contains('}') {
+                n += c.read(&mut buf[n..]).unwrap();
+            }
             let req = String::from_utf8_lossy(&buf[..n]).into_owned();
             let body = r#"{"device_id":"d1","token":"secret-token","scope":"full","server":{"version":"1","name":"vps"}}"#;
             write!(
@@ -268,7 +297,13 @@ mod tests {
             .unwrap();
             req
         });
-        let e = pair(&format!("http://{addr}"), " ABCD2345\n", None, "laptop (cmux)").unwrap();
+        let e = pair(
+            &format!("http://{addr}"),
+            " ABCD2345\n",
+            None,
+            "laptop (cmux)",
+        )
+        .unwrap();
         assert_eq!(e.name, "vps");
         assert_eq!(e.token, "secret-token");
         assert_eq!(e.url, format!("http://{addr}"));
