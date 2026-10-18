@@ -36,6 +36,8 @@ pub enum Then {
     FocusTerm,
     /// The answer is a `ProjectsResp`: fill the session picker.
     Sessions,
+    /// Nobody needs to hear about a failure (another client got there first).
+    Quiet,
 }
 
 #[derive(Debug, Clone, PartialEq)]

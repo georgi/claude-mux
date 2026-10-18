@@ -905,3 +905,84 @@ mod live {
         rt.block_on(server.shutdown());
     }
 }
+
+#[test]
+fn only_https_urls_reach_the_opener() {
+    assert!(web_url("https://github.com/o/r/pull/1"));
+    for bad in [
+        "file:///etc/passwd",
+        "smb://host/share",
+        "http://example.com",
+        "-oProxyCommand=x",
+        "javascript:alert(1)",
+        "https://x.com/\nfoo",
+        "",
+    ] {
+        assert!(!web_url(bad), "{bad}");
+    }
+}
+
+fn post_cwd(call: &Call) -> Option<String> {
+    match call {
+        Call::Post(_, body) => body["cwd"].as_str().map(String::from),
+        c => panic!("{c:?}"),
+    }
+}
+
+#[test]
+fn a_local_server_gets_the_directory_even_before_the_first_state() {
+    let mut rig = Rig::new(120, 30);
+    rig.app.remote.as_mut().unwrap().local_server = true;
+    rig.app.windows.clear();
+    let spec = rig
+        .app
+        .claude_spec(PathBuf::from("/home/me/proj"), Vec::new(), None);
+    rig.app.spawn_remote(spec, Place::Window);
+    let calls = rig.take_calls();
+    assert_eq!(post_cwd(&calls[0]).as_deref(), Some("/home/me/proj"));
+}
+
+#[test]
+fn a_remote_server_never_gets_the_laptop_directory() {
+    let mut rig = Rig::new(120, 30);
+    // The fallback when no pane is focused is our own directory.
+    let home = rig.app.home_cwd.clone();
+    let spec = rig.app.claude_spec(home, Vec::new(), None);
+    rig.app.spawn_remote(spec, Place::Window);
+    // A pane's directory (a path on the server) is still sent.
+    let spec = rig
+        .app
+        .claude_spec(PathBuf::from("/srv/app"), Vec::new(), None);
+    rig.app.spawn_remote(spec, Place::Window);
+    let calls = rig.take_calls();
+    assert_eq!(post_cwd(&calls[0]), None);
+    assert_eq!(post_cwd(&calls[1]).as_deref(), Some("/srv/app"));
+}
+
+#[test]
+fn directories_on_the_command_line_are_flashed_away_on_a_remote_server() {
+    let mut rig = Rig::new(120, 30);
+    rig.app.opts.dirs = vec![PathBuf::from("/home/me/proj")];
+    rig.app.start();
+    assert!(rig.take_calls().is_empty());
+    assert!(rig.app.message.as_ref().unwrap().0.contains("ignored"));
+}
+
+#[test]
+fn a_failed_delete_after_a_loose_terminal_exits_stays_quiet() {
+    let mut rig = Rig::new(120, 30);
+    *rig.rest.reply.lock().unwrap() = Some(Err("404 not found".into()));
+    rig.app.handle(Event::Stream(StreamEvent::Exit {
+        term: TermId(1),
+        code: 0,
+        signal: None,
+    }));
+    rig.pump();
+    assert_eq!(rig.take_calls(), [Call::Delete("/v1/terminals/1".into())]);
+    assert!(rig.app.message.is_none());
+    // A deliberate close still reports its failure.
+    rig.app.select_window(4);
+    rig.prefix(b"x");
+    rig.keys(b"y");
+    assert!(rig.app.message.is_some());
+}

@@ -58,9 +58,13 @@ pub fn login(args: &[String]) -> Result<()> {
             line
         }
     };
+    if let Some(w) = cleartext_warning(&normalize_url(&url)?) {
+        eprintln!("{w}");
+    }
     let entry = pair(&url, &code, name.as_deref(), &device_name())?;
     let path = client_toml();
     let mut cfg = ClientConfig::load(&path)?;
+    check_clash(&cfg, &entry, name.is_some())?;
     let n = entry.name.clone();
     cfg.add(entry);
     cfg.save(&path)?;
@@ -96,6 +100,29 @@ pub fn pair(url: &str, code: &str, name: Option<&str>, device: &str) -> Result<S
         name,
         url,
         token: resp.token,
+    })
+}
+
+/// Refuses to silently replace another server's entry: a name taken by a
+/// different URL needs an explicit `--name`.
+fn check_clash(cfg: &ClientConfig, entry: &ServerEntry, explicit_name: bool) -> Result<()> {
+    match cfg.get(&entry.name) {
+        Some(old) if old.url != entry.url && !explicit_name => bail!(
+            "{:?} is already paired with {}; pick another name with --name",
+            entry.name,
+            old.url
+        ),
+        _ => Ok(()),
+    }
+}
+
+/// A warning for an `http://` URL that is not loopback: the token would cross
+/// the network in cleartext.
+fn cleartext_warning(url: &str) -> Option<String> {
+    let host = host_of(url);
+    let loopback = host == "localhost" || host == "[" || host.starts_with("127.");
+    (url.starts_with("http://") && !loopback).then(|| {
+        format!("warning: {url} is not https; the pairing code and token travel in cleartext")
     })
 }
 
@@ -312,5 +339,32 @@ mod tests {
         assert!(req.contains(r#""code":"ABCD2345""#), "{req}");
         assert!(req.contains("laptop (cmux)"), "{req}");
         assert!(!req.to_lowercase().contains("authorization"));
+    }
+
+    #[test]
+    fn login_refuses_to_replace_another_server_without_name() {
+        let entry = |name: &str, url: &str| ServerEntry {
+            name: name.into(),
+            url: url.into(),
+            token: "t".into(),
+        };
+        let mut cfg = ClientConfig::default();
+        cfg.add(entry("vps", "https://a.example"));
+        // Same name, other URL: refused unless --name was given.
+        let other = entry("vps", "https://b.example");
+        assert!(check_clash(&cfg, &other, false).is_err());
+        assert!(check_clash(&cfg, &other, true).is_ok());
+        // Re-pairing the same URL refreshes the token.
+        assert!(check_clash(&cfg, &entry("vps", "https://a.example"), false).is_ok());
+        assert!(check_clash(&cfg, &entry("new", "https://b.example"), false).is_ok());
+    }
+
+    #[test]
+    fn cleartext_warning_skips_https_and_loopback() {
+        assert!(cleartext_warning("http://box.example:8080").is_some());
+        assert!(cleartext_warning("https://box.example").is_none());
+        assert!(cleartext_warning("http://127.0.0.1:9").is_none());
+        assert!(cleartext_warning("http://localhost:9").is_none());
+        assert!(cleartext_warning("http://[::1]:9").is_none());
     }
 }

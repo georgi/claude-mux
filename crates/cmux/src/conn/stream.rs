@@ -39,6 +39,8 @@ const POLL: Duration = Duration::from_millis(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const PING_EVERY: Duration = Duration::from_secs(15);
 const DEAD_AFTER: Duration = Duration::from_secs(45);
+/// How long quitting waits for the stream thread before leaving it behind.
+const SHUTDOWN_WAIT: Duration = Duration::from_millis(500);
 /// Failed attempts in a row before the dot shows `○` (retrying continues).
 const OFFLINE_AFTER: u32 = 5;
 
@@ -449,6 +451,11 @@ impl Session {
                 };
                 let expected = next.unwrap_or(0);
                 let end = seq + data.len() as u64;
+                if next.is_none() && seq > 0 {
+                    // A subscribe is already in flight (new, resync or
+                    // reconnect); its snapshot replaces these bytes.
+                    return FrameAction::Ignore;
+                }
                 if seq > expected {
                     // Bytes are missing; only a snapshot can repair the screen.
                     *next = None;
@@ -981,7 +988,15 @@ impl Connection {
     pub fn shutdown(&mut self) {
         let _ = self.handle.cmds.send(Cmd::Shutdown);
         if let Some(j) = self.join.take() {
-            let _ = j.join();
+            // The thread may sit in a connect (DNS, TCP, handshake) that takes
+            // many seconds; don't make quitting wait for it.
+            let deadline = Instant::now() + SHUTDOWN_WAIT;
+            while !j.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if j.is_finished() {
+                let _ = j.join();
+            }
         }
     }
 }
@@ -1177,6 +1192,27 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_does_not_wait_for_a_hanging_connect() {
+        // Accepts the TCP connection but never answers the handshake.
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let mut conn = Connection::spawn(
+            StreamConfig {
+                endpoint: Endpoint::Remote {
+                    url,
+                    token: "t".into(),
+                },
+                info: "test".into(),
+            },
+            |_| {},
+        );
+        let _held = l.accept().unwrap();
+        let t0 = Instant::now();
+        conn.shutdown();
+        assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+    }
+
+    #[test]
     fn frame_rules_track_seq() {
         let mut s = Session::new();
         s.on_cmd(&Cmd::Want(t(1)));
@@ -1198,6 +1234,9 @@ mod tests {
         assert_eq!(s.on_frame(out(1, 0, b"ab")), FrameAction::Ignore);
         assert_eq!(s.on_frame(out(1, 99, b"zz")), FrameAction::Resync(t(1)));
         assert_eq!(s.next_seq(t(1)), None);
+        // Frames still in flight while the resync is pending don't ask again.
+        assert_eq!(s.on_frame(out(1, 101, b"zz")), FrameAction::Ignore);
+        assert_eq!(s.on_frame(out(1, 103, b"zz")), FrameAction::Ignore);
         // A snapshot resets and sets the position.
         let snap = Frame::Snapshot {
             term: t(1),

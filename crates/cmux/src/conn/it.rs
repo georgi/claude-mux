@@ -82,7 +82,12 @@ fn resumes(
 
     // Drop the link. Something happens on the server in the meantime: a new
     // terminal (a state delta) and output nobody saw.
+    let dropped = || n_events(|e| matches!(e, StreamEvent::Status(ConnStatus::Reconnecting)));
+    let before = dropped();
     conn.handle().reconnect();
+    // Wait for the thread to actually drop the socket, or the bytes below
+    // would arrive over the old link and resume would go untested.
+    wait("link dropped", || (dropped() > before).then_some(()));
     let other = new_cat(&local, cwd);
     server
         .app

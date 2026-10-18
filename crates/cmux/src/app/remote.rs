@@ -85,6 +85,8 @@ pub struct RemoteState {
     announced: HashSet<TermId>,
     last_click: Option<(Instant, Node)>,
     seen_state: bool,
+    /// The server is cmuxd on this machine (Unix socket): our paths are its paths.
+    local_server: bool,
 }
 
 impl RemoteState {
@@ -125,6 +127,7 @@ impl RemoteState {
             announced: HashSet::new(),
             last_click: None,
             seen_state: false,
+            local_server: false,
         }
     }
 
@@ -136,6 +139,7 @@ impl RemoteState {
         rest: Arc<dyn Rest>,
         tx: std::sync::mpsc::Sender<Event>,
     ) -> RemoteState {
+        let local_server = matches!(endpoint, Endpoint::Unix(_));
         let conn = Connection::spawn(
             StreamConfig {
                 endpoint,
@@ -151,7 +155,9 @@ impl RemoteState {
         );
         let handle = conn.handle();
         let view_path = Some(servers::view_path(&servers::config_dir(), &name));
-        RemoteState::new(name, Some(conn), handle, rest, view_path)
+        let mut r = RemoteState::new(name, Some(conn), handle, rest, view_path);
+        r.local_server = local_server;
+        r
     }
 
     /// For tests: run REST calls inline.
@@ -306,8 +312,14 @@ impl App {
             let cwd = self.home_cwd.clone();
             self.open_claude(cwd, vec!["--continue".to_string()], None, Place::Window);
         }
-        for dir in self.opts.dirs.clone() {
-            self.new_session(dir, Place::Window);
+        let local = self.remote.as_ref().is_some_and(|r| r.local_server);
+        if !local && !self.opts.dirs.is_empty() {
+            // Laptop paths mean nothing on another machine.
+            self.flash("directories are ignored on a remote server");
+        } else {
+            for dir in self.opts.dirs.clone() {
+                self.new_session(dir, Place::Window);
+            }
         }
         if self.opts.resume_picker {
             self.open_picker();
@@ -361,7 +373,8 @@ impl App {
             StreamEvent::Exit { term, .. } => {
                 // A shell or command that ended closes its window, as locally.
                 if r.mirror.sv.loose.contains(&term) {
-                    self.dispatch(Request::close_terminal(term));
+                    // Every attached client sees the exit; the losers get 404.
+                    self.dispatch(Request::close_terminal(term).then(Then::Quiet));
                 }
             }
             StreamEvent::Error { message, .. } => self.flash(message),
@@ -379,12 +392,14 @@ impl App {
                 if then == Then::Sessions {
                     self.picker.loading = false;
                 }
-                self.flash(e);
+                if then != Then::Quiet {
+                    self.flash(e);
+                }
                 return;
             }
         };
         match then {
-            Then::Nothing => {}
+            Then::Nothing | Then::Quiet => {}
             Then::FocusTerm => {
                 let Ok(t) = serde_json::from_value::<TerminalView>(value) else {
                     return;
@@ -810,7 +825,16 @@ impl App {
 
     pub(super) fn spawn_remote(&mut self, spec: SpawnSpec, place: Place) -> bool {
         let area = self.body_area();
-        let cwd = (!self.windows.is_empty()).then(|| spec.cwd.display().to_string());
+        let local = self.remote.as_ref().is_some_and(|r| r.local_server);
+        // On another machine only a pane's own directory (a server path) is
+        // meaningful, never our fallback `home_cwd`.
+        let cwd = if local {
+            let abs = std::path::absolute(&spec.cwd).unwrap_or_else(|_| spec.cwd.clone());
+            Some(abs.display().to_string())
+        } else {
+            (!self.windows.is_empty() && spec.cwd != self.home_cwd)
+                .then(|| spec.cwd.display().to_string())
+        };
         let kind = match spec.kind {
             Kind::Claude => NewTerminalKind::Claude { args: spec.args },
             Kind::Shell => NewTerminalKind::Shell,
@@ -1157,7 +1181,13 @@ impl App {
             Action::Back => {
                 self.mode = Mode::Normal;
             }
-            Action::OpenUrl(url) => open_in_browser(&url),
+            Action::OpenUrl(url) => {
+                if web_url(&url) {
+                    open_in_browser(&url);
+                } else {
+                    self.flash("refusing to open a non-https URL");
+                }
+            }
             Action::Terminal { argv, label, cwd } => {
                 let area = self.body_area();
                 self.dispatch(Request::new_terminal(
@@ -1481,6 +1511,12 @@ fn describe_pane(pane: &mut Pane, spec: &PaneSpec, sv: &cmux_proto::view::StateV
     if let Some(t) = term {
         pane.title = t.title.clone().filter(|s| !s.trim().is_empty());
     }
+}
+
+/// Only https URLs are handed to the opener: the server is not trusted to pick
+/// schemes (`file://`, `smb://`, custom handlers) or options for it.
+fn web_url(url: &str) -> bool {
+    url.starts_with("https://") && !url.contains(char::is_control)
 }
 
 /// Opens a URL in the local browser, ignoring failures.
