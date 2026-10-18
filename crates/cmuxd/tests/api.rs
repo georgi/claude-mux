@@ -994,8 +994,27 @@ async fn repos_lists_the_plans_repositories() {
     assert_eq!(r.status, 201, "{}", r.text());
     let listed = repos(&h.unix).await;
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].path, h._tmp.path().display().to_string());
+    let tmp = h._tmp.path().canonicalize().unwrap();
+    assert_eq!(listed[0].path, tmp.display().to_string());
     assert_eq!(listed[0].base_branch, "main");
+
+    // A plan's repo and the same repo registered through a subdirectory
+    // (and, on macOS, `/var` against `/private/var`) are one entry.
+    let (work, _) = origin_repo(h._tmp.path());
+    std::fs::create_dir(work.join("sub")).unwrap();
+    let plan = serde_json::json!({
+        "title": "y",
+        "repos": [{"path": work.display().to_string()}],
+    });
+    let r = send(&h.unix, "POST", route::PLANS, &[], &plan).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let sub = serde_json::json!({ "path": work.join("sub").display().to_string() });
+    let r = send(&h.unix, "POST", route::REPOS, &[], &sub).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let canonical = work.canonicalize().unwrap().display().to_string();
+    assert_eq!(r.json::<RepoInfo>().unwrap().path, canonical);
+    let paths: Vec<String> = repos(&h.unix).await.into_iter().map(|r| r.path).collect();
+    assert_eq!(paths, vec![tmp.display().to_string(), canonical]);
     h.server.shutdown().await;
 }
 

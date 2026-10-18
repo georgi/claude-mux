@@ -532,26 +532,30 @@ async fn repo_info(path: &FsPath) -> RepoInfo {
     }
 }
 
-/// The plans' repositories and the registered ones, by path.
+/// The plans' repositories and the registered ones, by canonical path.
 async fn list_repos(State(app): State<AppState>) -> ApiResult<Json<ReposResp>> {
-    let mut repos: std::collections::BTreeMap<String, RepoInfo> = app
+    let planned: Vec<RepoInfo> = app
         .actor
         .query(|s| {
             s.plans
                 .iter()
                 .flat_map(|p| &p.repos)
-                .map(|r| {
-                    let path = r.path.display().to_string();
-                    let info = RepoInfo {
-                        path: path.clone(),
-                        base_branch: r.base_branch.clone(),
-                        remote_url: r.remote_url.clone(),
-                    };
-                    (path, info)
+                .map(|r| RepoInfo {
+                    path: r.path.display().to_string(),
+                    base_branch: r.base_branch.clone(),
+                    remote_url: r.remote_url.clone(),
                 })
                 .collect()
         })
         .await?;
+    let mut repos = std::collections::BTreeMap::new();
+    for mut info in planned {
+        // A plan keeps its path as given; a deleted repo keeps it as stored.
+        if let Ok(p) = tokio::fs::canonicalize(&info.path).await {
+            info.path = p.display().to_string();
+        }
+        repos.entry(info.path.clone()).or_insert(info);
+    }
     for path in read_registry(&registry_file(&app)).await? {
         let key = path.display().to_string();
         // A registered repository may have been deleted since.
@@ -636,7 +640,7 @@ async fn clone_repo(data_dir: &FsPath, url: String) -> ApiResult<PathBuf> {
     .map_err(joined)?
 }
 
-/// An existing repository on the server, canonicalized.
+/// The root of the repository at `path` on the server, canonicalized.
 async fn existing_repo(path: &str) -> ApiResult<PathBuf> {
     let p = PathBuf::from(path);
     if !p.is_absolute() {
@@ -644,22 +648,10 @@ async fn existing_repo(path: &str) -> ApiResult<PathBuf> {
             "error: repo path {path} must be absolute"
         )));
     }
-    let is_repo = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(&p)
-        .args(["rev-parse", "--git-dir"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+    let top = git_line(&p, &["rev-parse", "--show-toplevel"])
         .await
-        .is_ok_and(|s| s.success());
-    if !is_repo {
-        return Err(ApiError::invalid(format!(
-            "error: {path} is not a git repository"
-        )));
-    }
-    Ok(tokio::fs::canonicalize(&p).await?)
+        .ok_or_else(|| ApiError::invalid(format!("error: {path} is not a git repository")))?;
+    Ok(tokio::fs::canonicalize(&top).await?)
 }
 
 /// What `config.toml` sets; an unset permission mode is `auto`.
