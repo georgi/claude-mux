@@ -321,6 +321,27 @@ A plan is a workspace, a task is a tab and a sub-agent is a pane. The plan tree 
 
 In the tree the other keys act on the selected node: `n` new plan, `t` new task, `S` pause or resume a plan, `s` message, `x` stop, `c` cancel a task, `o` open its PR, `g` lazygit and `D` diff in its worktree.
 
+## Development
+
+```sh
+cargo build --workspace                # debug build of cmux and cmuxd
+cargo test --workspace                 # all tests
+cargo test -p cmux-core engine         # the plan engine only
+cargo test -p cmuxd --test agents      # end to end: agents, hooks, MCP tools, permissions
+cargo test -p cmuxd --test api         # the REST API
+cargo test -p cmuxd --test stream      # the push stream
+```
+
+The end-to-end tests do not run `claude`. They use a stand-in, [`crates/cmuxd/examples/fake-claude.rs`](crates/cmuxd/examples/fake-claude.rs), that plays a script for each agent. Its doc comment describes the script format.
+
+To try a change with real Claude without touching your own server state, give the server a scratch data dir and socket. `cmux` finds the socket through the same variable:
+
+```sh
+export CMUXD_DATA_DIR=/tmp/cmuxd-dev CMUXD_SOCKET=/tmp/cmuxd-dev/api.sock
+cargo run -p cmuxd -- serve --listen off   # terminal 1
+cargo run -p cmux -- -s local              # terminal 2
+```
+
 ## How it works
 
 - [`portable-pty`](https://crates.io/crates/portable-pty) runs each `claude` process.
