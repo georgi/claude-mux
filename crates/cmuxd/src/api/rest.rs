@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use cmux_core::engine::{ClientAction, Reply, TaskPatch};
-use cmux_core::ids::{AgentId, ItemId, PlanId, TaskId};
+use cmux_core::ids::{AgentId, ItemId, PlanId, TaskId, TermId};
 use cmux_core::model::Repo;
 use cmux_proto::api::{
     AgentStatus, AnswerReq, CreatePlanReq, CreateTaskReq, Created, MessageReq, PatchTaskReq,
@@ -92,12 +92,12 @@ async fn status(State(app): State<AppState>) -> ApiResult<Json<StatusResp>> {
     let (rev, live, agents) = app
         .actor
         .query(|s| {
-            let agents: Vec<AgentId> = s
+            let agents: Vec<(AgentId, Option<TermId>)> = s
                 .plans
                 .iter()
                 .flat_map(|p| &p.agents)
                 .filter(|a| a.is_live())
-                .map(|a| a.id.clone())
+                .map(|a| (a.id.clone(), a.term))
                 .collect();
             (s.rev, agents.len() as u32, agents)
         })
@@ -109,15 +109,40 @@ async fn status(State(app): State<AppState>) -> ApiResult<Json<StatusResp>> {
         load: load_average(),
         live_processes: live,
         clients: app.clients.load(Ordering::Relaxed),
-        // Per-process memory needs the PIDs the effect runner owns (step 6).
         agents: agents
             .into_iter()
-            .map(|agent| AgentStatus {
+            .map(|(agent, term)| AgentStatus {
                 agent,
-                rss_kb: None,
+                rss_kb: term
+                    .and_then(|t| app.hub.get_term(t))
+                    .and_then(|t| t.pid())
+                    .and_then(rss_kb),
             })
             .collect(),
     }))
+}
+
+/// `VmRSS` from `/proc/<pid>/status`, in kB. Linux only.
+#[cfg(target_os = "linux")]
+fn rss_kb(pid: u32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    parse_vm_rss(&status)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rss_kb(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// The `VmRSS:   1234 kB` line of a `/proc/<pid>/status` file.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_vm_rss(status: &str) -> Option<u64> {
+    let line = status.lines().find(|l| l.starts_with("VmRSS:"))?;
+    line["VmRSS:".len()..]
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }
 
 fn load_average() -> Option<[f32; 3]> {
@@ -447,5 +472,18 @@ mod tests {
         for bad in ["", "T-", "T-1", "t-0001", "-1", "+1", "x"] {
             assert!(parse_task(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn vm_rss_is_read_from_a_proc_status_file() {
+        let status = "Name:\tclaude\nVmPeak:\t  900 kB\nVmRSS:\t  123456 kB\nThreads:\t9\n";
+        assert_eq!(parse_vm_rss(status), Some(123_456));
+        assert_eq!(parse_vm_rss("Name:\tzombie\n"), None);
+    }
+
+    #[test]
+    fn rss_is_only_known_on_linux() {
+        let me = std::process::id();
+        assert_eq!(rss_kb(me).is_some(), cfg!(target_os = "linux"));
     }
 }

@@ -322,6 +322,7 @@ impl Ctx<'_> {
             self.expire(item);
         }
         self.watchdog();
+        self.stall_watch();
         // Steers not picked up at a Stop are pasted after the steer timeout.
         let steered: Vec<AgentId> = self
             .st
@@ -402,6 +403,79 @@ impl Ctx<'_> {
         }
     }
 }
+
+impl Ctx<'_> {
+    /// A hook, a tool call or a changed screen. `last_progress` moves in
+    /// steps of `PROGRESS_GRAIN`, so a busy agent is not a delta per hook.
+    pub fn progress(&mut self, pi: usize, ai: usize) {
+        let now = self.now;
+        let a = self.agent(pi, ai);
+        if a.last_progress
+            .is_none_or(|t| now.saturating_sub(t) >= PROGRESS_GRAIN)
+        {
+            self.agent_mut(pi, ai).last_progress = Some(now);
+        }
+        if self.agent(pi, ai).stalled {
+            self.unstall(pi, ai);
+        }
+    }
+
+    /// Clears the stalled flag and closes the open stalled item.
+    pub fn unstall(&mut self, pi: usize, ai: usize) {
+        let id = self.agent(pi, ai).id.clone();
+        if self.agent(pi, ai).stalled {
+            self.agent_mut(pi, ai).stalled = false;
+        }
+        let open: Vec<ItemId> = self
+            .st
+            .inbox
+            .iter()
+            .filter(|i| i.is_pending() && i.kind == ItemKind::Stalled)
+            .filter(|i| i.from.as_ref() == Some(&id))
+            .map(|i| i.id)
+            .collect();
+        for item in open {
+            self.set_status(item, Delivery::Dismissed);
+        }
+    }
+
+    /// A working agent with no progress for `timeouts.stall` is flagged and
+    /// gets a needs-you item. Nothing is killed.
+    fn stall_watch(&mut self) {
+        let (now, limit) = (self.now, self.st.timeouts.stall);
+        let mut hits = Vec::new();
+        for (pi, plan) in self.st.plans.iter().enumerate() {
+            for (ai, a) in plan.agents.iter().enumerate() {
+                if a.life == Life::Running
+                    && a.activity == Activity::Working
+                    && !a.stalled
+                    && let Some(since) = a.last_progress
+                    && now.saturating_sub(since) >= limit
+                {
+                    hits.push((pi, ai, since));
+                }
+            }
+        }
+        for (pi, ai, since) in hits {
+            let id = self.agent(pi, ai).id.clone();
+            self.agent_mut(pi, ai).stalled = true;
+            self.post(NewItem {
+                to: Recipient::Human,
+                kind: ItemKind::Stalled,
+                from: Some(id.clone()),
+                body: format!(
+                    "{} is working but has made no progress for {} minutes",
+                    id.path(),
+                    now.saturating_sub(since) / 60_000
+                ),
+                dedupe: Some(format!("stall:{id}:{since}")),
+            });
+        }
+    }
+}
+
+/// How finely `last_progress` is kept (the hub's own cadence for screens).
+pub const PROGRESS_GRAIN: Timestamp = 30_000;
 
 /// Whether `text` contains the id `I-<n>` as a whole token (`I-1` is not in `I-12`).
 fn mentions(text: &str, id: ItemId) -> bool {

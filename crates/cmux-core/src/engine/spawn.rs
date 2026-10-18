@@ -15,6 +15,11 @@ const DEFAULT_SIZE: (u16, u16) = (120, 40);
 /// First prompt of a resumed session; pending items ride along (path C).
 const RESUME_KICKOFF: &str =
     "[cmux] Your session was resumed. Continue your work where you left off.";
+/// First prompt of a session that `Recover` resumes.
+pub const RESTART_KICKOFF: &str =
+    "[cmux] resumed after a server restart; check the worktree and PR state before you continue";
+/// The reason `Recover` gives for the agents it ends.
+pub const SERVER_RESTART: &str = "server_restart";
 
 impl Ctx<'_> {
     // ---- prompts ----
@@ -217,7 +222,9 @@ impl Ctx<'_> {
             id = PlanId::new(y, m, d, &format!("{}{suffix}", keep.trim_end_matches('-')));
         }
         let cwd = repos[0].path.clone();
-        self.st.plans.push(Plan::new(id.clone(), title, repos));
+        let mut plan = Plan::new(id.clone(), title, repos);
+        plan.limits = self.st.plan_limits;
+        self.st.plans.push(plan);
         self.touch(Change::Plan(id.clone()));
         let Some(request) = request else {
             return Ok(Reply::Text(id.to_string()));
@@ -550,6 +557,7 @@ impl Ctx<'_> {
             a.activity = Activity::Unknown;
             a.idle_since = None;
             a.consecutive_stop_blocks = 0;
+            a.stalled = false;
             if implicit {
                 a.report = None;
                 a.landed = false;
@@ -580,6 +588,90 @@ impl Ctx<'_> {
         );
         self.fx.push(fx);
         Ok(Reply::Ok)
+    }
+
+    /// After a server restart no process of the last run exists. Ends every
+    /// live agent, returns unconfirmed pastes to pending, fails sub-agents to
+    /// their task agent, and (with `auto_resume`) resumes the agents that
+    /// were working. Idle agents stay stopped until someone resumes them.
+    pub fn recover(&mut self, auto_resume: bool) {
+        let mut resume = Vec::new();
+        let mut ended = Vec::new();
+        for pi in 0..self.st.plans.len() {
+            for ai in 0..self.plan(pi).agents.len() {
+                let a = self.agent(pi, ai);
+                if !a.unconfirmed.is_empty() {
+                    let ids = std::mem::take(&mut self.agent_mut(pi, ai).unconfirmed);
+                    for item in ids {
+                        let pasted = self.item_idx(item).is_some_and(|i| {
+                            matches!(self.st.inbox[i].status, Delivery::Delivered { .. })
+                        });
+                        if pasted {
+                            self.set_status(item, Delivery::Pending);
+                        }
+                    }
+                }
+                let a = self.agent(pi, ai);
+                if !a.is_live() {
+                    continue;
+                }
+                let working = a.life == Life::Running && a.activity == Activity::Working;
+                let (id, level, started) = (a.id.clone(), a.level, !a.session_id.is_empty());
+                {
+                    let a = self.agent_mut(pi, ai);
+                    a.life = Life::Exited { code: None };
+                    a.activity = Activity::Unknown;
+                    a.stalled = false;
+                }
+                self.expire_held_for(&id);
+                if level == Level::Sub || !started {
+                    // Landing below may start queued tasks, so it waits for the resumes.
+                    ended.push((id, level));
+                } else if working && auto_resume {
+                    resume.push(id);
+                }
+            }
+        }
+        for id in resume {
+            // Refused only by a limit or a finished plan: it then stays stopped.
+            let _ = self.resume_agent(&id, Some(RESTART_KICKOFF.to_string()));
+        }
+        for (id, level) in ended {
+            let Ok((pi, ai)) = self.agent_idx(&id) else {
+                continue;
+            };
+            if level == Level::Sub {
+                self.fail_sub(pi, ai);
+            } else {
+                // Never started, so nothing can resume it: an implicit report.
+                let why = format!("{SERVER_RESTART}: the server restarted before it started");
+                self.end_agent(pi, ai, Life::Exited { code: None }, &why);
+            }
+        }
+        self.drain_queue();
+    }
+
+    /// A sub-agent is never resumed automatically: its task agent gets a
+    /// failed report and decides.
+    fn fail_sub(&mut self, pi: usize, ai: usize) {
+        let a = self.agent(pi, ai);
+        if a.report.is_none() {
+            let attempt = a
+                .task
+                .and_then(|t| self.plan(pi).task(t))
+                .map_or(0, |t| t.attempt);
+            self.agent_mut(pi, ai).report = Some(crate::model::Report {
+                status: crate::model::ReportStatus::Failed,
+                summary: format!(
+                    "{SERVER_RESTART}: the server restarted while it ran; sub-agents are not resumed automatically"
+                ),
+                pr_url: None,
+                attempt,
+                implicit: false,
+                supersedes_blocked: false,
+            });
+        }
+        self.land(pi, ai);
     }
 
     /// Accepting hands the executor the execute kickoff: as a message when it
@@ -684,10 +776,12 @@ impl Ctx<'_> {
                     return Ok(());
                 }
                 let cwd = self.agent(pi, ai).cwd.clone();
+                let now = self.now;
                 let a = self.agent_mut(pi, ai);
                 a.term = Some(term);
                 a.session_id = session_id;
                 a.token_hash = token_hash;
+                a.last_progress = Some(now);
                 self.st.next_term_id = self.st.next_term_id.max(term.0 + 1);
                 self.st.terminals.insert(
                     term,
@@ -754,6 +848,15 @@ impl Ctx<'_> {
                 {
                     t.title = title;
                     self.touch(Change::Terminal(term));
+                }
+            }
+            RunnerEvent::Progress { term } => {
+                let agent = self.st.terminals.get(&term).and_then(|t| t.agent.clone());
+                if let Some((pi, ai)) = agent.and_then(|a| self.agent_idx(&a).ok())
+                    && self.agent(pi, ai).term == Some(term)
+                    && self.agent(pi, ai).is_live()
+                {
+                    self.progress(pi, ai);
                 }
             }
             RunnerEvent::Pr { plan, task, state } => {

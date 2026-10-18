@@ -234,7 +234,7 @@ pub fn agent_glyph(sv: &StateView, vs: &ViewState, a: &AgentView) -> Glyph {
     if asks || (running && a.activity == Activity::NeedsPermission) {
         return Glyph::NeedsYou;
     }
-    if running && vs.stalled.contains(&a.id) {
+    if running && (a.stalled || vs.stalled.contains(&a.id)) {
         return Glyph::Stalled;
     }
     match a.life {

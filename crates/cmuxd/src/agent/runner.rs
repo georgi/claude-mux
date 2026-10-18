@@ -33,7 +33,7 @@ use crate::claude::spawn::{
 use crate::claude::trust;
 use crate::config::Config;
 use crate::git::worktree::{WorktreePool, WorktreeRequest};
-use crate::term::hub::{Hub, TermConfig, term_key};
+use crate::term::hub::{Hub, PROGRESS_EVERY, TermConfig, term_key};
 use crate::term::pty::PtySpec;
 
 /// Initial size of an agent's terminal (columns by rows).
@@ -62,10 +62,14 @@ pub struct AgentRuntime {
 
 impl AgentRuntime {
     pub fn new(hub: Arc<Hub>, spawn: SpawnConfig) -> Arc<AgentRuntime> {
+        AgentRuntime::with_pool(hub, spawn, WorktreePool::default())
+    }
+
+    fn with_pool(hub: Arc<Hub>, spawn: SpawnConfig, pool: WorktreePool) -> Arc<AgentRuntime> {
         Arc::new(AgentRuntime {
             hub,
             spawn,
-            pool: WorktreePool::default(),
+            pool,
             waiters: PermissionWaiters::default(),
             started: Mutex::new(Vec::new()),
             unlisted: Mutex::new(HashSet::new()),
@@ -80,7 +84,7 @@ impl AgentRuntime {
         let mut spawn = SpawnConfig::new(exe, config.socket_path(), config.data_dir());
         let a = &config.agents;
         spawn.claude_bin = a.claude_bin.clone();
-        spawn.permission_wait = Duration::from_secs(a.permission_wait_secs.max(1));
+        spawn.permission_wait = Duration::from_secs(config.permission_wait_secs());
         spawn.pre_trust = a.pre_trust;
         let opts = |l: &crate::config::LevelConfig| LevelOpts {
             permission_mode: l.permission_mode.clone(),
@@ -89,7 +93,8 @@ impl AgentRuntime {
         spawn.executor = opts(&a.executor);
         spawn.task = opts(&a.task);
         spawn.sub = opts(&a.sub);
-        AgentRuntime::new(hub, spawn)
+        let pool = WorktreePool::new(config.limits.global().git_ops as usize);
+        AgentRuntime::with_pool(hub, spawn, pool)
     }
 
     pub fn hub(&self) -> &Arc<Hub> {
@@ -379,6 +384,14 @@ async fn start_agent(
     // The actor handles messages in order: once this query runs, `Spawned` has.
     let _ = handle.query(|_| ()).await;
     rt.listed(&id);
+    // Screen changes feed the stall watchdog, at most once per 30 s.
+    tokio::spawn({
+        let (terminal, handle) = (terminal.clone(), handle.clone());
+        async move {
+            let progress = || handle.send(Command::Runner(RunnerEvent::Progress { term }));
+            terminal.watch_progress(PROGRESS_EVERY, progress).await;
+        }
+    });
     let mut exited = terminal.exited();
     let info = match exited.wait_for(|e| e.is_some()).await {
         Ok(v) => v.clone(),

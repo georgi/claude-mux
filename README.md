@@ -262,9 +262,25 @@ Settings come from `~/.config/cmuxd/config.toml`. Each one also has a flag and a
 listen = "127.0.0.1:7878"
 # public_url = "https://box.example.ts.net"   # the URL clients should use
 
+auto_resume = true              # after a restart, resume the agents that were working
+
 [agents]
 claude_bin = "claude"
+
+[limits]                        # plan limits apply to new plans
+tasks_per_plan = 2
+subagents_per_task = 2
+live_processes = 8
+git_ops = 2
+
+[timeouts]                      # seconds
+question_secs = 3600
+permission_wait_secs = 600
+stall_secs = 900                # a working agent with no progress gets ⚠
+idle_without_report_secs = 600
 ```
+
+An unknown key is an error, so a typo stops `cmuxd` at start.
 
 The server listens on loopback only. Don't expose plain HTTP on another address: `cmuxd` refuses to start unless `allow_plain_http = true`, and the token would cross the network in clear text. For remote access use one of these:
 

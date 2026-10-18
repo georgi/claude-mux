@@ -29,6 +29,12 @@ pub enum Command {
     Runner(RunnerEvent),
     /// The 1 s timer.
     Tick,
+    /// Sent once by the server after the store loads, before it accepts
+    /// clients: the processes of the last run are gone (architecture 15a).
+    Recover {
+        /// Resume the agents that were working, from `config.toml`.
+        auto_resume: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -312,6 +318,11 @@ pub enum RunnerEvent {
     TermTitle {
         term: TermId,
         title: Option<String>,
+    },
+    /// The terminal's screen changed (not just a spinner redraw). The hub
+    /// sends this at most once per 30 s per terminal; it feeds the watchdog.
+    Progress {
+        term: TermId,
     },
 }
 

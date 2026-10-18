@@ -1167,6 +1167,8 @@ fn question_and_answer_between_levels_and_to_the_user() {
 fn questions_expire_after_sixty_minutes_and_the_asker_is_told() {
     let mut h = H::new();
     let (pid, exec) = h.accepted_plan("timeouts", 1);
+    // The asker keeps working; this test is about questions, not stalls.
+    h.st.timeouts.stall = u64::MAX;
     let a = h.start(&pid, &exec, 1);
     h.stop(&exec, false);
     h.tool(
@@ -2606,9 +2608,11 @@ fn an_idle_agent_without_a_report_needs_a_human_after_ten_minutes_once() {
         |e| matches!(e, Effect::Notify { item } if *item == items[0].id)
     ));
     assert!(h.tick(MIN).deltas.is_empty(), "deduped");
-    // A working agent, or a parked parent, never triggers it.
+    // A working agent, or a parked parent, never triggers it (a working
+    // one may stall, which is another item).
     h.prompt(&a);
-    assert!(h.tick(30 * MIN).deltas.is_empty());
+    h.tick(30 * MIN);
+    assert_eq!(h.human(|k| *k == ItemKind::ExitedWithoutReport).len(), 1);
     // The human dismissed it and messaged the agent; a second stall is new.
     h.client(ClientAction::AnswerItem {
         item: items_id(&h),
@@ -3837,4 +3841,246 @@ fn a_plan_written_by_the_client_starts_its_executor_on_accept() {
     )));
     assert_eq!(h.plan(&pid).state, PlanState::Accepted);
     assert_eq!(h.agent(&exec).life, Life::Starting);
+}
+
+// ---------------------------------------------------------------------------
+// Recovery after a server restart, and the stall watchdog
+// ---------------------------------------------------------------------------
+
+fn spawns(o: &Outcome) -> Vec<(AgentId, bool, String)> {
+    o.effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::SpawnAgent {
+                agent,
+                resume,
+                kickoff,
+                ..
+            } => Some((agent.clone(), *resume, kickoff.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// An idle executor, a working task agent T-0001 with a working sub-agent,
+/// and an idle task agent T-0002 with one confirmed and one unconfirmed paste.
+fn before_restart() -> (H, PlanId, [AgentId; 4], [ItemId; 2]) {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("restart", 2);
+    let a1 = h.start(&pid, &exec, 1);
+    let a2 = h.start(&pid, &exec, 2);
+    h.stop(&exec, false);
+    h.tool(
+        &a1,
+        ToolCall::SpawnSubagent {
+            name: "tests".into(),
+            prompt: "write tests".into(),
+        },
+    )
+    .unwrap();
+    let sub = AgentId::new(pid.clone(), AgentPath::sub(t(1), "tests").unwrap());
+    h.boot(&sub);
+    h.prompt(&sub);
+    h.stop(&a2, false);
+    let paste = |h: &mut H, text: &str| {
+        h.client(ClientAction::SendMessage {
+            agent: a2.clone(),
+            text: text.into(),
+            steer: false,
+        })
+        .unwrap();
+        let id = h.items_to(&a2).last().unwrap().id;
+        assert!(matches!(h.status(id), Delivery::Delivered { .. }));
+        id
+    };
+    let confirmed = paste(&mut h, "first");
+    h.hook(
+        &a2,
+        Hook::UserPromptSubmit {
+            prompt: format!("[{confirmed}] first"),
+        },
+    )
+    .unwrap();
+    h.stop(&a2, false);
+    let unconfirmed = paste(&mut h, "second");
+    assert_eq!(h.agent(&a2).unconfirmed, vec![unconfirmed]);
+    assert_eq!(h.agent(&a1).activity, Activity::Working);
+    assert_eq!(h.agent(&exec).activity, Activity::Idle);
+    (h, pid, [exec, a1, a2, sub], [confirmed, unconfirmed])
+}
+
+#[test]
+fn recover_resumes_only_working_agents_and_never_sub_agents() {
+    let (mut h, pid, [exec, a1, a2, sub], _) = before_restart();
+    let o = h.ok(Command::Recover { auto_resume: true });
+    assert_eq!(
+        spawns(&o),
+        vec![(a1.clone(), true, spawn::RESTART_KICKOFF.to_string())],
+        "only the working task agent resumes"
+    );
+    assert_eq!(h.agent(&a1).life, Life::Starting);
+    assert_eq!(h.agent(&a1).session_id, format!("sess-{a1}"));
+    for idle in [&exec, &a2, &sub] {
+        assert_eq!(h.agent(idle).life, Life::Exited { code: None }, "{idle}");
+    }
+    // The sub-agent's task agent hears it failed; it rides on the resume.
+    let reports: Vec<_> = h
+        .items_to(&a1)
+        .into_iter()
+        .filter(|i| i.kind == ItemKind::ChildReport && i.from.as_ref() == Some(&sub))
+        .collect();
+    assert_eq!(reports.len(), 1);
+    assert!(reports[0].is_pending());
+    assert!(reports[0].body.contains("Failed"), "{}", reports[0].body);
+    assert!(
+        reports[0].body.contains("server_restart"),
+        "{}",
+        reports[0].body
+    );
+    assert_eq!(h.task(&pid, 1).state, TaskState::InProgress);
+    assert_eq!(h.task(&pid, 2).state, TaskState::InProgress);
+    // Recover finds nothing to do a second time.
+    let o = h.ok(Command::Recover { auto_resume: true });
+    assert!(spawns(&o).is_empty());
+}
+
+#[test]
+fn recover_without_auto_resume_starts_nothing() {
+    let (mut h, _, agents, _) = before_restart();
+    let o = h.ok(Command::Recover { auto_resume: false });
+    assert!(spawns(&o).is_empty());
+    for a in &agents {
+        assert!(!h.agent(a).is_live(), "{a}");
+    }
+}
+
+#[test]
+fn recover_resets_only_unconfirmed_deliveries() {
+    let (mut h, _, [_, _, a2, _], [confirmed, unconfirmed]) = before_restart();
+    h.ok(Command::Recover { auto_resume: true });
+    assert!(matches!(h.status(confirmed), Delivery::Delivered { .. }));
+    assert_eq!(h.status(unconfirmed), Delivery::Pending);
+    assert!(h.agent(&a2).unconfirmed.is_empty());
+    // A resume delivers it again, by id, with the kickoff (path C).
+    h.client(ClientAction::ResumeAgent { agent: a2.clone() })
+        .unwrap();
+    h.boot(&a2);
+    let o = h.prompt(&a2);
+    match hook_reply(&o) {
+        HookReply::AdditionalContext(text) => {
+            assert!(text.contains(&unconfirmed.to_string()), "{text}");
+            assert!(!text.contains(&format!("[{confirmed}]")), "{text}");
+        }
+        r => panic!("expected the digest, got {r:?}"),
+    }
+}
+
+#[test]
+fn recover_ends_an_agent_that_never_started() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("restart", 1);
+    h.tool(
+        &exec,
+        ToolCall::SpawnTask {
+            task: t(1),
+            instructions: None,
+            force: false,
+        },
+    )
+    .unwrap();
+    let a = H::task_agent(&pid, 1);
+    assert_eq!(h.agent(&a).life, Life::Starting);
+    let o = h.ok(Command::Recover { auto_resume: true });
+    // The executor was working, so it resumes; the task never started.
+    assert_eq!(spawns(&o).len(), 1);
+    assert_eq!(spawns(&o)[0].0, exec);
+    assert_eq!(h.agent(&a).life, Life::Exited { code: None });
+    assert_eq!(h.task(&pid, 1).state, TaskState::Blocked);
+}
+
+fn stalled(h: &H) -> Vec<&InboxItem> {
+    h.human(|k| *k == ItemKind::Stalled)
+}
+
+#[test]
+fn a_working_agent_with_no_progress_for_fifteen_minutes_stalls() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("stall", 1);
+    let a = h.start(&pid, &exec, 1);
+    h.stop(&exec, false);
+    let term = h.agent(&a).term.unwrap();
+    // Redraws without new screen content never reach the engine as
+    // `Progress`; size and title changes are not progress either.
+    h.tick(10 * MIN);
+    h.runner(RunnerEvent::TermSize {
+        term,
+        rows: 30,
+        cols: 100,
+        owner: None,
+    });
+    h.runner(RunnerEvent::TermTitle {
+        term,
+        title: Some("✳ Working".into()),
+    });
+    h.tick(5 * MIN - 1);
+    assert!(stalled(&h).is_empty());
+    let o = h.tick(1);
+    assert_eq!(stalled(&h).len(), 1);
+    let item = stalled(&h)[0].id;
+    assert!(h.agent(&a).stalled);
+    assert!(has_fx(
+        &o,
+        |e| matches!(e, Effect::Notify { item: i } if *i == item)
+    ));
+    assert!(h.tick(MIN).deltas.is_empty(), "one item per stall");
+    assert_eq!(h.agent(&a).life, Life::Running, "nothing is killed");
+
+    // A hook is progress: it clears the flag and the item.
+    h.hook(
+        &a,
+        Hook::PreToolUse {
+            tool: "Bash".into(),
+            input_summary: "ls".into(),
+            match_input: "ls".into(),
+        },
+    )
+    .unwrap();
+    assert!(!h.agent(&a).stalled);
+    assert_eq!(h.status(item), Delivery::Dismissed);
+    h.tick(15 * MIN - 1);
+    assert_eq!(stalled(&h).len(), 1);
+    h.tick(1);
+    assert_eq!(stalled(&h).len(), 2);
+    assert!(h.agent(&a).stalled);
+
+    // A changed screen is progress too.
+    h.runner(RunnerEvent::Progress { term });
+    assert!(!h.agent(&a).stalled);
+    assert!(stalled(&h).iter().all(|i| !i.is_pending()));
+
+    // An idle agent never stalls.
+    h.stop(&a, false);
+    h.tick(60 * MIN);
+    assert_eq!(stalled(&h).len(), 2);
+}
+
+#[test]
+fn progress_is_kept_to_thirty_seconds() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("grain", 1);
+    let a = h.start(&pid, &exec, 1);
+    let term = h.agent(&a).term.unwrap();
+    let at = h.agent(&a).last_progress.unwrap();
+    h.now += 10_000;
+    assert!(h.runner(RunnerEvent::Progress { term }).deltas.is_empty());
+    assert_eq!(h.agent(&a).last_progress, Some(at));
+    h.now += 20_000;
+    assert!(!h.runner(RunnerEvent::Progress { term }).deltas.is_empty());
+    assert_eq!(h.agent(&a).last_progress, Some(at + 30_000));
+    // A terminal of no agent is ignored.
+    assert!(
+        h.runner(RunnerEvent::Progress { term: TermId(999) })
+            .deltas
+            .is_empty()
+    );
 }

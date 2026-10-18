@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use cmux_core::engine::ClientAction;
+use cmux_core::engine::{ClientAction, Command};
 use cmux_core::ids::ClientId;
 use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::watch;
@@ -152,12 +152,10 @@ impl ServerBuilder {
         let store = Arc::new(Store::open(&data_dir)?);
         let mut state = store.load()?;
         state.data_dir = data_dir.clone();
-        // The config is the source of truth for the wait, not the saved copy.
-        state.timeouts.permission_wait = config
-            .agents
-            .permission_wait_secs
-            .max(1)
-            .saturating_mul(1000);
+        // The config is the source of truth for timers and limits, not the saved copy.
+        state.timeouts = config.engine_timeouts();
+        state.global_limits = config.limits.global();
+        state.plan_limits = config.limits.plan();
         let diag = Diag::open(&data_dir).map_err(|e| ServerError::Io("diagnostics".into(), e))?;
         if global_tracing {
             use tracing_subscriber::layer::SubscriberExt;
@@ -185,17 +183,10 @@ impl ServerBuilder {
         close_orphan_terminals(&app).await;
         let extra = extra.unwrap_or_else(|| Box::new(Extra::default));
 
-        let (stop_tx, stop_rx) = watch::channel(false);
-        let mut tasks = Vec::new();
-
-        // The Unix socket.
+        // Bind first: a resumed agent's hooks queue on the socket until it serves.
         let socket_path = config.socket_path();
-        let listener = bind_unix(&socket_path)?;
-        let router = api::router_with(app.clone(), Transport::Unix, extra());
-        tasks.push(tokio::spawn(serve_unix(listener, router, stop_rx.clone())));
-
-        // TCP.
-        let mut bound = None;
+        let unix = bind_unix(&socket_path)?;
+        let mut tcp = None;
         if let Some(addr) = tcp_addr {
             let listener = TcpListener::bind(addr)
                 .await
@@ -203,6 +194,27 @@ impl ServerBuilder {
             let local = listener
                 .local_addr()
                 .map_err(|e| ServerError::Io("local_addr".into(), e))?;
+            tcp = Some((listener, local));
+        }
+
+        // The processes of the last run are gone; settle that before any client acts.
+        let recover = Command::Recover {
+            auto_resume: config.auto_resume,
+        };
+        if let Ok(Err(e)) = app.actor.call(recover).await {
+            app.diag.log(
+                "error",
+                "recover",
+                serde_json::json!({ "error": e.to_string() }),
+            );
+        }
+
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let mut tasks = Vec::new();
+        let router = api::router_with(app.clone(), Transport::Unix, extra());
+        tasks.push(tokio::spawn(serve_unix(unix, router, stop_rx.clone())));
+        let mut bound = None;
+        if let Some((listener, local)) = tcp {
             bound = Some(local);
             let router = api::router_with(app.clone(), Transport::Tcp, extra());
             tasks.push(serve_tcp(&config, listener, router, stop_rx.clone()).await?);
