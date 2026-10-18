@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use crate::ids::{AgentId, ClientId, ItemId, PlanId, TaskId, TermId};
-use crate::model::{Level, PlanState, PrGithubState, Repo, ReportStatus, TaskState};
+use crate::model::{Level, PlanState, PrGithubState, Repo, ReportStatus, TaskState, TermKind};
 
 /// One input to the engine, grouped by who sends it.
 #[derive(Debug, Clone, PartialEq)]
@@ -93,6 +93,18 @@ pub enum ClientAction {
     /// A client typed into the agent's terminal; path B waits 3 s.
     MarkHumanInput {
         agent: AgentId,
+    },
+    /// A loose terminal (no agent). The engine allocates the id and returns it
+    /// as `Reply::Text`; the server then starts the PTY under that id.
+    CreateTerminal {
+        kind: TermKind,
+        cwd: PathBuf,
+        /// (cols, rows)
+        size: (u16, u16),
+    },
+    /// Forget a loose terminal; the server kills its PTY.
+    CloseTerminal {
+        term: TermId,
     },
 }
 
@@ -280,6 +292,19 @@ pub enum RunnerEvent {
         plan: PlanId,
         task: TaskId,
         state: PrGithubState,
+    },
+    /// The hub changed a terminal's size or size owner. No-op when unchanged
+    /// or when the terminal is gone.
+    TermSize {
+        term: TermId,
+        rows: u16,
+        cols: u16,
+        owner: Option<ClientId>,
+    },
+    /// The program in a terminal set its window title.
+    TermTitle {
+        term: TermId,
+        title: Option<String>,
     },
 }
 

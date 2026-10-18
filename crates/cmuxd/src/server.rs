@@ -12,6 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use cmux_core::engine::ClientAction;
+use cmux_core::ids::ClientId;
 use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -25,6 +27,7 @@ use crate::config::{self, Config, ConfigError};
 use crate::devices::Devices;
 use crate::diag::{Diag, DiagLayer};
 use crate::store::{Store, StoreError, StoreWriter};
+use crate::term::hub::Hub;
 
 #[derive(Debug)]
 pub enum ServerError {
@@ -72,6 +75,7 @@ pub struct ServerBuilder {
     clock: Clock,
     tick: Option<Duration>,
     runners: Vec<RunnerFactory>,
+    hub: Arc<Hub>,
     extra: Option<Box<dyn Fn() -> Extra + Send>>,
     global_tracing: bool,
 }
@@ -83,9 +87,17 @@ impl ServerBuilder {
             clock: Clock::default(),
             tick: Some(Duration::from_secs(1)),
             runners: Vec::new(),
+            hub: Arc::new(Hub::new()),
             extra: None,
             global_tracing: false,
         }
+    }
+
+    /// The PTY hub the server will use. It exists before the actor does, so
+    /// an effect runner given to [`runner`](Self::runner) can capture it:
+    /// `let hub = b.hub(); b.runner(move |h| Box::new(MyRunner::new(h, hub)))`.
+    pub fn hub(&self) -> Arc<Hub> {
+        self.hub.clone()
     }
 
     pub fn clock(mut self, clock: Clock) -> Self {
@@ -127,6 +139,7 @@ impl ServerBuilder {
             clock,
             tick,
             runners,
+            hub,
             extra,
             global_tracing,
         } = self;
@@ -162,7 +175,8 @@ impl ServerBuilder {
         );
         let devices = Devices::open(&data_dir, clock.clone())
             .map_err(|e| ServerError::Io("devices.json".into(), e))?;
-        let app = AppState::new(actor, devices, config.clone(), diag, data_dir);
+        let app = AppState::new(actor, devices, config.clone(), diag, data_dir, hub);
+        close_orphan_terminals(&app).await;
         let extra = extra.unwrap_or_else(|| Box::new(Extra::default));
 
         let (stop_tx, stop_rx) = watch::channel(false);
@@ -240,6 +254,19 @@ impl Server {
         self.app.actor.shutdown().await;
         self.app.diag.log("info", "stopped", serde_json::json!({}));
         let _ = std::fs::remove_file(&self.socket_path);
+    }
+}
+
+/// Loose terminals saved by an earlier run have no PTY any more.
+async fn close_orphan_terminals(app: &AppState) {
+    let Ok(loose) = app.actor.query(|s| s.loose.clone()).await else {
+        return;
+    };
+    for term in loose {
+        if app.hub.get_term(term).is_none() {
+            let action = ClientAction::CloseTerminal { term };
+            let _ = app.actor.client(ClientId("server".into()), action).await;
+        }
     }
 }
 

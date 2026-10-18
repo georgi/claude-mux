@@ -25,6 +25,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
+use cmux_core::ids::TermId;
 use tokio::sync::{mpsc, watch};
 
 use super::pty::{ExitInfo, Pty, PtySpec};
@@ -553,6 +554,13 @@ impl Terminal {
     }
 }
 
+/// The hub id of an engine terminal. The engine's `TermId` (the `u32` in
+/// stream frames and REST paths) is the source of truth; the hub names the
+/// same terminal `t<N>`, so no mapping table exists to drift.
+pub fn term_key(id: TermId) -> String {
+    format!("t{}", id.0)
+}
+
 /// Terminals by id.
 #[derive(Default)]
 pub struct Hub {
@@ -590,6 +598,11 @@ impl Hub {
 
     pub fn get(&self, id: &str) -> Option<Arc<Terminal>> {
         self.lock().get(id).cloned()
+    }
+
+    /// The terminal for an engine id (see [`term_key`]).
+    pub fn get_term(&self, id: TermId) -> Option<Arc<Terminal>> {
+        self.get(&term_key(id))
     }
 
     /// Remove a terminal and kill its child (a no-op for one that exited).
