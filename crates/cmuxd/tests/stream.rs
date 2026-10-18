@@ -798,3 +798,18 @@ async fn orphaned_loose_terminals_are_dropped_at_start() {
     assert!(next > before.terminals[0].id.0, "next term id {next}");
     s.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoking_a_device_closes_its_open_stream() {
+    let h = harness().await;
+    let (id, token) = h.server.app.devices.create("laptop", Scope::Full).unwrap();
+    let mut ws = h.ws().await;
+    ws.connect(Some(&token), None).await;
+    assert!(h.server.app.devices.revoke(&id).unwrap());
+    loop {
+        if matches!(ws.next().await, Item::Closed) {
+            break;
+        }
+    }
+    h.server.shutdown().await;
+}

@@ -343,6 +343,8 @@ async fn run(
     let mut last_rev = rev;
 
     let mut presence_rx = app.presence.subscribe();
+    let mut revoked_rx = app.devices.watch_revocations();
+    let device = principal.device_id().map(str::to_string);
     let _registered = Registered::new(
         app,
         PresenceEntry {
@@ -430,6 +432,11 @@ async fn run(
                     Err(RecvError::Closed) => break,
                 };
                 if !ok { break }
+            }
+            Ok(()) = revoked_rx.changed() => {
+                // Revoking a device cuts its open connections too.
+                let gone = device.as_deref().is_some_and(|id| app.devices.name_of(id).is_none());
+                if gone { break }
             }
             Ok(()) = presence_rx.changed() => {
                 let clients = presence_rx.borrow_and_update().clone();

@@ -94,6 +94,8 @@ pub struct Devices {
     path: PathBuf,
     clock: Clock,
     inner: Mutex<Inner>,
+    /// Counts revocations, so open connections can re-check their device.
+    revoked: tokio::sync::watch::Sender<u64>,
 }
 
 impl Devices {
@@ -111,6 +113,7 @@ impl Devices {
             path,
             clock,
             inner: Mutex::new(Inner { file, saved_at }),
+            revoked: tokio::sync::watch::channel(0).0,
         })
     }
 
@@ -234,6 +237,11 @@ impl Devices {
             .collect()
     }
 
+    /// Wakes whenever a device is revoked; check [`Devices::name_of`] then.
+    pub fn watch_revocations(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.revoked.subscribe()
+    }
+
     /// Removes a device and its sessions. False if there is no such device.
     pub fn revoke(&self, id: &str) -> std::io::Result<bool> {
         let mut g = self.lock();
@@ -242,6 +250,7 @@ impl Devices {
         g.file.sessions.retain(|s| s.device != id);
         let found = g.file.devices.len() != before;
         if found {
+            self.revoked.send_modify(|n| *n += 1);
             self.save(&mut g)?;
         }
         Ok(found)
