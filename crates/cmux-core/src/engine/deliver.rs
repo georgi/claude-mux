@@ -215,8 +215,8 @@ impl Ctx<'_> {
     }
 
     /// An agent is gone (exit, session end, failed spawn). Synthesizes the
-    /// implicit report and the needs-you item. Hook point for step 10: use the
-    /// transcript's last assistant text as the summary.
+    /// implicit report, whose summary is the transcript's last assistant text
+    /// (or `why` when there is none), and the needs-you item.
     pub fn end_agent(&mut self, pi: usize, ai: usize, life: Life, why: &str) {
         let id = self.agent(pi, ai).id.clone();
         self.agent_mut(pi, ai).life = life;
@@ -227,9 +227,10 @@ impl Ctx<'_> {
             .and_then(|t| self.plan(pi).task(t))
             .map_or(0, |t| t.attempt);
         if level != Level::Executor && !has_report {
+            let summary = a.last_text.clone().unwrap_or_else(|| why.to_string());
             self.agent_mut(pi, ai).report = Some(Report {
                 status: ReportStatus::Blocked,
-                summary: why.to_string(),
+                summary,
                 pr_url: None,
                 attempt,
                 implicit: true,

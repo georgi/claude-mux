@@ -14,7 +14,15 @@
 //!    `stop_hook_active`;
 //! 4. idles reading its terminal: every line is echoed (`ECHO <line>`, paste
 //!    markers removed), submitted as a prompt, answered by the `later` script
-//!    and ended with `Stop`. `/exit` runs `SessionEnd` and exits.
+//!    and ended with `Stop`. `/exit` runs `SessionEnd` and exits; `/clear`
+//!    runs `SessionEnd` (reason `clear`) and `SessionStart` with a new
+//!    session id and a new transcript.
+//!
+//! It keeps a JSONL transcript the way Claude does, one file per session id
+//! in `$FAKE_CLAUDE_SCRIPTS/transcripts/` (else the temp dir), and sends its
+//! path as `transcript_path` in every hook: the turn's prompt as a user line,
+//! each tool call and its result, each `say` as an assistant text line, and,
+//! for a turn that said nothing, the text it ends with.
 //!
 //! The script is `$FAKE_CLAUDE_SCRIPTS/<agent path>.json` (`/` becomes `_`):
 //! `{"first": [steps], "later": [steps]}`. Any step may carry `"when": text`
@@ -26,6 +34,7 @@
 //!   hook is open wins: the hook is killed (`PERM terminal`). Otherwise prints
 //!   `PERM allow`, `PERM deny: <message>` or `PERM none`. A deny from
 //!   `PreToolUse` ends the step first: `PRE deny: <reason>`
+//! - `{"say": text}`: an assistant text line in the transcript
 //! - `{"sleep_ms": n}`, `{"wait_file": path}`, `{"print": text}`,
 //!   `{"exit": code}` (after `SessionEnd`)
 
@@ -95,6 +104,7 @@ struct Hooks {
     settings: Value,
     session_id: String,
     cwd: String,
+    transcript: PathBuf,
 }
 
 impl Hooks {
@@ -107,7 +117,7 @@ impl Hooks {
     fn payload(&self, event: &str, extra: Value) -> Value {
         let mut p = json!({
             "session_id": self.session_id,
-            "transcript_path": "",
+            "transcript_path": self.transcript.display().to_string(),
             "cwd": self.cwd,
             "hook_event_name": event,
         });
@@ -142,6 +152,115 @@ impl Hooks {
         let status = child.wait().expect("wait hook");
         assert!(status.success(), "hook {event} must exit 0, got {status}");
         serde_json::from_str(text.trim()).ok()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Transcript
+// ---------------------------------------------------------------------------
+
+/// Where the transcript of `session_id` goes.
+fn transcript_path(session_id: &str) -> PathBuf {
+    let dir = std::env::var_os("FAKE_CLAUDE_SCRIPTS")
+        .map_or_else(|| std::env::temp_dir().join("fake-claude"), PathBuf::from)
+        .join("transcripts");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join(format!("{session_id}.jsonl"))
+}
+
+/// Now as Claude writes it: `2026-10-18T09:00:01.101Z`.
+fn now_rfc3339() -> String {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64);
+    let (days, rem) = (ms.div_euclid(86_400_000), ms.rem_euclid(86_400_000));
+    // Civil date from days (Hinnant).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    let (h, mi, s, milli) = (
+        rem / 3_600_000,
+        rem / 60_000 % 60,
+        rem / 1000 % 60,
+        rem % 1000,
+    );
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{milli:03}Z")
+}
+
+/// Appends transcript lines.
+struct Transcript {
+    path: PathBuf,
+    session_id: String,
+    cwd: String,
+    next: u64,
+    /// The turn wrote an assistant text.
+    said: bool,
+}
+
+impl Transcript {
+    fn new(session_id: &str, cwd: &str) -> Transcript {
+        Transcript {
+            path: transcript_path(session_id),
+            session_id: session_id.to_string(),
+            cwd: cwd.to_string(),
+            next: 0,
+            said: false,
+        }
+    }
+
+    fn write(&mut self, kind: &str, message: Value) {
+        self.next += 1;
+        let line = json!({
+            "type": kind,
+            "uuid": format!("{}-{}", &self.session_id[..self.session_id.len().min(8)], self.next),
+            "timestamp": now_rfc3339(),
+            "sessionId": self.session_id,
+            "cwd": self.cwd,
+            "isSidechain": false,
+            "message": message,
+        });
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .expect("open transcript");
+        writeln!(f, "{line}").expect("write transcript");
+    }
+
+    fn assistant(&mut self, content: Value) {
+        let id = format!("msg_{}", self.next + 1);
+        self.write(
+            "assistant",
+            json!({"role": "assistant", "id": id, "model": "fake", "content": content,
+                   "usage": {"input_tokens": 10, "output_tokens": 5,
+                             "cache_read_input_tokens": 100, "cache_creation_input_tokens": 1}}),
+        );
+    }
+
+    fn user(&mut self, text: &str) {
+        self.said = false;
+        self.write("user", json!({"role": "user", "content": text}));
+    }
+
+    fn say(&mut self, text: &str) {
+        self.said = true;
+        self.assistant(json!([{"type": "text", "text": text}]));
+    }
+
+    fn tool(&mut self, name: &str, args: &Value, result: &str) {
+        let id = format!("toolu_{}", self.next + 1);
+        self.assistant(json!([{"type": "tool_use", "id": id, "name": name, "input": args}]));
+        self.write(
+            "user",
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": id, "content": result}]}),
+        );
     }
 }
 
@@ -228,6 +347,7 @@ impl Mcp {
 
 struct Session {
     hooks: Hooks,
+    transcript: Transcript,
     mcp: Mcp,
     lines: Receiver<Option<String>>,
     script: Value,
@@ -248,7 +368,11 @@ impl Session {
         }
         if let Some(name) = step["tool"].as_str() {
             let text = self.mcp.call(name, &step["args"]);
+            self.transcript
+                .tool(&format!("mcp__cmux__{name}"), &step["args"], &text);
             say(format!("TOOL {name}: {text}"));
+        } else if let Some(text) = step["say"].as_str() {
+            self.transcript.say(text);
         } else if let Some(p) = step.get("permission") {
             self.permission(p);
         } else if let Some(ms) = step["sleep_ms"].as_u64() {
@@ -332,6 +456,9 @@ impl Session {
 
     /// Ends the turn: `Stop`, and again after each `block` (spike S2).
     fn stop(&mut self, last: &str) {
+        if !self.transcript.said {
+            self.transcript.say(last);
+        }
         let mut active = false;
         for _ in 0..6 {
             let out = self.hooks.run(
@@ -353,6 +480,7 @@ impl Session {
 
     fn submit(&mut self, prompt: &str) {
         self.prompt = prompt.to_string();
+        self.transcript.user(prompt);
         // A digest too long to paste names a file to read, as Claude would.
         if let Some((_, path)) = prompt.rsplit_once("read ")
             && let Ok(text) = std::fs::read_to_string(path.trim())
@@ -402,12 +530,15 @@ fn main() {
         let _ = tx.send(None);
     });
 
+    let transcript = Transcript::new(&args.session_id, &cwd);
     let mut s = Session {
         hooks: Hooks {
             settings: read_json(&args.settings),
             session_id: args.session_id,
             cwd,
+            transcript: transcript.path.clone(),
         },
+        transcript,
         mcp,
         lines,
         script,
@@ -434,6 +565,15 @@ fn main() {
             s.hooks
                 .run("SessionEnd", json!({"reason": "prompt_input_exit"}));
             break;
+        }
+        if line == "/clear" {
+            s.hooks.run("SessionEnd", json!({"reason": "clear"}));
+            let id = uuid::Uuid::new_v4().to_string();
+            s.transcript = Transcript::new(&id, &s.hooks.cwd);
+            s.hooks.transcript = s.transcript.path.clone();
+            s.hooks.session_id = id;
+            s.hooks.run("SessionStart", json!({"source": "clear"}));
+            continue;
         }
         s.submit(&line);
         s.steps("later");

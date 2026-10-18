@@ -53,11 +53,18 @@ impl Ctx<'_> {
     pub fn hook(&mut self, pi: usize, ai: usize, hook: Hook) -> Result<Reply, EngineError> {
         let id = self.agent(pi, ai).id.clone();
         let reply = match hook {
-            Hook::SessionStart { session_id } => {
+            Hook::SessionStart {
+                session_id,
+                transcript_path,
+            } => {
                 let a = self.agent(pi, ai);
-                if a.session_id != session_id || a.life != Life::Running {
+                if a.session_id != session_id
+                    || a.life != Life::Running
+                    || a.transcript != transcript_path
+                {
                     let a = self.agent_mut(pi, ai);
                     a.session_id = session_id;
+                    a.transcript = transcript_path;
                     a.life = Life::Running;
                 }
                 HookReply::None

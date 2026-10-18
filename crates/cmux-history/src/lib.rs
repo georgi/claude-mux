@@ -1,5 +1,10 @@
 //! Reads Claude Code's conversation transcripts, `~/.claude/projects/<project>/<session-id>.jsonl`.
-//! Shared by the `cmux` picker (local mode) and `cmuxd` (`GET /v1/projects`).
+//! Shared by the `cmux` picker (local mode) and `cmuxd` (`GET /v1/projects`,
+//! and the chat view through [`chat`]).
+
+pub mod chat;
+
+pub use chat::{TranscriptReader, human_text, parse_line, transcript_file};
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -206,8 +211,8 @@ fn str_field(v: &Value, k: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Extract the human-written text of a user message. Skips tool results and
-/// injected command/caveat wrappers.
+/// Extract the human-written text of a user message, by the chat rules
+/// ([`human_text`]). Skips tool results and injected wrappers.
 fn user_text(v: &Value) -> Option<String> {
     let content = v.get("message")?.get("content")?;
     let text = match content {
@@ -220,11 +225,7 @@ fn user_text(v: &Value) -> Option<String> {
             .join(" "),
         _ => return None,
     };
-    let t = text.trim();
-    if t.is_empty() || t.starts_with('<') || t.starts_with("Caveat:") {
-        return None;
-    }
-    Some(one_line(t))
+    human_text(&text).map(|t| one_line(&t))
 }
 
 pub fn one_line(s: &str) -> String {

@@ -3,7 +3,9 @@
 use std::path::PathBuf;
 
 use crate::ids::{AgentId, ClientId, ItemId, PlanId, TaskId, TermId};
-use crate::model::{Level, PlanState, PrGithubState, Repo, ReportStatus, TaskState, TermKind};
+use crate::model::{
+    Level, PlanState, PrGithubState, Repo, ReportStatus, TaskState, TermKind, TokenUsage,
+};
 
 /// One input to the engine, grouped by who sends it.
 #[derive(Debug, Clone, PartialEq)]
@@ -155,6 +157,8 @@ pub enum NotificationKind {
 pub enum Hook {
     SessionStart {
         session_id: String,
+        /// The payload's `transcript_path`, when Claude sends one.
+        transcript_path: Option<PathBuf>,
     },
     UserPromptSubmit {
         prompt: String,
@@ -318,6 +322,14 @@ pub enum RunnerEvent {
     TermTitle {
         term: TermId,
         title: Option<String>,
+    },
+    /// The server read the agent's transcript (at a `Stop` or at exit; at
+    /// most once per turn): its token sums and its last assistant text, which
+    /// becomes the summary of an implicit report.
+    TokensUpdated {
+        agent: AgentId,
+        tokens: TokenUsage,
+        last_text: Option<String>,
     },
     /// The terminal's screen changed (not just a spinner redraw). The hub
     /// sends this at most once per 30 s per terminal; it feeds the watchdog.

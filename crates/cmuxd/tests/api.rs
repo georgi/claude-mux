@@ -95,6 +95,7 @@ async fn start_agents(cfg: Config, claude_bin: &Path) -> Result<Server, ServerEr
     let rt = AgentRuntime::new(builder.hub(), spawn);
     let routes = rt.clone();
     builder
+        .transcripts(rt.transcripts().clone())
         .runner(rt.runner())
         .extra_routes(move || Extra {
             unix_only: routes.routes(),

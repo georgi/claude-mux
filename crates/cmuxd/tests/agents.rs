@@ -300,6 +300,7 @@ async fn start_fake(scripts: &[(&str, Value)], permission_wait: Duration) -> Env
     let rt = AgentRuntime::new(builder.hub(), spawn);
     let routes = rt.clone();
     let server = builder
+        .transcripts(rt.transcripts().clone())
         .runner(rt.runner())
         .extra_routes(move || Extra {
             unix_only: routes.routes(),
@@ -1180,9 +1181,12 @@ async fn a_sub_agent_git_push_is_denied_through_the_hook() {
 async fn ask_parent_and_answer_child_round_trip() {
     let flag = tempfile::tempdir().unwrap();
     let flag_file = flag.path().join("ask");
+    let answer_file = flag.path().join("answer");
     let env = start_with(&sub_agent_scripts(
         "db",
         json!([
+            // Answer only once the sub-agent idles, so the answer is pasted.
+            {"when": "Which database", "wait_file": answer_file.display().to_string()},
             {"when": "Which database", "tool": "answer_child",
              "args": {"agent": "T-0001/db", "answer": "use postgres"}},
         ]),
@@ -1212,6 +1216,16 @@ async fn ask_parent_and_answer_child_round_trip() {
     })
     .await;
     std::fs::write(&flag_file, "").unwrap();
+    env.wait("the sub-agent to ask and idle", |v| {
+        let asked = v.items.iter().any(|i| i.kind == ItemKind::ChildQuestion);
+        let idle = v
+            .agents
+            .iter()
+            .any(|a| a.id.to_string() == sub && a.activity == Activity::Idle);
+        (asked && idle).then_some(())
+    })
+    .await;
+    std::fs::write(&answer_file, "").unwrap();
 
     // The question reaches the task agent (its digest names a file, which the
     // fake reads; its `when` matches the question), and it calls answer_child.
@@ -1255,5 +1269,59 @@ async fn ask_parent_and_answer_child_round_trip() {
     ));
     env.screen_has(&sub, "TOOL report_result: report recorded")
         .await;
+    env.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_exits_without_a_report_hands_its_last_answer_to_the_parent() {
+    let last = "I could not finish: the build is red on main.";
+    let env = start_fake(
+        &[
+            (
+                "executor",
+                executor_script(json!([
+                    {"when": "plan was accepted", "tool": "spawn_task", "args": {"task": "T-0001"}},
+                ])),
+            ),
+            (
+                "T-0001",
+                json!({"first": [
+                    {"tool": "get_task", "args": {}},
+                    {"say": "Looking at the build first."},
+                    {"say": last},
+                    {"exit": 0},
+                ]}),
+            ),
+        ],
+        Duration::from_secs(600),
+    )
+    .await;
+    let (plan, exec) = accepted_plan(&env).await;
+    let tid = format!("{plan}/T-0001");
+    // The task agent ends its session without `report_result`; the parent's
+    // item carries the last assistant text of its transcript.
+    let item = env
+        .wait("the exit to reach the executor", |v| {
+            v.items
+                .iter()
+                .find(|i| {
+                    i.kind == ItemKind::ChildExited
+                        && matches!(&i.to, Recipient::Agent(a) if a.to_string() == exec)
+                })
+                .cloned()
+        })
+        .await;
+    assert!(item.body.contains(last), "{}", item.body);
+    let v = env.view().await;
+    let agent = v.agents.iter().find(|a| a.id.to_string() == tid).unwrap();
+    let report = agent.report.as_ref().unwrap();
+    assert!(report.implicit);
+    assert_eq!(report.summary, last);
+    // The token sums came from the same read: three assistant messages (a
+    // tool call and two texts) at 10 in, 5 out each.
+    assert_eq!(agent.tokens.input, 30, "{:?}", agent.tokens);
+    assert_eq!(agent.tokens.output, 15);
+    // The executor sees it in its terminal: the item was pasted.
+    env.screen_has(&exec, "ECHO [cmux]").await;
     env.shutdown().await;
 }

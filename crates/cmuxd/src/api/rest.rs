@@ -7,7 +7,7 @@ use std::path::{Path as FsPath, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
@@ -16,12 +16,13 @@ use cmux_core::ids::{AgentId, ItemId, PlanId, TaskId, TermId};
 use cmux_core::model::Repo;
 use cmux_proto::api::{
     AgentStatus, AnswerReq, CreatePlanReq, CreateTaskReq, Created, MessageReq, PatchTaskReq,
-    PlanBody, SpawnTaskReq, StatusResp, route,
+    PlanBody, SpawnTaskReq, StatusResp, TranscriptResp, route,
 };
 use cmux_proto::view::{StateView, TaskDetail};
 
 use super::auth::Principal;
 use super::{ApiError, ApiResult, AppState};
+use crate::claude::transcript::{PAGE_DEFAULT, PAGE_MAX};
 use crate::store::atomic_write;
 
 pub fn routes() -> Router<AppState> {
@@ -41,6 +42,7 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/agents/{agent}/messages", post(message))
         .route("/v1/agents/{agent}/stop", post(stop_agent))
         .route("/v1/agents/{agent}/resume", post(resume_agent))
+        .route("/v1/agents/{agent}/transcript", get(transcript))
         .route(route::ITEMS_ANSWER, post(answer))
 }
 
@@ -408,6 +410,28 @@ async fn message(
     };
     act(&app, &p, action).await?;
     Ok(StatusCode::ACCEPTED)
+}
+
+#[derive(serde::Deserialize)]
+struct TranscriptQuery {
+    after: Option<String>,
+    limit: Option<usize>,
+}
+
+/// The agent's conversation (architecture 5.3), read up to now.
+async fn transcript(
+    State(app): State<AppState>,
+    Path(agent): Path<String>,
+    Query(q): Query<TranscriptQuery>,
+) -> ApiResult<Json<TranscriptResp>> {
+    let agent: AgentId = parse("agent", &agent)?;
+    let limit = q.limit.unwrap_or(PAGE_DEFAULT).clamp(1, PAGE_MAX);
+    let entries = app
+        .transcripts
+        .page(&app.actor, &agent, q.after.as_deref(), limit)
+        .await
+        .ok_or_else(|| ApiError::not_found(format!("error: no agent {agent}")))?;
+    Ok(Json(TranscriptResp { agent, entries }))
 }
 
 async fn stop_agent(
