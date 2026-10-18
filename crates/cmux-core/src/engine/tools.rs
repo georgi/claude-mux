@@ -459,7 +459,7 @@ impl Ctx<'_> {
         pr_url: Option<String>,
     ) -> Result<Reply, EngineError> {
         let a = self.agent(pi, ai);
-        let (level, idle) = (a.level, a.activity == Activity::Idle);
+        let (level, idle, landed) = (a.level, a.activity == Activity::Idle, a.landed);
         // An explicit blocked report of this attempt may be replaced; anything
         // else is final.
         let prior = a.report.clone();
@@ -468,8 +468,10 @@ impl Ctx<'_> {
         let attempt = self.plan(pi).tasks[ti].attempt;
         let supersedes_blocked = match &prior {
             None => false,
+            // A blocked report that never landed is simply replaced: the task
+            // never saw it, so the new one lands as a first report would.
             Some(r) if !r.implicit && r.status == ReportStatus::Blocked && r.attempt == attempt => {
-                true
+                landed || r.supersedes_blocked
             }
             Some(_) => {
                 return err(

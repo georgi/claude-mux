@@ -792,6 +792,42 @@ fn blocked_then_success_without_pr_passes_and_failed_fails() {
 }
 
 #[test]
+fn blocked_replaced_before_it_lands_moves_the_task() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("replace", 1);
+    let a = h.start(&pid, &exec, 1);
+    // Both in one turn: the blocked report never lands.
+    h.report(&a, ReportStatus::Blocked).unwrap();
+    h.report(&a, ReportStatus::Success).unwrap();
+    h.stop(&a, false);
+    assert_eq!(h.task(&pid, 1).state, TaskState::Passing);
+    let reports = child_reports(&h, &exec);
+    assert_eq!(reports.len(), 1);
+    assert!(reports[0].body.contains("Success"));
+}
+
+#[test]
+fn blocked_landed_then_blocked_and_success_in_one_turn_moves_the_task() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("chain", 1);
+    let a = h.start(&pid, &exec, 1);
+    h.report(&a, ReportStatus::Blocked).unwrap();
+    h.stop(&a, false);
+    h.hook(
+        &a,
+        Hook::UserPromptSubmit {
+            prompt: "go on".into(),
+        },
+    )
+    .unwrap();
+    h.report(&a, ReportStatus::Blocked).unwrap();
+    h.report(&a, ReportStatus::Success).unwrap();
+    h.stop(&a, false);
+    assert_eq!(h.task(&pid, 1).state, TaskState::Passing);
+    assert_eq!(child_reports(&h, &exec).len(), 2);
+}
+
+#[test]
 fn blocked_may_be_repeated_and_frees_the_slot_each_time() {
     let mut h = H::new();
     let (pid, exec) = h.accepted_plan("repeat", 1);
