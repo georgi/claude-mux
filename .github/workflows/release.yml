@@ -1,0 +1,122 @@
+name: Release
+
+# A `v*` tag builds the web app once, then static musl binaries of cmuxd for
+# x86_64 and aarch64 with the web app embedded, and attaches them with a
+# SHA256SUMS file to a GitHub release. A tag with a suffix (`v0.2.0-rc.1`)
+# makes a draft prerelease, which is also how to test this workflow. A manual
+# run builds the same files and keeps them as a workflow artifact.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  web:
+    name: web/dist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag matches the crate version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "${GITHUB_REF_NAME%%-*}" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
+            exit 1
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build
+        working-directory: web
+        run: npm ci && npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+
+  cmuxd:
+    name: cmuxd (${{ matrix.target }})
+    needs: web
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: Build
+        run: cross build --release --locked -p cmuxd --target "${{ matrix.target }}"
+      - name: Name the binary
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p dist
+          cp "target/$TARGET/release/cmuxd" "dist/cmuxd-$TARGET"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cmuxd-${{ matrix.target }}
+          path: dist/cmuxd-${{ matrix.target }}
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: cmuxd
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cmuxd-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum cmuxd-* > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        with:
+          name: release-files
+          path: dist
+          if-no-files-found: error
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        working-directory: dist
+        # A re-run replaces the files of a release that exists.
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" cmuxd-* SHA256SUMS --clobber
+            exit 0
+          fi
+          extra=()
+          case "$GITHUB_REF_NAME" in
+            *-*) extra=(--draft --prerelease) ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" cmuxd-* SHA256SUMS "${extra[@]}" \
+            --verify-tag --generate-notes --title "cmuxd $GITHUB_REF_NAME"

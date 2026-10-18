@@ -1,0 +1,11 @@
+---
+source: crates/cmuxd/src/doctor.rs
+expression: "rest.join(\"\\n\")"
+---
+[ok  ] config $DATA/config.toml
+[ok  ] TCP listener is off; Unix socket only
+[--  ] TLS is off; for remote access use tailscale serve or a reverse proxy
+[ok  ] store $DATA: 1 plans, 2 agents, 3 pending items
+[ok  ] claude 2.1.0 (Claude Code)
+[ok  ] claude is logged in (claude.ai)
+[ok  ] gh is logged in

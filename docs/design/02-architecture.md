@@ -87,7 +87,7 @@ claude-mux/
       stream.rs              WebSocket messages and binary frame layout
       view.rs                client-facing snapshots: PlanView, TaskView, AgentView, ItemView
     cmuxd/                   the server binary (tokio)
-      main.rs                serve | mcp | hook | pair | doctor
+      main.rs                serve | mcp | hook | pair | setup | doctor
       api/                   rest.rs, stream.rs, auth.rs, static.rs (embedded web app)
       actor.rs               engine actor: mpsc in, deltas out, effect dispatch
       term/                  pty.rs (from claude-mux pane.rs), hub.rs (ring, subscribers, size owner)

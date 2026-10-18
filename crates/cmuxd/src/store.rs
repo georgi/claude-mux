@@ -194,42 +194,7 @@ impl Store {
 
     /// Reads everything. An empty directory gives a default `State`.
     pub fn load(&self) -> Result<State, StoreError> {
-        let mut st = State {
-            data_dir: self.dir.clone(),
-            ..State::default()
-        };
-        if let Some(g) = read_json::<Globals>(&self.dir.join("loose.json"))? {
-            st.rev = g.rev;
-            st.loose = g.loose;
-            st.terminals = g.terminals;
-            st.next_term_id = g.next_term_id;
-            st.global_limits = g.global_limits;
-            st.timeouts = g.timeouts;
-        }
-        if let Some(i) = read_json::<InboxFile>(&self.dir.join("inbox.json"))? {
-            st.inbox = i.inbox;
-            st.next_item_id = i.next_item_id;
-        }
-        let plans = self.dir.join("plans");
-        let rd = match fs::read_dir(&plans) {
-            Ok(rd) => rd,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(st),
-            Err(e) => return Err(StoreError::Io(plans, e)),
-        };
-        for entry in rd {
-            let entry = entry.map_err(|e| StoreError::Io(plans.clone(), e))?;
-            if let Some(plan) = read_json::<Plan>(&entry.path().join("state.json"))? {
-                st.plans.push(plan);
-            }
-        }
-        // Plan ids start with their date, so this is creation order.
-        st.plans.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
-        // A crash between the files must not let ids or rev run backwards.
-        let newest = st.inbox.iter().map(|i| i.id.0 + 1).max().unwrap_or(0);
-        st.next_item_id = st.next_item_id.max(newest);
-        let newest = st.terminals.keys().map(|t| t.0 + 1).max().unwrap_or(0);
-        st.next_term_id = st.next_term_id.max(newest);
-        Ok(st)
+        load_dir(&self.dir)
     }
 
     pub fn save_plan(&self, plan: &Plan) -> Result<(), StoreError> {
@@ -267,6 +232,48 @@ impl Store {
         };
         go().map_err(|e| StoreError::Io(path, e))
     }
+}
+
+/// [`Store::load`] without the lock, for a reader such as `cmuxd doctor`
+/// while the server runs. Saves are atomic renames, so each file it reads is
+/// whole.
+pub fn load_dir(dir: &Path) -> Result<State, StoreError> {
+    let mut st = State {
+        data_dir: dir.to_path_buf(),
+        ..State::default()
+    };
+    if let Some(g) = read_json::<Globals>(&dir.join("loose.json"))? {
+        st.rev = g.rev;
+        st.loose = g.loose;
+        st.terminals = g.terminals;
+        st.next_term_id = g.next_term_id;
+        st.global_limits = g.global_limits;
+        st.timeouts = g.timeouts;
+    }
+    if let Some(i) = read_json::<InboxFile>(&dir.join("inbox.json"))? {
+        st.inbox = i.inbox;
+        st.next_item_id = i.next_item_id;
+    }
+    let plans = dir.join("plans");
+    let rd = match fs::read_dir(&plans) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(st),
+        Err(e) => return Err(StoreError::Io(plans, e)),
+    };
+    for entry in rd {
+        let entry = entry.map_err(|e| StoreError::Io(plans.clone(), e))?;
+        if let Some(plan) = read_json::<Plan>(&entry.path().join("state.json"))? {
+            st.plans.push(plan);
+        }
+    }
+    // Plan ids start with their date, so this is creation order.
+    st.plans.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+    // A crash between the files must not let ids or rev run backwards.
+    let newest = st.inbox.iter().map(|i| i.id.0 + 1).max().unwrap_or(0);
+    st.next_item_id = st.next_item_id.max(newest);
+    let newest = st.terminals.keys().map(|t| t.0 + 1).max().unwrap_or(0);
+    st.next_term_id = st.next_term_id.max(newest);
+    Ok(st)
 }
 
 fn read_json<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<Option<T>, StoreError> {
