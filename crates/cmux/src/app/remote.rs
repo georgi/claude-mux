@@ -219,6 +219,11 @@ impl RemoteState {
         Some(rows::agent_glyph(&self.mirror.sv, &self.vs, a))
     }
 
+    /// The end of a finished agent, for its pane header.
+    pub fn pane_outcome(&self, p: &Pane) -> Option<(&'static str, &'static str)> {
+        outcome(self.mirror.sv.agent(p.agent.as_ref()?)?)
+    }
+
     /// The glyph a tab shows: the most urgent of its panes.
     pub fn window_glyph(&self, w: &Window) -> Option<Glyph> {
         let glyphs: Vec<Glyph> = w.panes.iter().filter_map(|p| self.pane_glyph(p)).collect();
@@ -1473,11 +1478,29 @@ fn pane_key(p: &Pane) -> Option<String> {
         .or_else(|| p.remote_term().map(|t| format!("term {}", t.term)))
 }
 
+/// How an agent ended, as the glyph and words of its pane header (UI design
+/// 3.3): `✓ docs · reported success`. It reads the report the server keeps,
+/// so the client does not guess. `None` while it runs without a report.
+pub fn outcome(a: &cmux_proto::view::AgentView) -> Option<(&'static str, &'static str)> {
+    use cmux_proto::view::{Life, ReportStatus};
+    match (a.report.as_ref().filter(|r| !r.implicit), &a.life) {
+        (Some(r), _) => Some(match r.status {
+            ReportStatus::Success => ("✓", "reported success"),
+            ReportStatus::Blocked => ("!", "blocked"),
+            ReportStatus::Failed => ("✗", "failed"),
+        }),
+        (None, Life::Exited { .. }) => Some(("○", "exited")),
+        (None, Life::Stopped) => Some(("○", "stopped")),
+        (None, Life::Starting | Life::Running) => None,
+    }
+}
+
 /// Copies what the state knows about a terminal onto its pane.
 fn describe_pane(pane: &mut Pane, spec: &PaneSpec, sv: &cmux_proto::view::StateView) {
     let term = spec.term.and_then(|t| sv.terminal(t));
     pane.agent = spec.agent.clone();
     pane.label = spec.agent.as_ref().map(agent_label);
+    pane.finished = spec.finished;
     if let Some(a) = spec.agent.as_ref().and_then(|a| sv.agent(a)) {
         pane.kind = Kind::Claude;
         pane.cwd = a.cwd.clone();

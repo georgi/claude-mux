@@ -225,8 +225,7 @@ impl Ctx<'_> {
             .inbox
             .iter()
             .filter(|i| {
-                i.from.as_ref().is_some_and(ours)
-                    || matches!(&i.to, Recipient::Agent(a) if ours(a))
+                i.from.as_ref().is_some_and(ours) || matches!(&i.to, Recipient::Agent(a) if ours(a))
             })
             .map(|i| i.id)
             .collect();

@@ -24,7 +24,8 @@
 //! - `{"permission": {"tool": "Bash", "input": {"command": ".."}}}`: runs
 //!   `PreToolUse` and `PermissionRequest`. A line `1` on the terminal while the
 //!   hook is open wins: the hook is killed (`PERM terminal`). Otherwise prints
-//!   `PERM allow`, `PERM deny: <message>` or `PERM none`
+//!   `PERM allow`, `PERM deny: <message>` or `PERM none`. A deny from
+//!   `PreToolUse` ends the step first: `PRE deny: <reason>`
 //! - `{"sleep_ms": n}`, `{"wait_file": path}`, `{"print": text}`,
 //!   `{"exit": code}` (after `SessionEnd`)
 
@@ -275,10 +276,19 @@ impl Session {
     fn permission(&mut self, p: &Value) {
         let tool = p["tool"].as_str().unwrap_or("Bash");
         let input = p["input"].clone();
-        self.hooks.run(
+        let pre = self.hooks.run(
             "PreToolUse",
             json!({"tool_name": tool, "tool_input": input, "tool_use_id": "toolu_1"}),
         );
+        let pre = &pre.unwrap_or(Value::Null)["hookSpecificOutput"];
+        if pre["permissionDecision"] == "deny" {
+            // Claude does not run the tool and asks for no permission.
+            say(format!(
+                "PRE deny: {}",
+                pre["permissionDecisionReason"].as_str().unwrap_or("")
+            ));
+            return;
+        }
         let Some((mut child, mut out)) = self.hooks.start(
             "PermissionRequest",
             json!({"tool_name": tool, "tool_input": input,
