@@ -6,7 +6,7 @@
 // The session cookie authenticates the upgrade, so `hello` carries no token.
 
 import { decodeFrame, encodeInput } from "./api/frames";
-import type { ClientMsg, ServerMsg, TermId, TermPos } from "./api/types";
+import type { AgentId, ClientMsg, ServerMsg, TermId, TermPos } from "./api/types";
 import type { Store } from "./store";
 
 /** Where a terminal's bytes go (an xterm.js instance). */
@@ -56,6 +56,8 @@ export class Conn {
   private sinks = new Map<TermId, TermSink>();
   private focused: TermId | null = null;
   private sizes = new Map<TermId, { rows: number; cols: number }>();
+  /** Agents whose conversation is open (reference counts). */
+  private chats = new Map<AgentId, number>();
 
   constructor(
     private store: Store,
@@ -110,6 +112,7 @@ export class Conn {
   afterWelcome(): ClientMsg[] {
     const out: ClientMsg[] = [];
     for (const [id, next] of this.terms) if (next === null) out.push({ type: "subscribe", term: id, since_seq: null });
+    for (const agent of this.chats.keys()) out.push(this.subChatMsg(agent));
     const f = this.focused;
     if (f !== null && this.terms.has(f)) {
       out.push({ type: "focus", term: f });
@@ -147,6 +150,28 @@ export class Conn {
   resize(term: TermId, rows: number, cols: number): void {
     this.sizes.set(term, { rows, cols });
     this.send({ type: "resize", term, rows, cols });
+  }
+
+  /** Stream `agent`'s conversation into the store, after what it holds. */
+  subChat(agent: AgentId): void {
+    const n = this.chats.get(agent) ?? 0;
+    this.chats.set(agent, n + 1);
+    if (n === 0) this.send(this.subChatMsg(agent));
+  }
+
+  unsubChat(agent: AgentId): void {
+    const n = this.chats.get(agent) ?? 0;
+    if (n > 1) {
+      this.chats.set(agent, n - 1);
+      return;
+    }
+    this.chats.delete(agent);
+    if (n === 1) this.send({ type: "unsub_chat", agent });
+  }
+
+  private subChatMsg(agent: AgentId): ClientMsg {
+    const have = this.store.get().chats[agent];
+    return { type: "sub_chat", agent, after: have?.length ? have[have.length - 1].uuid : null };
   }
 
   input(term: TermId, data: string | Uint8Array): void {

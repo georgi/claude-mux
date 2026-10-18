@@ -18,6 +18,6 @@ export default defineConfig({
     proxy: { "/v1": { target, ws: true, changeOrigin: false } },
   },
   test: {
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
   },
 });

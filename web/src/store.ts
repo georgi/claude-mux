@@ -5,6 +5,7 @@
 
 import type {
   AgentId,
+  ChatEntry,
   ClientId,
   DeltaView,
   ErrorCode,
@@ -15,6 +16,7 @@ import type {
   StateView,
   TermId,
 } from "./api/types";
+import { mergeEntries } from "./chat";
 
 export type ConnStatus = "connecting" | "open" | "closed" | "unauthorized";
 
@@ -34,6 +36,8 @@ export interface Model {
   sizes: Record<TermId, TermSize>;
   exits: Record<TermId, { code: number; signal: string | null }>;
   presence: PresenceEntry[];
+  /** Conversations of the agents with a chat subscription, oldest first. */
+  chats: Record<AgentId, ChatEntry[]>;
   error: { code: ErrorCode; message: string } | null;
 }
 
@@ -48,6 +52,7 @@ export const initial: Model = {
   sizes: {},
   exits: {},
   presence: [],
+  chats: {},
   error: null,
 };
 
@@ -144,7 +149,13 @@ export function reduce(m: Model, e: Event): Model {
         conn: e.code === "unauthorized" ? "unauthorized" : m.conn,
         error: { code: e.code, message: e.message },
       };
-    case "chat":
+    case "chat": {
+      const have = m.chats[e.agent] ?? [];
+      const next = mergeEntries(have, e.entries);
+      // An empty first batch still marks the agent as loaded.
+      if (next === have && e.agent in m.chats) return m;
+      return { ...m, chats: { ...m.chats, [e.agent]: next } };
+    }
     case "pong":
       return m;
   }

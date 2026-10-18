@@ -12,7 +12,16 @@ interface Props {
   title: string;
   conn: Conn;
   store: Store;
+  /**
+   * Fit the PTY to this screen (the default). Off, on a phone: the terminal
+   * keeps the server's size and shrinks its font to fit instead.
+   */
+  fit?: boolean;
+  /** Rewrites typed input first (the key bar's sticky Ctrl). */
+  filter?: (data: string) => string;
 }
+
+const FONT = 13;
 
 /**
  * One terminal in xterm.js. Size ownership (architecture 6.2): the PTY
@@ -20,9 +29,11 @@ interface Props {
  * its fitted size; while another client owns it, xterm takes that client's
  * size so the screen lines up.
  */
-export function TermView({ term, title, conn, store }: Props) {
+export function TermView({ term, title, conn, store, fit: fitPty = true, filter }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const m = useModel(store);
+  const filterRef = useRef(filter);
+  filterRef.current = filter;
 
   useEffect(() => {
     const el = host.current;
@@ -30,19 +41,22 @@ export function TermView({ term, title, conn, store }: Props) {
     const xt = new Terminal({
       cursorBlink: true,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-      fontSize: 13,
+      fontSize: FONT,
       scrollback: 5000,
       theme: { background: "#111317" },
     });
     const fit = new FitAddon();
     xt.loadAddon(fit);
     xt.open(el);
-    try {
-      const gl = new WebglAddon();
-      gl.onContextLoss(() => gl.dispose());
-      xt.loadAddon(gl);
-    } catch {
-      // No WebGL: xterm's DOM renderer stays.
+    // Under automation the DOM renderer stays, so tests can read the screen.
+    if (!navigator.webdriver) {
+      try {
+        const gl = new WebglAddon();
+        gl.onContextLoss(() => gl.dispose());
+        xt.loadAddon(gl);
+      } catch {
+        // No WebGL: xterm's DOM renderer stays.
+      }
     }
 
     const isOwner = () => {
@@ -59,22 +73,36 @@ export function TermView({ term, title, conn, store }: Props) {
       if (d.cols !== xt.cols || d.rows !== xt.rows) xt.resize(d.cols, d.rows);
       conn.focus(term, d.rows, d.cols);
     };
+    /** The font size at which `cols` columns fill the host's width. */
+    const shrinkFont = (cols: number) => {
+      const d = fit.proposeDimensions();
+      if (!d || d.cols <= 0) return;
+      const size = Math.max(5, Math.min(FONT, Math.floor((xt.options.fontSize ?? FONT) * (d.cols / cols) * 10) / 10));
+      if (size !== xt.options.fontSize) xt.options.fontSize = size;
+    };
     const followOwner = () => {
       const s = store.get().sizes[term];
-      if (!s || isOwner()) return;
+      if (!s || (fitPty && isOwner())) return;
       if (s.cols !== xt.cols || s.rows !== xt.rows) xt.resize(s.cols, s.rows);
+      if (!fitPty) shrinkFont(s.cols);
     };
 
     conn.want(term, { reset: () => xt.reset(), write: (d) => xt.write(d) });
     const offStore = store.subscribe(followOwner);
     const data = xt.onData((d) => {
-      if (!isOwner()) takeSize();
-      conn.input(term, d);
+      if (fitPty && !isOwner()) takeSize();
+      conn.input(term, filterRef.current ? filterRef.current(d) : d);
     });
     const bin = xt.onBinary((d) => conn.input(term, Uint8Array.from(d, (c) => c.charCodeAt(0) & 0xff)));
-    const onFocus = () => takeSize();
+    const onFocus = () => fitPty && takeSize();
+    if (fitPty) {
+      xt.options.fontSize = FONT;
+    } else {
+      followOwner();
+    }
     xt.textarea?.addEventListener("focus", onFocus);
     const ro = new ResizeObserver(() => {
+      if (!fitPty) return followOwner();
       if (!isOwner()) return;
       const d = fitted();
       if (!d || (d.cols === xt.cols && d.rows === xt.rows)) return;
@@ -82,7 +110,8 @@ export function TermView({ term, title, conn, store }: Props) {
       conn.resize(term, d.rows, d.cols);
     });
     ro.observe(el);
-    xt.focus();
+    // Focus takes the size; on a phone it would also pop up the keyboard.
+    if (fitPty) xt.focus();
 
     return () => {
       ro.disconnect();
@@ -93,7 +122,7 @@ export function TermView({ term, title, conn, store }: Props) {
       conn.release(term);
       xt.dispose();
     };
-  }, [term, conn, store]);
+  }, [term, conn, store, fitPty]);
 
   const size = m.sizes[term];
   const other = size && size.owner !== null && size.owner !== m.clientId;
@@ -105,7 +134,7 @@ export function TermView({ term, title, conn, store }: Props) {
         {size && (
           <span class="muted small">
             {size.cols}×{size.rows}
-            {other ? " · sized by another client; click the terminal to take over" : ""}
+            {other && fitPty ? " · sized by another client; click the terminal to take over" : ""}
           </span>
         )}
         {exit && (

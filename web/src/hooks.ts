@@ -22,3 +22,18 @@ export function useSpinner(on: boolean): string {
   }, [on]);
   return frames[i];
 }
+
+/** Does the media query match? Follows changes. */
+export function useMedia(query: string): boolean {
+  const get = () => typeof matchMedia === "function" && matchMedia(query).matches;
+  const [on, setOn] = useState(get);
+  useEffect(() => {
+    if (typeof matchMedia !== "function") return;
+    const mq = matchMedia(query);
+    const f = () => setOn(mq.matches);
+    f();
+    mq.addEventListener("change", f);
+    return () => mq.removeEventListener("change", f);
+  }, [query]);
+  return on;
+}

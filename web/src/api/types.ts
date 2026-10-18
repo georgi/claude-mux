@@ -269,6 +269,36 @@ current: boolean, };
 
 export type DevicesResp = { devices: Array<DeviceView>, };
 
+export type RepoInfo = { 
+/**
+ * Absolute path on the server.
+ */
+path: string, 
+/**
+ * The branch new plans start from (`origin/HEAD`, else the checked-out one).
+ */
+base_branch: string, 
+/**
+ * `origin`'s URL, if it has one.
+ */
+remote_url: string | null, };
+
+export type ReposResp = { repos: Array<RepoInfo>, };
+
+export type AddRepoReq = { url?: string, path?: string, };
+
+export type LevelSettings = { level: Level, 
+/**
+ * `None`: Claude's own default model.
+ */
+model: string | null, permission_mode: string, };
+
+export type SettingsResp = { tasks_per_plan: number, subagents_per_task: number, 
+/**
+ * Claude processes on the whole server.
+ */
+live_processes: number, permission_wait_secs: number, claude: Array<LevelSettings>, };
+
 export type AgentHookReq = { 
 /**
  * `CMUX_AGENT`.
