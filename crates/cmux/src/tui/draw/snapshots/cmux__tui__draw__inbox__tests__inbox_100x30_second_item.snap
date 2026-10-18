@@ -1,0 +1,28 @@
+---
+source: crates/cmux/src/tui/draw/inbox.rs
+expression: "snap(100, 30, 1)"
+---
+
+
+
+
+
+
+            ┌ needs you  2 ────────────────────────────────────────────────────────────┐
+            │ ⚑ T-0004         allow Bash?                                             │
+            │ ⚑ auth-refactor  Which database should T-0005 migrate first, users or s… │ «sel»
+            │                                                                          │
+            │                                                                          │
+            │                                                                          │
+            │                                                                          │
+            │                                                                          │
+            │                                                                          │
+            │                                                                          │
+            │                                                                          │
+            ├──────────────────────────────────────────────────────────────────────────┤
+            │ Which database should T-0005 migrate first, users or sessions?           │
+            │                                                                          │
+            │                                                                          │
+            │                                                                          │
+            │ r reply  d dismiss  ↵ open  esc close                                    │
+            └──────────────────────────────────────────────────────────────────────────┘

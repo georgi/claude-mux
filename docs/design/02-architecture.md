@@ -21,7 +21,7 @@ Status: draft 2, 2026-10-18. This draft replaces draft 1, which was a single-pro
 |---|---|
 | Plan, task, criterion, note and dependency model, with the same state names and transition tables | Postgres; `run_inputs`/`run_turns` scheduling; the worker channel; Sprites and containers |
 | One branch (`claude/<task-id>`) and one worktree (`<repo>/.worktrees/<task-id>`) per task | Personas as database rows. They become one prompt file per level |
-| `report_result` / `ask_parent` semantics: one terminal report per attempt, and an implicit result if an agent stops without one | CodeAct, QuickJS, the subscription API |
+| `report_result` / `ask_parent` semantics: one final report per attempt (a `blocked` report may be superseded by one later report, which lands as a new item), and an implicit result if an agent stops without one | CodeAct, QuickJS, the subscription API |
 | "Status is decided at turn end" | The 10-status run machine |
 | A visible distinction between pending and delivered input (the lesson of run 288) | Dollar budgets. Tokens are shown instead |
 | A progress watchdog | The CI autofix platform loop. The task agent owns its PR |
@@ -251,7 +251,7 @@ The parsing reuses claude-mux's `history.rs` rules: skip meta lines, skip `<`-wr
 $XDG_RUNTIME_DIR/cmuxd/api.sock     0600 in a 0700 directory
 ```
 
-A `flock` on the data directory ensures that only one `cmuxd` runs per user.
+An exclusive POSIX record lock (`fcntl`) on `cmuxd.lock` in the data directory ensures that only one `cmuxd` runs per user. It is per process, so a child forked while the lock is held does not keep it.
 
 ### 5.5 Running it
 
@@ -328,7 +328,7 @@ claude --session-id <uuid>
        --settings  <data>/plans/<plan>/agents/<id>/settings.json      (hooks only)
        --mcp-config=<data>/plans/<plan>/agents/<id>/mcp.json          (one server: "cmux"; "=" form, the flag is variadic)
        --append-system-prompt "<prompts/{executor,task,subagent}.md, filled>"
-       [--permission-mode <per level>] [--model <per level>]
+       --permission-mode <per level, default "default">  [--model <per level>]
        "<kickoff prompt>"
 env:   CMUX_SOCK=<api.sock>  CMUX_AGENT=<id>  CMUX_TOKEN=<random 256-bit>  TERM=xterm-256color
 cwd:   executor → repos[0]; task → its worktree; sub-agent → its task's worktree
@@ -402,7 +402,7 @@ Every client shows pending items as `✉N`. `list_agents` and `peek` show them t
 ### 8.3 Turn landing (on each `Stop`)
 
 1. Deliver pending items through path A, and stop here.
-2. A task or sub-agent with a report: post `ChildReport` to its parent, deduplicated as `report:<agent>:<attempt>`, and move the task. Success with a PR → `testing`; success without a PR → `passing`; `blocked` → `blocked`; `failed` → `failing`.
+2. A task or sub-agent with a report: post `ChildReport` to its parent, deduplicated as `report:<agent>:<attempt>`, and move the task. Success with a PR → `testing`; success without a PR → `passing`; `blocked` → `blocked`; `failed` → `failing`. A report that supersedes a `blocked` one posts a new item (`report:<agent>:<attempt>#1`) and moves the task only if it is still `blocked`.
 3. An agent with live children is parked (`◌`).
 4. Otherwise it is idle. A task or sub-agent that stays idle with no report for 10 minutes becomes an `ExitedWithoutReport` needs-you item.
 
@@ -411,7 +411,7 @@ Every client shows pending items as `✉N`. `list_agents` and `peek` show them t
 The templates live in `cmux-core/prompts/` and are compiled in. A file of the same name in `~/.config/cmuxd/prompts/` overrides each one. They are adapted from the orchestrator's executor persona:
 
 - **executor.md**: you own task states and sequencing for plan X. Spawn task agents with `spawn_task`, and don't implement tasks yourself unless the user asks. While you wait on agents, end your turn, and cmux wakes you. Keep notes on tasks. A claim needs evidence. Mark the plan done when every task is merged or cancelled.
-- **task.md**: you own task T in worktree W on branch B, and you never switch branches. Commit, push, run `gh pr create`, then call `set_task_pr`. Run heavy checks yourself, one at a time. Use `spawn_subagent` for separable work on disjoint files. Finish with exactly one `report_result`. Use `ask_parent` for plan questions, and `ask_user` only for decisions a human must make.
+- **task.md**: you own task T in worktree W on branch B, and you never switch branches. Commit, push, run `gh pr create`, then call `set_task_pr`. Run heavy checks yourself, one at a time. Use `spawn_subagent` for separable work on disjoint files. Finish with `report_result`; a `blocked` report may be replaced by a later one once the agent is unblocked, `success` and `failed` are final. Use `ask_parent` for plan questions, and `ask_user` only for decisions a human must make.
 - **subagent.md**: you have a narrow job for task T. Don't push, don't open PRs, don't change task state. Finish with `report_result`.
 - **kickoff-plan.md**, **kickoff-execute.md**, **kickoff-task.md**: the first prompts. The execute kickoff lists every task as `- T-0003 [todo] ui deps:[T-0002] criteria:0/3`.
 

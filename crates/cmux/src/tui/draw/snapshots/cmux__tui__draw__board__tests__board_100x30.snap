@@ -1,0 +1,14 @@
+---
+source: crates/cmux/src/tui/draw/board.rs
+expression: "snap(100, 30)"
+---
+ auth-refactor · accepted · 1/6 merged · 6 agents · 480k tokens                              v back
+ todo 2              active 2            passing 1           merged 1            blocked 0
+┌──────────────────┐┌──────────────────┐┌──────────────────┐┌──────────────────┐
+│○ T-0003 ui       ││⠹ T-0002 api      ││○ T-0006 metrics …││✓ T-0001 schema   │
+│todo              ││testing #41 2/5   ││passing #43 3/3   ││merged #38 4/4    │
+└──────────────────┘└──────────────────┘└──────────────────┘└──────────────────┘
+┌──────────────────┐┌──────────────────┐
+│○ T-0005 rollout  ││⚑ T-0004 perms    │
+│todo              ││in_progress 1/2   │
+└──────────────────┘└──────────────────┘

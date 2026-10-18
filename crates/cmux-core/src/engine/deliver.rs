@@ -200,7 +200,11 @@ impl Ctx<'_> {
                 ReportStatus::Blocked => TaskState::Blocked,
                 ReportStatus::Failed => TaskState::Failing,
             };
+            // A report that supersedes a blocked one must not undo what the
+            // executor or a human did to the task since.
+            let moved_on = report.supersedes_blocked && task.state != TaskState::Blocked;
             if task.attempt == report.attempt
+                && !moved_on
                 && task.state != target
                 && check_task_transition(task, target, TransitionSource::Agent).is_ok()
             {
@@ -229,6 +233,7 @@ impl Ctx<'_> {
                 pr_url: None,
                 attempt,
                 implicit: true,
+                supersedes_blocked: false,
             });
         }
         if level != Level::Executor {

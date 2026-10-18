@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use crate::ids::{AgentId, ClientId, ItemId, PlanId, TaskId, TermId};
-use crate::model::{Level, PlanState, PrGithubState, Repo, ReportStatus, TaskState};
+use crate::model::{Level, PlanState, PrGithubState, Repo, ReportStatus, TaskState, TermKind};
 
 /// One input to the engine, grouped by who sends it.
 #[derive(Debug, Clone, PartialEq)]
@@ -93,6 +93,18 @@ pub enum ClientAction {
     /// A client typed into the agent's terminal; path B waits 3 s.
     MarkHumanInput {
         agent: AgentId,
+    },
+    /// A loose terminal (no agent). The engine allocates the id and returns it
+    /// as `Reply::Text`; the server then starts the PTY under that id.
+    CreateTerminal {
+        kind: TermKind,
+        cwd: PathBuf,
+        /// (cols, rows)
+        size: (u16, u16),
+    },
+    /// Forget a loose terminal; the server kills its PTY.
+    CloseTerminal {
+        term: TermId,
     },
 }
 
@@ -281,6 +293,19 @@ pub enum RunnerEvent {
         task: TaskId,
         state: PrGithubState,
     },
+    /// The hub changed a terminal's size or size owner. No-op when unchanged
+    /// or when the terminal is gone.
+    TermSize {
+        term: TermId,
+        rows: u16,
+        cols: u16,
+        owner: Option<ClientId>,
+    },
+    /// The program in a terminal set its window title.
+    TermTitle {
+        term: TermId,
+        title: Option<String>,
+    },
 }
 
 /// What the caller gets back for one command.
@@ -346,6 +371,8 @@ pub enum Effect {
     /// resume (the server generates one otherwise, plus the token).
     SpawnAgent {
         agent: AgentId,
+        /// The terminal id to start it under, allocated by the engine.
+        term: TermId,
         level: Level,
         cwd: PathBuf,
         session_id: Option<String>,
@@ -353,8 +380,11 @@ pub enum Effect {
         system_prompt: String,
         kickoff: String,
     },
+    /// `term` is set when the engine knows the process but has not recorded
+    /// it on the agent (a `Spawned` that arrived after the stop).
     KillAgent {
         agent: AgentId,
+        term: Option<TermId>,
     },
     /// Path B. The server pastes `text` itself when it is one line under 1000
     /// chars; otherwise it writes it to a file and pastes one line,
@@ -366,10 +396,7 @@ pub enum Effect {
         text: String,
     },
     /// Raw bytes for the agent's PTY; only the steer `ESC`.
-    WritePty {
-        agent: AgentId,
-        bytes: Vec<u8>,
-    },
+    WritePty { agent: AgentId, bytes: Vec<u8> },
     /// Finish a held `PermissionRequest` hook. `None` means no decision, so
     /// Claude shows its own prompt.
     AnswerPermission {
@@ -378,13 +405,12 @@ pub enum Effect {
         decision: Option<PermissionDecision>,
     },
     /// Push and needs-you for a new human item.
-    Notify {
-        item: ItemId,
-    },
+    Notify { item: ItemId },
     /// Save this plan.
-    Persist {
-        plan: PlanId,
-    },
+    Persist { plan: PlanId },
+    /// Save only what belongs to no plan (rev, terminals, inbox): a change
+    /// that touched no plan still bumped `rev`.
+    PersistGlobals,
 }
 
 /// A whole-object change at `rev`; the server builds the view from the state.

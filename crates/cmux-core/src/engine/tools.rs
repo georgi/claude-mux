@@ -72,10 +72,11 @@ impl ToolCall {
     }
 }
 
-/// Reads `.../pull/<n>` out of a pull request URL.
+/// Reads `.../pull/<n>` out of an `https` pull request URL.
 fn parse_pr(url: &str) -> Result<PrRef, EngineError> {
-    let number = url
-        .split_once("/pull/")
+    let number = Some(url)
+        .filter(|u| u.starts_with("https://"))
+        .and_then(|u| u.split_once("/pull/"))
         .map(|(_, rest)| {
             rest.chars()
                 .take_while(char::is_ascii_digit)
@@ -458,16 +459,29 @@ impl Ctx<'_> {
         pr_url: Option<String>,
     ) -> Result<Reply, EngineError> {
         let a = self.agent(pi, ai);
-        let (level, idle, reported) = (a.level, a.activity == Activity::Idle, a.report.is_some());
+        let (level, idle, landed) = (a.level, a.activity == Activity::Idle, a.landed);
+        // An explicit blocked report of this attempt may be replaced; anything
+        // else is final.
+        let prior = a.report.clone();
         let task = a.task.expect("reporting agents have a task");
         let ti = self.task_idx(pi, task)?;
         let attempt = self.plan(pi).tasks[ti].attempt;
-        if reported {
-            return err(
-                ErrorKind::Invalid,
-                format!("you already reported for attempt {attempt}; one report per attempt"),
-            );
-        }
+        let supersedes_blocked = match &prior {
+            None => false,
+            // A blocked report that never landed is simply replaced: the task
+            // never saw it, so the new one lands as a first report would.
+            Some(r) if !r.implicit && r.status == ReportStatus::Blocked && r.attempt == attempt => {
+                landed || r.supersedes_blocked
+            }
+            Some(_) => {
+                return err(
+                    ErrorKind::Invalid,
+                    format!(
+                        "you already reported for attempt {attempt}; only a blocked report can be followed by another"
+                    ),
+                );
+            }
+        };
         if summary.trim().is_empty() {
             return err(
                 ErrorKind::Invalid,
@@ -489,13 +503,18 @@ impl Ctx<'_> {
         {
             self.task_mut(pi, ti).pr = Some(pr);
         }
-        self.agent_mut(pi, ai).report = Some(Report {
+        let a = self.agent_mut(pi, ai);
+        a.report = Some(Report {
             status,
             summary,
             pr_url,
             attempt,
             implicit: false,
+            supersedes_blocked,
         });
+        // The new report lands as its own item; until then the agent holds
+        // its slot again.
+        a.landed = false;
         // Landing waits for the next Stop, unless the agent is already idle.
         if idle {
             self.land(pi, ai);

@@ -122,7 +122,7 @@ The harness is in [`spikes/`](../../spikes/README.md).
 - `apply(State, Command, now) -> Result<(Reply, Vec<Effect>, Vec<Delta>)>`. Its commands cover every MCP tool, every hook, every client action, `WorktreeReady`, `Spawned`, `Exited`, `Pr`, and the timer ticks.
 - The rules covered:
   - dependency and limit checks;
-  - one report per attempt;
+  - one final report per attempt (a `blocked` report can be superseded by a later one);
   - turn landing (architecture section 8.3);
   - implicit reports;
   - merged-requires-criteria;

@@ -16,4 +16,4 @@ Extra instructions from the executor (may be empty):
 
 Start by reading your task with `get_task` and the plan with `get_plan`. Work through the criteria in order. Verify each one, check it with `check_criterion`, and record what you did with `add_note`.
 
-When every criterion is met and the PR is set with `set_task_pr`, finish with exactly one `report_result`. If you are blocked, report `blocked` with the reason rather than guessing.
+When every criterion is met and the PR is set with `set_task_pr`, finish with `report_result`. If you are blocked, report `blocked` with the reason rather than guessing; after you are unblocked, a new `report_result` replaces the blocked one. `success` and `failed` are final.

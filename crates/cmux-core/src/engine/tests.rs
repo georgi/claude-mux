@@ -150,6 +150,8 @@ impl H {
             Ok(o) => {
                 let mut same = before.clone();
                 same.rev = self.st.rev;
+                // A reserved terminal id is a counter no view shows.
+                same.next_term_id = self.st.next_term_id;
                 if same == self.st {
                     assert_eq!(self.st.rev, before.rev, "rev bumped without a change");
                     assert!(
@@ -712,14 +714,174 @@ fn a_report_from_an_idle_agent_lands_at_once() {
     assert_eq!(h.task(&pid, 1).pr.as_ref().unwrap().number, 7);
 }
 
+fn report_with_pr(h: &mut H, a: &AgentId, status: ReportStatus, pr: Option<&str>) {
+    h.tool(
+        a,
+        ToolCall::ReportResult {
+            status,
+            summary: format!("{status:?} summary"),
+            pr_url: pr.map(Into::into),
+        },
+    )
+    .unwrap();
+}
+
+fn slots(h: &H, p: &PlanId) -> usize {
+    let live = |a: &&Agent| a.is_live() && !a.landed && a.level == Level::Task;
+    h.plan(p).agents.iter().filter(live).count()
+}
+
+fn child_reports<'a>(h: &'a H, to: &AgentId) -> Vec<&'a InboxItem> {
+    h.items_to(to)
+        .into_iter()
+        .filter(|i| i.kind == ItemKind::ChildReport)
+        .collect()
+}
+
 #[test]
-fn one_report_per_attempt_and_a_new_attempt_may_report_again() {
+fn blocked_report_is_superseded_by_success_with_pr() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("supersede", 1);
+    let a = h.start(&pid, &exec, 1);
+    h.report(&a, ReportStatus::Blocked).unwrap();
+    h.stop(&a, false);
+    assert_eq!(h.task(&pid, 1).state, TaskState::Blocked);
+    assert_eq!(child_reports(&h, &exec).len(), 1);
+    // The agent works on after the executor's answer and reports again.
+    h.hook(
+        &a,
+        Hook::UserPromptSubmit {
+            prompt: "go on".into(),
+        },
+    )
+    .unwrap();
+    report_with_pr(
+        &mut h,
+        &a,
+        ReportStatus::Success,
+        Some("https://github.com/o/r/pull/9"),
+    );
+    h.stop(&a, false);
+    assert_eq!(h.task(&pid, 1).state, TaskState::Testing);
+    let reports = child_reports(&h, &exec);
+    assert_eq!(reports.len(), 2);
+    assert!(reports[0].body.contains("Blocked"));
+    assert!(reports[1].body.contains("Success"));
+    assert_ne!(reports[0].dedupe, reports[1].dedupe);
+    // Success is final.
+    let e = err_of(h.report(&a, ReportStatus::Failed));
+    assert!(e.to_string().contains("only a blocked report"), "{e}");
+}
+
+#[test]
+fn blocked_then_success_without_pr_passes_and_failed_fails() {
+    for (status, want) in [
+        (ReportStatus::Success, TaskState::Passing),
+        (ReportStatus::Failed, TaskState::Failing),
+    ] {
+        let mut h = H::new();
+        let (pid, exec) = h.accepted_plan("supersede", 1);
+        let a = h.start(&pid, &exec, 1);
+        h.report(&a, ReportStatus::Blocked).unwrap();
+        h.stop(&a, false);
+        // Idle agent: the new report lands at once.
+        h.report(&a, status).unwrap();
+        assert_eq!(h.task(&pid, 1).state, want);
+        assert_eq!(child_reports(&h, &exec).len(), 2);
+    }
+}
+
+#[test]
+fn blocked_replaced_before_it_lands_moves_the_task() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("replace", 1);
+    let a = h.start(&pid, &exec, 1);
+    // Both in one turn: the blocked report never lands.
+    h.report(&a, ReportStatus::Blocked).unwrap();
+    h.report(&a, ReportStatus::Success).unwrap();
+    h.stop(&a, false);
+    assert_eq!(h.task(&pid, 1).state, TaskState::Passing);
+    let reports = child_reports(&h, &exec);
+    assert_eq!(reports.len(), 1);
+    assert!(reports[0].body.contains("Success"));
+}
+
+#[test]
+fn blocked_landed_then_blocked_and_success_in_one_turn_moves_the_task() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("chain", 1);
+    let a = h.start(&pid, &exec, 1);
+    h.report(&a, ReportStatus::Blocked).unwrap();
+    h.stop(&a, false);
+    h.hook(
+        &a,
+        Hook::UserPromptSubmit {
+            prompt: "go on".into(),
+        },
+    )
+    .unwrap();
+    h.report(&a, ReportStatus::Blocked).unwrap();
+    h.report(&a, ReportStatus::Success).unwrap();
+    h.stop(&a, false);
+    assert_eq!(h.task(&pid, 1).state, TaskState::Passing);
+    assert_eq!(child_reports(&h, &exec).len(), 2);
+}
+
+#[test]
+fn blocked_may_be_repeated_and_frees_the_slot_each_time() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("repeat", 1);
+    let a = h.start(&pid, &exec, 1);
+    h.report(&a, ReportStatus::Blocked).unwrap();
+    h.stop(&a, false);
+    assert_eq!(slots(&h, &pid), 0);
+    // A second blocked report, while the agent is working, re-takes the slot
+    // until it lands at the next Stop.
+    h.hook(
+        &a,
+        Hook::UserPromptSubmit {
+            prompt: "go on".into(),
+        },
+    )
+    .unwrap();
+    h.report(&a, ReportStatus::Blocked).unwrap();
+    h.stop(&a, false);
+    assert_eq!(slots(&h, &pid), 0);
+    assert_eq!(child_reports(&h, &exec).len(), 2);
+    assert_eq!(h.task(&pid, 1).state, TaskState::Blocked);
+    h.report(&a, ReportStatus::Success).unwrap();
+    assert_eq!(h.task(&pid, 1).state, TaskState::Passing);
+    assert_eq!(child_reports(&h, &exec).len(), 3);
+}
+
+#[test]
+fn late_report_after_the_task_moved_on_is_posted_but_does_not_move_it() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("late", 1);
+    let a = h.start(&pid, &exec, 1);
+    h.report(&a, ReportStatus::Blocked).unwrap();
+    h.stop(&a, false);
+    h.tool(
+        &exec,
+        ToolCall::TransitionTask {
+            task: t(1),
+            to: TaskState::InProgress,
+        },
+    )
+    .unwrap();
+    h.report(&a, ReportStatus::Success).unwrap();
+    assert_eq!(h.task(&pid, 1).state, TaskState::InProgress);
+    assert_eq!(child_reports(&h, &exec).len(), 2);
+}
+
+#[test]
+fn final_report_per_attempt_and_a_new_attempt_may_report_again() {
     let mut h = H::new();
     let (pid, exec) = h.accepted_plan("attempts", 1);
     let a = h.start(&pid, &exec, 1);
     h.report(&a, ReportStatus::Success).unwrap();
     let e = err_of(h.report(&a, ReportStatus::Failed));
-    assert!(e.to_string().contains("one report per attempt"), "{e}");
+    assert!(e.to_string().contains("only a blocked report"), "{e}");
     h.stop(&a, false);
     // Rework: the executor blocks the task, stops the old agent, spawns again.
     h.tool(
@@ -744,7 +906,7 @@ fn one_report_per_attempt_and_a_new_attempt_may_report_again() {
         .unwrap();
     assert!(has_fx(
         &o,
-        |e| matches!(e, Effect::KillAgent { agent } if *agent == a)
+        |e| matches!(e, Effect::KillAgent { agent, .. } if *agent == a)
     ));
     h.tool(
         &exec,
@@ -865,7 +1027,7 @@ fn stop_resume_and_late_events() {
         .unwrap();
     assert!(has_fx(
         &o,
-        |e| matches!(e, Effect::KillAgent { agent } if *agent == a)
+        |e| matches!(e, Effect::KillAgent { agent, .. } if *agent == a)
     ));
     assert_eq!(h.agent(&a).life, Life::Stopped);
     assert!(
@@ -2495,7 +2657,7 @@ fn plan_done_needs_all_tasks_settled_and_cancel_stops_everything() {
         .unwrap();
     assert!(has_fx(
         &o,
-        |e| matches!(e, Effect::KillAgent { agent } if *agent == a)
+        |e| matches!(e, Effect::KillAgent { agent, .. } if *agent == a)
     ));
     h.tool(
         &exec,
@@ -3417,4 +3579,149 @@ fn a_new_attempt_closes_the_old_attempts_exited_item() {
     h.start(&pid, &exec, 1);
     assert_eq!(h.task(&pid, 1).attempt, 2);
     assert_eq!(h.status(item), Delivery::Dismissed);
+}
+
+#[test]
+fn loose_terminals_are_created_sized_titled_and_closed() {
+    let mut h = H::new();
+    let o = h
+        .client(ClientAction::CreateTerminal {
+            kind: TermKind::Shell,
+            cwd: PathBuf::from("/home"),
+            size: (100, 30),
+        })
+        .unwrap();
+    let id = TermId(text_of(&o).parse().unwrap());
+    assert_eq!(h.st.loose, vec![id]);
+    assert_eq!(h.st.terminals[&id].size, (100, 30));
+    let second = h
+        .client(ClientAction::CreateTerminal {
+            kind: TermKind::Claude,
+            cwd: PathBuf::from("/home"),
+            size: (80, 24),
+        })
+        .unwrap();
+    assert_ne!(text_of(&second), id.0.to_string());
+
+    let size = |rows, owner: Option<&str>| RunnerEvent::TermSize {
+        term: id,
+        rows,
+        cols: 90,
+        owner: owner.map(|o| ClientId(o.into())),
+    };
+    h.runner(size(40, Some("web")));
+    assert_eq!(h.st.terminals[&id].size, (90, 40));
+    assert_eq!(h.st.terminals[&id].size_owner, Some(ClientId("web".into())));
+    // Unchanged: no new rev (H::go checks this).
+    h.runner(size(40, Some("web")));
+    h.runner(RunnerEvent::TermTitle {
+        term: id,
+        title: Some("vim".into()),
+    });
+    h.runner(RunnerEvent::TermTitle {
+        term: id,
+        title: Some("vim".into()),
+    });
+    // A gone terminal is ignored.
+    h.runner(RunnerEvent::TermTitle {
+        term: TermId(99),
+        title: None,
+    });
+
+    h.client(ClientAction::CloseTerminal { term: id }).unwrap();
+    assert!(!h.st.terminals.contains_key(&id));
+    assert!(!h.st.loose.contains(&id));
+    let e = err_of(h.client(ClientAction::CloseTerminal { term: id }));
+    assert!(e.to_string().contains("no terminal"), "{e}");
+}
+
+#[test]
+fn a_spawned_after_stop_kills_the_process_it_names() {
+    // Stopped while Starting: the term is not on the agent yet, so the kill
+    // must carry the one the runner reports.
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("late-kill", 1);
+    h.tool(
+        &exec,
+        ToolCall::SpawnTask {
+            task: t(1),
+            instructions: None,
+            force: false,
+        },
+    )
+    .unwrap();
+    let a = H::task_agent(&pid, 1);
+    h.client(ClientAction::StopAgent { agent: a.clone() })
+        .unwrap();
+    let o = h.runner(RunnerEvent::Spawned {
+        agent: a.clone(),
+        term: TermId(42),
+        session_id: "s".into(),
+        token_hash: tok(&a),
+    });
+    assert!(has_fx(&o, |e| matches!(
+        e,
+        Effect::KillAgent { agent, term: Some(TermId(42)) } if *agent == a
+    )));
+}
+
+#[test]
+fn spawn_effects_and_loose_terminals_never_share_a_term_id() {
+    let mut h = H::new();
+    let o = h
+        .client(ClientAction::CreatePlan {
+            title: "ids".into(),
+            repos: vec![Repo {
+                path: "/repo".into(),
+                base_branch: "main".into(),
+                remote_url: None,
+            }],
+            request: "r".into(),
+        })
+        .unwrap();
+    let Some(Effect::SpawnAgent { term, .. }) = o
+        .effects
+        .iter()
+        .find(|e| matches!(e, Effect::SpawnAgent { .. }))
+    else {
+        panic!("no spawn effect")
+    };
+    let loose = h
+        .client(ClientAction::CreateTerminal {
+            kind: TermKind::Shell,
+            cwd: "/".into(),
+            size: (80, 24),
+        })
+        .unwrap();
+    assert_ne!(text_of(&loose), term.0.to_string());
+}
+
+#[test]
+fn a_change_touching_no_plan_still_persists_the_globals() {
+    let mut h = H::new();
+    let o = h
+        .client(ClientAction::CreateTerminal {
+            kind: TermKind::Shell,
+            cwd: "/".into(),
+            size: (80, 24),
+        })
+        .unwrap();
+    assert!(has_fx(&o, |e| matches!(e, Effect::PersistGlobals)));
+}
+
+#[test]
+fn only_https_pull_request_urls_are_accepted() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("pr-scheme", 1);
+    let a = h.start(&pid, &exec, 1);
+    for url in [
+        "http://github.com/o/r/pull/42",
+        "javascript:alert(1)//pull/42",
+        "file:///etc/pull/42",
+        "github.com/o/r/pull/42",
+    ] {
+        let e = err_of(h.tool(&a, ToolCall::SetTaskPr { url: url.into() }));
+        assert!(e.to_string().contains("pull request URL"), "{url}: {e}");
+    }
+    assert!(h.task(&pid, 1).pr.is_none());
 }

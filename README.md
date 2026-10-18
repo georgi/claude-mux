@@ -115,7 +115,7 @@ cmux uses the tmux default key table. A tab is a tmux window, and a tab can hold
 | `<` / `>`      |                      | Move the tab                                     |
 | `:`            | `command-prompt`     | Run a command                                    |
 | `i`            | `display-message`    | Show pid and session id                          |
-| `d`            |                      | Quit (cmux has no server, so no detach)          |
+| `d`            | `detach-client`      | Quit (with a server: detach, agents keep running) |
 | `?`            | `list-keys`          | Help                                             |
 
 ### Session picker
@@ -237,6 +237,87 @@ keybind = shift+enter=text:\n
 | `Cmd-w` / `Cmd-Shift-w`         | Stop the pane's session / quit cmux       |
 
 The bindings send `Ctrl-b` (`\x02`). If you use another prefix, change `\x02` to the matching control byte, for example `\x01` for `Ctrl-a`. The bindings apply to every Ghostty window, also when cmux does not run. Put them in a separate file and load it with `config-file` if you want to switch them on and off.
+
+## Server mode (cmuxd)
+
+> **Early (milestone 2).** Server mode works end to end, but the config and keys may still change.
+
+`cmuxd` runs on a Linux box and owns your Claude sessions: plans, agents and terminals. It keeps them running when no client is attached. `cmux` on your laptop attaches to it. `prefix d` detaches and every agent keeps going. Run `cmux` again to get back to them.
+
+### Run the server
+
+```sh
+cargo install --path crates/cmuxd   # on the box
+cmuxd serve                         # Unix socket, and TCP on 127.0.0.1:7878
+```
+
+Settings come from `~/.config/cmuxd/config.toml`. Each one also has a flag and an environment variable: `--config` / `CMUXD_CONFIG`, `--data-dir` / `CMUXD_DATA_DIR`, `--socket` / `CMUXD_SOCKET`, `--listen` / `CMUXD_LISTEN` (`off` disables TCP).
+
+```toml
+listen = "127.0.0.1:7878"
+# public_url = "https://box.example.ts.net"   # the URL clients should use
+
+[agents]
+claude_bin = "claude"
+```
+
+The server listens on loopback only. Don't expose plain HTTP on another address: `cmuxd` refuses to start unless `allow_plain_http = true`, and the token would cross the network in clear text. For remote access use one of these:
+
+- **Tailscale** (recommended): `tailscale serve` puts HTTPS in front of the port, and you log in with that URL.
+- **SSH tunnel**: `ssh -N -L 7878:127.0.0.1:7878 box`, then log in with `http://127.0.0.1:7878`.
+
+### Pair a laptop
+
+On the box, while `cmuxd serve` runs:
+
+```sh
+cmuxd pair                       # prints a one-time code, valid for 5 minutes
+```
+
+On the laptop:
+
+```sh
+cmux login https://box.example   # enter the code when asked (or --code CODE)
+cmux servers                     # lists paired servers; * is the default
+```
+
+The first paired server becomes the default. Use `--name` to choose another name. `cmuxd pair --scope read` makes a read-only device. The default scope is `full`, which can run shells and Claude as your user, so pair only machines you trust. `cmux servers default NAME` changes the default. `cmux logout [NAME]` forgets a server; revoke the device on the box too.
+
+### Attach
+
+```sh
+cmux                  # the default server
+cmux -s box           # a named server; `-s local` is the cmuxd on this machine
+cmux --local          # plain claude-mux, no server
+```
+
+Without `-s`, `cmux` uses the default server in `client.toml`. If none is set, it uses this machine's cmuxd when its socket is listening, and otherwise runs claude locally. `--local` skips all of this.
+
+Every key in [Keys](#keys) works on a server, with these differences:
+
+- `prefix d` detaches. The server keeps running everything.
+- `c`, `t`, `g`, `%` and `"` start Claude, a shell or lazygit on the server.
+- `x` and `&` stop the agent or the sessions in the pane or tab (asks first).
+- `prefix s` lists the sessions on the server.
+- `prefix =` takes over the terminal's size from another client.
+- One server per cmux. For another, run `cmux -s NAME` in a second terminal.
+
+### Plans
+
+A plan is a workspace, a task is a tab and a sub-agent is a pane. The plan tree sits on the left. `prefix Tab` focuses it: `jk` moves, `Enter` opens, `Esc` goes back.
+
+| Key                  | Action                                                                                                  |
+|----------------------|---------------------------------------------------------------------------------------------------------|
+| `prefix N`           | New plan                                                                                                |
+| `prefix T`           | New task in the current plan                                                                            |
+| `A` (in the tree)    | Accept the plan and start it, or accept a task                                                          |
+| `prefix m`           | Message the focused agent. `Enter` queues it for the end of the turn, `Alt-Enter` steers now           |
+| `prefix v`           | Board view of the plan                                                                                  |
+| `prefix e` / `u`     | Go to the plan's executor / up one level                                                                |
+| `prefix a`           | Needs-you overlay: `y` allow (or accept a plan), `Y` allow always, `n` deny (or send a plan back), `r` reply to a question, `d` dismiss, `Enter` jump to the agent |
+| `prefix M-a` / `M-A` | Next / previous item that needs you                                                                     |
+
+In the tree the other keys act on the selected node: `n` new plan, `t` new task, `S` pause or resume a plan, `s` message, `x` stop, `c` cancel a task, `o` open its PR, `g` lazygit and `D` diff in its worktree.
 
 ## How it works
 
