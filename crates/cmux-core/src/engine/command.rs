@@ -396,10 +396,7 @@ pub enum Effect {
         text: String,
     },
     /// Raw bytes for the agent's PTY; only the steer `ESC`.
-    WritePty {
-        agent: AgentId,
-        bytes: Vec<u8>,
-    },
+    WritePty { agent: AgentId, bytes: Vec<u8> },
     /// Finish a held `PermissionRequest` hook. `None` means no decision, so
     /// Claude shows its own prompt.
     AnswerPermission {
@@ -408,13 +405,9 @@ pub enum Effect {
         decision: Option<PermissionDecision>,
     },
     /// Push and needs-you for a new human item.
-    Notify {
-        item: ItemId,
-    },
+    Notify { item: ItemId },
     /// Save this plan.
-    Persist {
-        plan: PlanId,
-    },
+    Persist { plan: PlanId },
     /// Save only what belongs to no plan (rev, terminals, inbox): a change
     /// that touched no plan still bumped `rev`.
     PersistGlobals,

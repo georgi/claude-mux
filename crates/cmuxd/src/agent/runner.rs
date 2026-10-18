@@ -66,7 +66,7 @@ impl AgentRuntime {
     /// from `[agents]`, this executable for `hook` and `mcp`, and the socket
     /// and data directory the server itself uses.
     pub fn from_config(config: &Config, hub: Arc<Hub>) -> Arc<AgentRuntime> {
-        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cmuxd"));
+        let exe = running_exe();
         let mut spawn = SpawnConfig::new(exe, config.socket_path(), config.data_dir());
         let a = &config.agents;
         spawn.claude_bin = a.claude_bin.clone();
@@ -111,6 +111,21 @@ impl AgentRuntime {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(id.to_string());
+    }
+}
+
+/// This executable's path for the hooks and the MCP server. Linux reports
+/// `/path/cmuxd (deleted)` once the binary was replaced under a running
+/// server (an upgrade); the new binary sits at the plain path.
+fn running_exe() -> PathBuf {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cmuxd"));
+    strip_deleted(exe)
+}
+
+fn strip_deleted(exe: PathBuf) -> PathBuf {
+    match exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+        Some(p) => PathBuf::from(p),
+        None => exe,
     }
 }
 
@@ -378,6 +393,18 @@ mod tests {
         assert_eq!(
             paste_bytes("hi\x1b[201~\nthere"),
             b"\x1b[200~hi [201~ there\x1b[201~\r"
+        );
+    }
+
+    #[test]
+    fn a_replaced_binary_keeps_its_plain_path() {
+        assert_eq!(
+            strip_deleted(PathBuf::from("/opt/cmux/cmuxd (deleted)")),
+            PathBuf::from("/opt/cmux/cmuxd")
+        );
+        assert_eq!(
+            strip_deleted(PathBuf::from("/opt/cmux/cmuxd")),
+            PathBuf::from("/opt/cmux/cmuxd")
         );
     }
 }

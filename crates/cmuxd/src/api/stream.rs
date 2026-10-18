@@ -8,9 +8,9 @@
 //!    authenticated the upgrade);
 //! 2. the server sends `welcome`, then `state` (full snapshot) or `deltas`
 //!    (always sent, possibly empty), then `presence`;
-//! 3. for each entry of `hello.terms`: a `size` message and a binary
-//!    `Output` frame with the missed bytes (omitted when there are none) or a
-//!    `Snapshot` frame, as for `subscribe`;
+//! 3. for each entry of `hello.terms`: a binary `Output` frame with the
+//!    missed bytes (omitted when there are none) or a `Snapshot` frame, then
+//!    a `size` message, as for `subscribe`;
 //! 4. live: `deltas`, `presence`, `size`, `exit` and binary `Output` frames.
 //!
 //! Terminal ids on the wire are the engine's `TermId`s; the hub names the

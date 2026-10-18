@@ -28,10 +28,7 @@ pub async fn serve(
     let cfg = axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert, &tls.key)
         .await
         .map_err(|e| {
-            ServerError::Io(
-                format!("cannot load certificate {}", tls.cert.display()),
-                e,
-            )
+            ServerError::Io(format!("cannot load certificate {}", tls.cert.display()), e)
         })?;
     let handle = axum_server::Handle::new();
     let h2 = handle.clone();

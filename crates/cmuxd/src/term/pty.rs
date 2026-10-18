@@ -4,7 +4,7 @@
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -60,11 +60,11 @@ pub struct ExitInfo {
     pub signal: Option<String>,
 }
 
-type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
-
 /// A running PTY child. Dropping it does not kill the child; call `kill`.
 pub struct Pty {
-    writer: Writer,
+    /// Input for the writer thread, which alone touches the PTY master's
+    /// writer: a child that stops reading blocks that thread, nobody else.
+    input: std::sync::mpsc::Sender<Vec<u8>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     pid: Option<u32>,
@@ -111,7 +111,18 @@ impl Pty {
         let pid = child.process_id();
         let killer = child.clone_killer();
         let mut reader = pair.master.try_clone_reader()?;
-        let writer: Writer = Arc::new(Mutex::new(pair.master.take_writer()?));
+        let mut writer = pair.master.take_writer()?;
+        let (input, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        std::thread::Builder::new()
+            .name(format!("pty-in-{}", pid.unwrap_or(0)))
+            .spawn(move || {
+                while let Ok(bytes) = input_rx.recv() {
+                    if writer.write_all(&bytes).is_err() || writer.flush().is_err() {
+                        // The child is gone; drop what is still queued.
+                        break;
+                    }
+                }
+            })?;
 
         std::thread::Builder::new()
             .name(format!("pty-{}", pid.unwrap_or(0)))
@@ -136,7 +147,7 @@ impl Pty {
             })?;
 
         Ok(Pty {
-            writer,
+            input,
             master: Mutex::new(pair.master),
             killer: Mutex::new(killer),
             pid,
@@ -147,12 +158,10 @@ impl Pty {
         self.pid
     }
 
-    /// Write input to the child. Errors (child gone) are ignored.
+    /// Queue input for the child; never blocks. Order is kept across callers.
+    /// Errors (child gone) are ignored.
     pub fn write(&self, bytes: &[u8]) {
-        if let Ok(mut w) = self.writer.lock() {
-            let _ = w.write_all(bytes);
-            let _ = w.flush();
-        }
+        let _ = self.input.send(bytes.to_vec());
     }
 
     pub fn resize(&self, rows: u16, cols: u16) {

@@ -392,3 +392,22 @@ fn hub_creates_gets_and_removes() {
     assert!(hub.get(&id).is_none());
     assert_ne!(hub.new_id(), id);
 }
+
+#[test]
+fn writing_to_a_child_that_never_reads_does_not_block_the_caller() {
+    let hub = Hub::new();
+    let id = hub.new_id();
+    let term = hub
+        .create(&id, &sh("sleep 30"), &TermConfig::small())
+        .unwrap();
+    let start = Instant::now();
+    // Far more than the tty buffer holds.
+    term.write(&vec![b'x'; 4 * 1024 * 1024]);
+    term.input("a", &vec![b'y'; 1024 * 1024]);
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        start.elapsed()
+    );
+    term.kill();
+}
