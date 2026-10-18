@@ -250,7 +250,8 @@ impl Ctx<'_> {
     /// Whether a sub-agent belongs to its task's current attempt.
     pub fn current_attempt(&self, pi: usize, ai: usize) -> bool {
         let a = self.agent(pi, ai);
-        a.task.is_none_or(|t| a.attempt == self.task_attempt(pi, t))
+        a.task
+            .is_none_or(|t| a.in_attempt(self.task_attempt(pi, t)))
     }
 
     pub fn subs_used(&self, pi: usize, task: TaskId) -> u32 {
@@ -258,7 +259,7 @@ impl Ctx<'_> {
         let agents = self.st.plans[pi].agents.iter();
         agents
             .filter(|a| a.path.sub_name().is_some() && a.task == Some(task))
-            .filter(|a| a.is_live() && !a.landed && a.attempt == attempt)
+            .filter(|a| a.is_live() && !a.landed && a.in_attempt(attempt))
             .count() as u32
     }
 
