@@ -1,13 +1,9 @@
 mod app;
-// Connection to cmuxd; wired into the event loop by the client integration.
-#[allow(dead_code)]
 mod conn;
 mod history;
 mod keys;
 mod layout;
 mod pane;
-// Drawing, navigation and forms for the plan features; wired in by the client.
-#[allow(dead_code)]
 mod tui;
 mod ui;
 mod window;
@@ -29,6 +25,13 @@ pub enum Event {
     Output(u64),
     Exited(u64),
     Indexed(Vec<history::SessionInfo>),
+    /// Remote mode: an event from the connection thread.
+    Stream(conn::stream::StreamEvent),
+    /// Remote mode: the answer to a REST call made off the UI thread.
+    Rest {
+        then: tui::remote::Then,
+        result: Result<serde_json::Value, String>,
+    },
     Resize,
     Tick,
     Quit,
@@ -43,6 +46,10 @@ pub struct Options {
     pub continue_last: bool,
     pub bell: bool,
     pub mouse: bool,
+    /// `-s NAME`: attach to this server.
+    pub server: Option<String>,
+    /// `--local`: never attach to a server.
+    pub local: bool,
 }
 
 const USAGE: &str = "\
@@ -52,6 +59,10 @@ USAGE:
     cmux [OPTIONS] [DIR...] [-- CLAUDE_ARGS...]
     cmux login URL | logout [NAME] | servers    Pair with and manage cmuxd servers
 
+With a server (-s, a default in client.toml, or a cmuxd socket on this machine)
+cmux attaches to it: plans, agents and terminals live on the server and keep
+running when you detach (prefix d). Without one it runs claude locally.
+
 ARGS:
     DIR...            Open a new Claude session in each directory (default: current dir)
     CLAUDE_ARGS...    Extra arguments for every claude process (e.g. -- --model opus)
@@ -59,6 +70,8 @@ ARGS:
 OPTIONS:
     -r, --resume      Start with the session picker
     -c, --continue    Continue the most recent session in the current dir
+    -s, --server NAME Attach to this cmuxd server (see `cmux servers`; `local` is this machine)
+        --local       Run claude locally even if a server is configured
     -p, --prefix KEY  Prefix key, a letter for Ctrl-<letter> (default: b)
         --no-bell     Do not ring the terminal bell when a background session finishes
         --no-mouse    Leave the mouse to the terminal (native selection, no wheel scroll)
@@ -94,6 +107,8 @@ fn parse_args() -> Result<Options> {
         continue_last: false,
         bell: true,
         mouse: true,
+        server: None,
+        local: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -110,6 +125,13 @@ fn parse_args() -> Result<Options> {
             "-c" | "--continue" => o.continue_last = true,
             "--no-bell" => o.bell = false,
             "--no-mouse" => o.mouse = false,
+            "--local" => o.local = true,
+            "-s" | "--server" => {
+                let Some(v) = args.next() else {
+                    bail!("--server needs a server name")
+                };
+                o.server = Some(v);
+            }
             "-p" | "--prefix" => {
                 let Some(v) = args.next() else {
                     bail!("--prefix needs a value")
@@ -148,6 +170,13 @@ fn main() -> Result<()> {
         _ => {}
     }
     let opts = parse_args()?;
+    let server = conn::servers::pick(
+        &conn::servers::ClientConfig::load(&conn::servers::client_toml())?,
+        opts.server.as_deref(),
+        opts.local,
+        &conn::servers::local_socket(),
+        conn::servers::socket_alive,
+    )?;
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         bail!("cmux needs an interactive terminal");
     }
@@ -166,12 +195,16 @@ fn main() -> Result<()> {
     }
     let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
 
-    let result = run(&mut term, opts);
+    let result = run(&mut term, opts, server);
     restore_terminal();
     result
 }
 
-fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, opts: Options) -> Result<()> {
+fn run(
+    term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    opts: Options,
+    server: Option<conn::servers::Server>,
+) -> Result<()> {
     let (tx, rx) = mpsc::channel::<Event>();
 
     // Raw stdin reader. Pane input is forwarded byte for byte.
@@ -224,7 +257,16 @@ fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, opts: Options) ->
     }
 
     let (cols, rows) = terminal::size()?;
-    let mut app = App::new(opts, tx, rows, cols);
+    let mut app = match server {
+        None => App::new(opts, tx, rows, cols),
+        Some(s) => {
+            let rest = std::sync::Arc::new(tui::remote::HttpRest(conn::http::Http::new(
+                s.endpoint.clone(),
+            )));
+            let remote = app::remote::RemoteState::connect(s.name, s.endpoint, rest, tx.clone());
+            App::new_remote(opts, tx, rows, cols, remote)
+        }
+    };
     app.start();
 
     loop {

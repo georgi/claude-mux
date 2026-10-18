@@ -382,6 +382,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cmux-core",
+ "cmux-history",
  "cmux-proto",
  "cmuxd",
  "insta",
@@ -410,6 +411,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmux-history"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "cmux-proto"
 version = "0.1.0"
 dependencies = [
@@ -428,6 +436,7 @@ dependencies = [
  "base64 0.23.1",
  "clap",
  "cmux-core",
+ "cmux-history",
  "cmux-proto",
  "futures-util",
  "http-body-util",

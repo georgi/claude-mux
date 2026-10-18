@@ -53,6 +53,7 @@ impl WindowKey {
         }
     }
 
+    #[allow(dead_code)] // used by tests and the view file code
     pub fn plan(&self) -> Option<&PlanId> {
         match self {
             WindowKey::Executor(p) | WindowKey::Task(p, _) => Some(p),
@@ -75,6 +76,7 @@ pub struct PaneSpec {
 
 impl PaneSpec {
     /// A stable key for per-pane view state: the agent id, else `term N`.
+    #[allow(dead_code)] // used by tests and the view file code
     pub fn key(&self) -> String {
         match (&self.agent, self.term) {
             (Some(a), _) => a.to_string(),
@@ -124,6 +126,40 @@ impl Derived {
         }
     }
 
+    /// Moves the loose terminals in `view.attached` into the panes of their
+    /// window. A terminal whose window is gone stays a window of its own.
+    pub fn attach(&mut self, view: &ServerView) {
+        if view.attached.is_empty() {
+            return;
+        }
+        let pairs: Vec<(TermId, WindowKey)> = view
+            .attached
+            .iter()
+            .filter_map(|(t, k)| Some((TermId(t.parse().ok()?), WindowKey::decode(k)?)))
+            .collect();
+        let apply = |wins: &mut Vec<WindowSpec>| {
+            for (term, target) in &pairs {
+                if !wins.iter().any(|w| &w.key == target) {
+                    continue;
+                }
+                wins.retain(|w| w.key != WindowKey::Loose(*term));
+                if let Some(w) = wins.iter_mut().find(|w| &w.key == target) {
+                    w.panes.push(PaneSpec {
+                        agent: None,
+                        term: Some(*term),
+                        level: None,
+                        finished: false,
+                    });
+                }
+            }
+        };
+        for ws in &mut self.workspaces {
+            apply(&mut ws.windows);
+        }
+        apply(&mut self.loose);
+    }
+
+    #[allow(dead_code)] // used by tests and the view file code
     pub fn window(&self, key: &WindowKey) -> Option<&WindowSpec> {
         self.windows(key.plan()).iter().find(|w| &w.key == key)
     }
@@ -291,6 +327,10 @@ pub struct ServerView {
     /// Keyed by [`WindowKey::encode`].
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub windows: BTreeMap<String, WindowView>,
+    /// Loose terminals the user split into a window (`prefix %`): terminal id
+    /// to [`WindowKey::encode`] of the window that shows it as a pane.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attached: BTreeMap<String, String>,
 }
 
 impl ServerView {
@@ -320,6 +360,7 @@ impl ServerView {
     }
 
     /// Records the user's current workspace and window.
+    #[allow(dead_code)] // used by tests and the view file code
     pub fn set_current(&mut self, plan: Option<&PlanId>, key: Option<&WindowKey>) {
         self.plan = plan.map(ToString::to_string);
         self.window = key.map(WindowKey::encode);

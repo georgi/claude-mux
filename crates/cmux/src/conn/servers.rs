@@ -136,6 +136,37 @@ impl ClientConfig {
     }
 }
 
+/// Whether something listens on the Unix socket `path`.
+pub fn socket_alive(path: &Path) -> bool {
+    std::os::unix::net::UnixStream::connect(path).is_ok()
+}
+
+/// Decides between remote and local mode. `Ok(None)` means run claude
+/// locally (claude-mux as before): no `-s`, no default server in
+/// `client.toml`, and nothing listening on the local socket. `socket_alive`
+/// is injected for tests.
+pub fn pick(
+    cfg: &ClientConfig,
+    name: Option<&str>,
+    force_local: bool,
+    socket: &Path,
+    socket_alive: impl Fn(&Path) -> bool,
+) -> Result<Option<Server>> {
+    if force_local {
+        return Ok(None);
+    }
+    if name.is_some() || cfg.default.is_some() {
+        return cfg.resolve(name, socket).map(Some);
+    }
+    if socket_alive(socket) {
+        return Ok(Some(Server {
+            name: LOCAL.into(),
+            endpoint: Endpoint::Unix(socket.to_path_buf()),
+        }));
+    }
+    Ok(None)
+}
+
 /// Writes `bytes` to `path` with mode 0600, atomically (temp file + rename).
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent() {
@@ -209,6 +240,38 @@ pub fn local_socket() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pick_chooses_remote_or_local_mode() {
+        let sock = Path::new("/run/cmuxd/api.sock");
+        let mut cfg = ClientConfig::default();
+        // Nothing configured, no daemon: today's local behaviour.
+        assert_eq!(pick(&cfg, None, false, sock, |_| false).unwrap(), None);
+        // A live local socket is used without any pairing.
+        let s = pick(&cfg, None, false, sock, |_| true).unwrap().unwrap();
+        assert_eq!(s.name, LOCAL);
+        // --local wins over everything.
+        assert_eq!(pick(&cfg, None, true, sock, |_| true).unwrap(), None);
+        // -s must name a known server.
+        assert!(pick(&cfg, Some("vps"), false, sock, |_| false).is_err());
+        cfg.add(ServerEntry {
+            name: "vps".into(),
+            url: "https://vps".into(),
+            token: "t".into(),
+        });
+        let s = pick(&cfg, Some("vps"), false, sock, |_| false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.name, "vps");
+        // The first paired server became the default.
+        let s = pick(&cfg, None, false, sock, |_| false).unwrap().unwrap();
+        assert_eq!(s.name, "vps");
+        // -s local reaches the socket even with a different default.
+        let s = pick(&cfg, Some(LOCAL), false, sock, |_| false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(s.endpoint, Endpoint::Unix(sock.to_path_buf()));
+    }
 
     fn entry(name: &str) -> ServerEntry {
         ServerEntry {

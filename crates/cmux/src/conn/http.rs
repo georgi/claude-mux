@@ -37,6 +37,7 @@ pub enum HttpError {
 }
 
 impl HttpError {
+    #[allow(dead_code)] // client API for the CLI verbs
     pub fn status(&self) -> Option<u16> {
         match self {
             HttpError::Api { status, .. } => Some(*status),
@@ -91,6 +92,7 @@ impl Http {
         })
     }
 
+    #[allow(dead_code)] // client API for the CLI verbs
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
     }
@@ -110,6 +112,7 @@ impl Http {
 
     /// POST that reuses `key`, for a caller that retries on its own (a form
     /// resubmitted after a lost answer).
+    #[allow(dead_code)] // client API for the CLI verbs
     pub fn post_keyed<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,
@@ -119,6 +122,7 @@ impl Http {
         self.send_json("POST", path, body, key)
     }
 
+    #[allow(dead_code)] // client API for the CLI verbs
     pub fn put<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,

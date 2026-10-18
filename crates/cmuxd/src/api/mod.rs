@@ -9,6 +9,7 @@
 
 pub mod auth;
 mod idem;
+pub mod projects;
 pub mod rest;
 pub mod stream;
 pub mod terminals;
@@ -196,6 +197,7 @@ pub fn router_with(app: AppState, transport: Transport, extra: Extra) -> Router 
     let protected = rest::routes()
         .merge(auth::routes())
         .merge(terminals::routes())
+        .merge(projects::routes())
         .merge(extra.authed)
         .layer(middleware::from_fn_with_state(
             app.clone(),

@@ -617,3 +617,43 @@ async fn non_loopback_plain_http_is_refused_unless_allowed() {
     let s = start_with(tmp.path(), cfg).await.unwrap();
     s.shutdown().await;
 }
+
+#[tokio::test]
+async fn projects_lists_the_servers_claude_sessions() {
+    let h = harness().await;
+    let claude = h._tmp.path().join("claude");
+    let dir = claude.join("projects/-tmp-demo");
+    std::fs::create_dir_all(&dir).unwrap();
+    let id = "0b9c2d1e-1111-4222-8333-444455556666";
+    std::fs::write(
+        dir.join(format!("{id}.jsonl")),
+        concat!(
+            r#"{"type":"user","cwd":"/tmp/demo","gitBranch":"main","message":{"role":"user","content":"fix the bug"}}"#,
+            "\n",
+            r#"{"type":"last-prompt","lastPrompt":"and the tests"}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    // A sidechain file (not a 36-char id) is skipped.
+    std::fs::write(dir.join("agent-1.jsonl"), "{}\n").unwrap();
+    // SAFETY: only this test reads CLAUDE_CONFIG_DIR in this binary.
+    unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", &claude) };
+
+    let r = req(&h.unix, "GET", route::PROJECTS, &[]).await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let list: cmux_proto::api::ProjectsResp = r.json().unwrap();
+    assert_eq!(list.sessions.len(), 1, "{list:?}");
+    let s = &list.sessions[0];
+    assert_eq!(s.id, id);
+    assert_eq!(s.cwd, "/tmp/demo");
+    assert_eq!(s.title, "fix the bug");
+    assert_eq!(s.last_prompt.as_deref(), Some("and the tests"));
+    assert_eq!(s.branch.as_deref(), Some("main"));
+    assert!(s.modified > 0);
+
+    // Over TCP it needs a token like any other route.
+    let r = req(&h.tcp, "GET", route::PROJECTS, &[]).await;
+    assert_eq!(r.status, 401);
+    h.server.shutdown().await;
+}

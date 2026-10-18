@@ -1,5 +1,7 @@
 //! Application state and input handling.
 
+pub mod remote;
+
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
@@ -27,6 +29,14 @@ pub enum Mode {
         query: String,
         selected: usize,
     },
+    /// Remote mode: keys drive the plan tree.
+    Tree,
+    /// Remote mode: the needs-you overlay.
+    Inbox,
+    /// Remote mode: the board replaces the body.
+    Board,
+    /// Remote mode: a plan, task, message or note form.
+    Form,
 }
 
 pub struct Prompt {
@@ -43,6 +53,8 @@ pub enum PromptKind {
     ConfirmKillPane,
     Command,
     SelectIndex,
+    /// Remote mode: a stop, cancel or close the server must be told about.
+    ConfirmRemote,
 }
 
 impl PromptKind {
@@ -55,6 +67,7 @@ impl PromptKind {
             PromptKind::ConfirmKillPane => "kill-pane? (y/n)",
             PromptKind::Command => ":",
             PromptKind::SelectIndex => "index",
+            PromptKind::ConfirmRemote => "confirm? (y/n)",
         }
     }
 }
@@ -77,7 +90,9 @@ pub struct Picker {
 
 pub struct App {
     pub opts: Options,
-    events: Sender<Event>,
+    pub(crate) events: Sender<Event>,
+    /// Set when attached to a cmuxd server.
+    pub remote: Option<Box<remote::RemoteState>>,
     pub windows: Vec<Window>,
     pub active: usize,
     last_window_id: Option<u64>,
@@ -108,6 +123,7 @@ impl App {
         App {
             opts,
             events,
+            remote: None,
             windows: Vec::new(),
             active: 0,
             last_window_id: None,
@@ -140,6 +156,10 @@ impl App {
     }
 
     pub fn start(&mut self) {
+        if self.remote.is_some() {
+            self.start_remote();
+            return;
+        }
         self.refresh_live();
         if self.opts.continue_last {
             let cwd = self.home_cwd.clone();
@@ -160,6 +180,10 @@ impl App {
     }
 
     pub fn shutdown(&mut self) {
+        if self.remote.is_some() {
+            self.shutdown_remote();
+            return;
+        }
         for p in self.windows.iter_mut().flat_map(|w| w.panes.iter_mut()) {
             p.kill();
         }
@@ -217,6 +241,14 @@ impl App {
 
     /// The screen area between the tab bar and the status line.
     pub fn body_area(&self) -> Rect {
+        match &self.remote {
+            Some(r) => r.pane_area(self.screen_body()),
+            None => self.screen_body(),
+        }
+    }
+
+    /// Everything between the tab bar and the status line (the tree included).
+    pub fn screen_body(&self) -> Rect {
         Rect {
             x: 0,
             y: 1,
@@ -246,7 +278,13 @@ impl App {
     /// Give every visible pane the PTY size of its place in the layout.
     fn relayout(&mut self) {
         let area = self.body_area();
-        for w in &mut self.windows {
+        let only_active = self.remote.is_some();
+        for (i, w) in self.windows.iter_mut().enumerate() {
+            // A remote window is sized when it is shown: resizing takes the
+            // terminal's size from other clients.
+            if only_active && i != self.active {
+                continue;
+            }
             for a in w.areas(area) {
                 if let Some(p) = w.get_mut(a.id) {
                     p.resize(a.body.height.max(1), a.body.width.max(1));
@@ -267,9 +305,12 @@ impl App {
         match ev {
             Event::Input(bytes) => {
                 self.handle_input(&bytes);
+                self.after_input();
                 self.redraw = true;
             }
             Event::Output(id) => self.on_output(id),
+            Event::Stream(ev) => self.on_stream(ev),
+            Event::Rest { then, result } => self.on_rest(then, result),
             Event::Exited(id) => self.on_exit(id),
             Event::Indexed(sessions) => {
                 self.picker.sessions = sessions;
@@ -347,6 +388,10 @@ impl App {
 
     fn on_tick(&mut self) {
         self.tick += 1;
+        if self.remote.is_some() {
+            self.remote_tick();
+            return;
+        }
         if self.tick.is_multiple_of(4) {
             self.refresh_live();
             for p in self.windows.iter_mut().flat_map(|w| w.panes.iter_mut()) {
@@ -373,6 +418,9 @@ impl App {
     }
 
     pub fn is_busy(&self, t: &Pane) -> bool {
+        if let Some(r) = &self.remote {
+            return r.pane_glyph(t) == Some(cmux_core::glyph::Glyph::Working);
+        }
         if !t.is_claude() {
             return false;
         }
@@ -454,6 +502,9 @@ impl App {
 
     /// Start a process in a new window or in a split of the focused pane.
     fn spawn(&mut self, spec: SpawnSpec, place: Place) -> bool {
+        if self.remote.is_some() {
+            return self.spawn_remote(spec, place);
+        }
         if !spec.cwd.is_dir() {
             self.flash(format!(
                 "directory not found: {}",
@@ -562,6 +613,10 @@ impl App {
     }
 
     fn resume_session(&mut self, s: &SessionInfo, fork: bool) {
+        if self.remote.is_some() {
+            self.resume_remote(s, fork);
+            return;
+        }
         if !fork
             && let Some(wi) = self.windows.iter().position(|w| {
                 w.panes
@@ -621,6 +676,9 @@ impl App {
         let id = w.active;
         w.focus(id);
         self.redraw = true;
+        if self.remote.is_some() {
+            self.relayout();
+        }
     }
 
     fn cycle(&mut self, delta: isize) {
@@ -800,6 +858,10 @@ impl App {
         self.picker.selected = 0;
         self.picker.loading = true;
         self.refilter();
+        if self.remote.is_some() {
+            self.request_sessions();
+            return;
+        }
         let index = self.index.clone();
         let tx = self.events.clone();
         std::thread::spawn(move || {
@@ -808,7 +870,7 @@ impl App {
     }
 
     fn close_picker(&mut self) {
-        if self.windows.is_empty() {
+        if self.windows.is_empty() && self.remote.is_none() {
             self.quit = true;
         }
         self.mode = Mode::Normal;
@@ -900,7 +962,7 @@ impl App {
                 if let Some(s) = self.picker_selection().cloned() {
                     self.mode = Mode::Normal;
                     self.resume_session(&s, k == Key::Ctrl('f'));
-                    if self.windows.is_empty() {
+                    if self.windows.is_empty() && self.remote.is_none() {
                         self.mode = Mode::Picker;
                     }
                 }
@@ -910,7 +972,7 @@ impl App {
                 if let Some(s) = self.picker_selection().cloned() {
                     self.mode = Mode::Normal;
                     self.new_session(s.cwd, Place::Window);
-                    if self.windows.is_empty() {
+                    if self.windows.is_empty() && self.remote.is_none() {
                         self.mode = Mode::Picker;
                     }
                 }
@@ -971,12 +1033,21 @@ impl App {
                     }
                     let (k, n) = keys::parse_one(bytes);
                     self.prefix_command(k);
+                    self.restore_focus_mode();
                     bytes = &bytes[n..];
+                }
+                Mode::Tree | Mode::Board | Mode::Inbox if bytes[0] == self.opts.prefix => {
+                    self.mode = Mode::Prefix;
+                    bytes = &bytes[1..];
                 }
                 _ => {
                     let (k, n) = keys::parse_one(bytes);
                     bytes = &bytes[n..];
                     match &mut self.mode {
+                        Mode::Tree => self.tree_key(k),
+                        Mode::Inbox => self.inbox_key(k),
+                        Mode::Board => self.board_key(k),
+                        Mode::Form => self.form_key(k),
                         Mode::Picker => self.picker_key(k),
                         Mode::Help => self.mode = Mode::Normal,
                         Mode::Scroll => self.scroll_key(k),
@@ -984,6 +1055,7 @@ impl App {
                         Mode::Windows { .. } => self.windows_key(k),
                         Mode::Normal | Mode::Prefix => {}
                     }
+                    self.restore_focus_mode();
                     // Keys that arrive after leaving an overlay in the same
                     // read are dropped instead of leaking into the pane.
                     if matches!(self.mode, Mode::Normal) {
@@ -1000,6 +1072,9 @@ impl App {
 
     /// tmux default key table. A tab is a tmux window.
     fn prefix_command(&mut self, k: Key) {
+        if self.remote.is_some() && self.remote_prefix(k) {
+            return;
+        }
         match k {
             Key::Char('c') => self.new_session(self.current_cwd(), Place::Window),
             Key::Char('C') => {
@@ -1096,6 +1171,10 @@ impl App {
     }
 
     fn kill_pane(&mut self) {
+        if self.remote.is_some() {
+            self.kill_pane_remote();
+            return;
+        }
         if let Some(t) = self.active_pane_mut() {
             t.kill();
             self.flash("session stopped - resume it with prefix s");
@@ -1103,6 +1182,10 @@ impl App {
     }
 
     fn kill_window(&mut self) {
+        if self.remote.is_some() {
+            self.kill_window_remote();
+            return;
+        }
         if let Some(w) = self.windows.get_mut(self.active) {
             for p in &mut w.panes {
                 p.kill();
@@ -1377,6 +1460,7 @@ impl App {
             "list-keys" | "lsk" => self.mode = Mode::Help,
             "copy-mode" => self.mode = Mode::Scroll,
             "kill-server" | "kill-session" => self.quit = true,
+            "detach-client" | "detach" if self.remote.is_some() => self.quit = true,
             "detach-client" | "detach" => self.prompt(PromptKind::ConfirmQuit, String::new()),
             _ => self.flash(format!("unknown command: {cmd}")),
         }
@@ -1406,6 +1490,9 @@ impl App {
                 w.preset = None;
                 self.relayout();
             }
+            return;
+        }
+        if self.remote.is_some() && self.remote_mouse(m) {
             return;
         }
         // Tab bar: click selects, wheel cycles.
@@ -1461,7 +1548,9 @@ impl App {
                 return;
             }
             Mode::Prompt(_) | Mode::Prefix => return,
-            Mode::Normal => {}
+            Mode::Normal | Mode::Tree => {}
+            // Handled by `remote_mouse`.
+            Mode::Inbox | Mode::Board | Mode::Form => return,
         }
 
         let Some(w) = self.windows.get_mut(self.active) else {
@@ -1580,7 +1669,10 @@ impl App {
         };
         if matches!(
             prompt.kind,
-            PromptKind::ConfirmQuit | PromptKind::ConfirmKill | PromptKind::ConfirmKillPane
+            PromptKind::ConfirmQuit
+                | PromptKind::ConfirmKill
+                | PromptKind::ConfirmKillPane
+                | PromptKind::ConfirmRemote
         ) {
             let kind = prompt.kind;
             self.mode = Mode::Normal;
@@ -1588,8 +1680,11 @@ impl App {
                 match kind {
                     PromptKind::ConfirmQuit => self.quit = true,
                     PromptKind::ConfirmKill => self.kill_window(),
+                    PromptKind::ConfirmRemote => self.confirm_remote(true),
                     _ => self.kill_pane(),
                 }
+            } else if kind == PromptKind::ConfirmRemote {
+                self.confirm_remote(false);
             }
             return;
         }
@@ -1600,7 +1695,7 @@ impl App {
             }
             Key::Ctrl('u') => prompt.input.clear(),
             Key::Char(c) => prompt.input.push(c),
-            Key::Tab if prompt.kind == PromptKind::NewDir => {
+            Key::Tab if prompt.kind == PromptKind::NewDir && self.remote.is_none() => {
                 prompt.input = complete_dir(&prompt.input)
             }
             Key::Enter => {
@@ -1608,11 +1703,18 @@ impl App {
                     return;
                 };
                 match p.kind {
+                    PromptKind::Rename if self.remote.is_some() => {
+                        self.rename_remote(p.input.trim());
+                    }
                     PromptKind::Rename => {
                         if let Some(w) = self.windows.get_mut(self.active) {
                             let name = p.input.trim();
                             w.custom_name = (!name.is_empty()).then(|| name.to_string());
                         }
+                    }
+                    PromptKind::NewDir if self.remote.is_some() => {
+                        // A path on the server: nothing to check or expand here.
+                        self.new_session(PathBuf::from(p.input.trim()), Place::Window);
                     }
                     PromptKind::NewDir => {
                         let dir = history::expand_tilde(p.input.trim());
@@ -1626,7 +1728,8 @@ impl App {
                     },
                     PromptKind::ConfirmQuit
                     | PromptKind::ConfirmKill
-                    | PromptKind::ConfirmKillPane => {}
+                    | PromptKind::ConfirmKillPane
+                    | PromptKind::ConfirmRemote => {}
                 }
             }
             _ => {}
