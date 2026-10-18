@@ -4227,11 +4227,11 @@ fn a_sub_agent_saved_without_an_attempt_is_current() {
     v.as_object_mut().unwrap().remove("attempt");
     let legacy: Agent = serde_json::from_value(v).unwrap();
     assert_eq!(legacy.attempt, 0);
-    h.st.plans[0]
+    *h.st.plans[0]
         .agents
         .iter_mut()
         .find(|a| a.id == sub)
-        .map(|a| *a = legacy);
+        .unwrap() = legacy;
     assert!(h.agent(&sub).in_attempt(1));
     // Its report lands as the current attempt's, and it still counts.
     h.report(&sub, ReportStatus::Success).unwrap();
