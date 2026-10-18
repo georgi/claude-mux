@@ -169,3 +169,68 @@ fn pre_trust_follows_the_childs_config_dir_and_survives_failure() {
         "{oops"
     );
 }
+
+#[test]
+fn parallel_updates_are_all_kept() {
+    let (t, file, _repo) = setup();
+    let dirs: Vec<PathBuf> = (0..16)
+        .map(|i| {
+            let d = t.path().join(format!("w{i}"));
+            std::fs::create_dir(&d).unwrap();
+            std::fs::canonicalize(d).unwrap()
+        })
+        .collect();
+    std::thread::scope(|s| {
+        for d in &dirs {
+            let file = &file;
+            s.spawn(move || trust_dir(file, d).unwrap());
+        }
+    });
+    let v = read(&file);
+    for d in &dirs {
+        assert_eq!(
+            v["projects"][d.to_str().unwrap()]["hasTrustDialogAccepted"],
+            true
+        );
+    }
+    assert!(!t.path().join(".claude.json.lock").exists());
+}
+
+#[test]
+fn claudes_lock_is_waited_for_and_a_stale_one_is_broken() {
+    let (t, file, repo) = setup();
+    let lock = t.path().join(".claude.json.lock");
+    // A live lock: the write waits until "claude" lets go.
+    std::fs::create_dir(&lock).unwrap();
+    let released = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::fs::write(&file, r#"{"numStartups": 7}"#).unwrap();
+            released.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::fs::remove_dir(&lock).unwrap();
+        });
+        assert!(trust_dir(&file, &repo).unwrap());
+        assert!(released.load(std::sync::atomic::Ordering::SeqCst));
+    });
+    let v = read(&file);
+    assert_eq!(v["numStartups"], 7, "claude's write under the lock is kept");
+    assert_eq!(
+        v["projects"][repo.to_str().unwrap()]["hasTrustDialogAccepted"],
+        true
+    );
+    assert!(!lock.exists());
+
+    // A stale lock (mtime older than proper-lockfile's 10 s) is broken.
+    std::fs::create_dir(&lock).unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    std::fs::File::open(&lock)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    std::fs::write(&file, "{}").unwrap();
+    let start = std::time::Instant::now();
+    assert!(trust_dir(&file, &repo).unwrap());
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(!lock.exists());
+}

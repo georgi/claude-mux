@@ -28,7 +28,7 @@ use cmux_core::model::{Level, State};
 use super::endpoint::PermissionWaiters;
 use crate::actor::{ActorHandle, EffectRunner};
 use crate::claude::spawn::{
-    LevelOpts, SpawnConfig, SpawnRequest, SpawnSpec, agent_dir, build_spawn, write_files,
+    LevelOpts, SpawnConfig, SpawnRequest, SpawnSpec, build_spawn, digest_dir, write_files,
 };
 use crate::claude::trust;
 use crate::config::Config;
@@ -263,7 +263,7 @@ impl EffectRunner for AgentRunner {
             }
             Effect::PasteDigest { agent, items, text } => {
                 if let Some(term) = term_of(state, agent) {
-                    let digest_dir = agent_dir(&self.rt.spawn.data_dir, agent);
+                    let digest_dir = digest_dir(&self.rt.spawn.data_dir, agent);
                     tokio::spawn(paste_digest(
                         self.rt.clone(),
                         term,
@@ -332,6 +332,8 @@ async fn start_agent(
 ) {
     let (session_id, token_hash) = (spec.session_id.clone(), spec.token_hash);
     let pre_trust = rt.spawn.pre_trust;
+    // `--add-dir` names it, so it exists before Claude starts.
+    let digests = digest_dir(&rt.spawn.data_dir, &agent);
     let id = term_key(term);
     let hub = rt.hub.clone();
     rt.unlisted
@@ -342,9 +344,14 @@ async fn start_agent(
         let id = id.clone();
         move || {
             if pre_trust {
-                trust::pre_trust(&spec, std::env::vars(), &crate::config::home());
+                // `std::env::vars` panics on a non-UTF-8 variable.
+                let vars = std::env::vars_os()
+                    .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
+                trust::pre_trust(&spec, vars, &crate::config::home());
             }
-            write_files(&spec.files).map_err(|e| format!("cannot write agent files: {e}"))?;
+            write_files(&spec.files)
+                .and_then(|()| std::fs::create_dir_all(&digests))
+                .map_err(|e| format!("cannot write agent files: {e}"))?;
             hub.create(&id, &pty_spec(&spec), &cfg)
                 .map_err(|e| format!("cannot start {}: {e:#}", spec.argv[0]))
         }

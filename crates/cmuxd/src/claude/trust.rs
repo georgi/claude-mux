@@ -24,7 +24,22 @@ pub fn claude_json_path(config_dir: Option<&OsString>, home: &Path) -> PathBuf {
 /// `file`, creating the file if it is missing. Every other key is kept. Nothing
 /// is written when the flag is already true; returns whether a write happened.
 /// An unreadable or malformed file is an error and is left alone.
+///
+/// Claude rewrites this file often, read-modify-write under a `proper-lockfile`
+/// lock (the directory `<file>.lock`). The update here takes the same lock, so a
+/// running `claude` does not lose a write to it nor this one to a stale copy; a
+/// lock that stays busy is waited out for a few seconds and then ignored (the
+/// race window is a few milliseconds).
 pub fn trust_dir(file: &Path, dir: &Path) -> std::io::Result<bool> {
+    // One update at a time in this process: agents start in parallel.
+    static LOCAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _local = LOCAL.lock().unwrap_or_else(|e| e.into_inner());
+    // Claude locks the path it computed, before resolving symlinks.
+    let _lock = ConfigLock::acquire(file);
+    update(file, dir)
+}
+
+fn update(file: &Path, dir: &Path) -> std::io::Result<bool> {
     // Claude keys projects by its real working directory.
     let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     let key = dir.to_string_lossy().into_owned();
@@ -89,6 +104,58 @@ pub fn pre_trust(
     }
 }
 
+/// `proper-lockfile`'s lock: a directory made with `mkdir`, stale once its mtime
+/// is older than 10 s. `None` inside when it could not be taken.
+struct ConfigLock(Option<PathBuf>);
+
+impl ConfigLock {
+    const STALE: std::time::Duration = std::time::Duration::from_secs(10);
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    fn acquire(file: &Path) -> ConfigLock {
+        let mut lock = file.as_os_str().to_owned();
+        lock.push(".lock");
+        let lock = PathBuf::from(lock);
+        if let Some(dir) = lock.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let start = std::time::Instant::now();
+        loop {
+            match std::fs::create_dir(&lock) {
+                Ok(()) => return ConfigLock(Some(lock)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = std::fs::metadata(&lock)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > Self::STALE);
+                    if stale {
+                        let _ = std::fs::remove_dir(&lock);
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(target: "agents", "cannot lock {}: {e}", lock.display());
+                    return ConfigLock(None);
+                }
+            }
+            if start.elapsed() > Self::WAIT {
+                tracing::warn!(target: "agents", "{} stays locked; updating anyway", lock.display());
+                return ConfigLock(None);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+    }
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        if let Some(lock) = &self.0 {
+            let _ = std::fs::remove_dir(lock);
+        }
+    }
+}
+
 fn invalid(e: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, e)
 }
@@ -99,7 +166,9 @@ fn write_keeping_mode(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    let tmp = dir.join(format!(".{name}.cmuxd-{}.tmp", std::process::id()));
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!(".{name}.cmuxd-{}-{seq}.tmp", std::process::id()));
     let result = (|| {
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);

@@ -172,7 +172,7 @@ fn executor_snapshot() {
             "--settings",
             &format!("{dir}/settings.json"),
             &format!("--mcp-config={dir}/mcp.json"),
-            &format!("--add-dir={dir}"),
+            &format!("--add-dir={dir}/digests"),
             "--append-system-prompt",
             "You are an agent.\nBe brief.",
             "[cmux] Start.",
@@ -229,7 +229,7 @@ fn task_snapshot_with_level_options() {
             "--settings",
             &format!("{dir}/settings.json"),
             &format!("--mcp-config={dir}/mcp.json"),
-            &format!("--add-dir={dir}"),
+            &format!("--add-dir={dir}/digests"),
             "--append-system-prompt",
             "You are an agent.\nBe brief.",
             "--permission-mode",
@@ -289,7 +289,7 @@ fn the_prompt_comes_last_and_mcp_config_uses_the_equals_form() {
 fn the_agent_dir_is_added_in_the_equals_form_so_digests_can_be_read() {
     let s = spec(AgentPath::Executor, Level::Executor, "/r", false, &cfg());
     let dir = "/data/cmuxd/plans/P-20261018-auth-refactor/agents/executor";
-    assert!(s.argv.contains(&format!("--add-dir={dir}")));
+    assert!(s.argv.contains(&format!("--add-dir={dir}/digests")));
     // The bare flag is variadic and would swallow the kickoff prompt.
     assert!(!s.argv.contains(&"--add-dir".to_string()));
     assert_eq!(s.argv.last().unwrap(), "[cmux] Start.");
@@ -300,9 +300,12 @@ fn the_agent_dir_is_added_in_the_equals_form_so_digests_can_be_read() {
         false,
         &cfg(),
     );
-    assert!(sub.argv.contains(
-        &"--add-dir=/data/cmuxd/plans/P-20261018-auth-refactor/agents/T-0003_tests".to_string()
-    ));
+    assert!(
+        sub.argv.contains(
+            &"--add-dir=/data/cmuxd/plans/P-20261018-auth-refactor/agents/T-0003_tests/digests"
+                .to_string()
+        )
+    );
 }
 
 #[test]

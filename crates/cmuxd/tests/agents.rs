@@ -822,7 +822,8 @@ async fn spawn_report_stop_and_the_parent_gets_it_by_paste() {
     env.screen_has(&exec, "ECHO [cmux]").await;
     // The digest (more than one line) went through a file the pasted line names.
     let dir = agent_dir(&env.app().data_dir, &exec.parse().unwrap());
-    let digests: Vec<String> = std::fs::read_dir(&dir)
+    // Only `digests/` is given to `--add-dir`, not the agent dir.
+    let digests: Vec<String> = std::fs::read_dir(dir.join("digests"))
         .unwrap()
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with("digest-"))

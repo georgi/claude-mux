@@ -240,6 +240,13 @@ pub fn agent_dir(data_dir: &Path, agent: &AgentId) -> PathBuf {
         .join(agent.path().to_string().replace('/', "_"))
 }
 
+/// `<agent dir>/digests`: where long digests are written for the agent to read.
+/// Only this directory is given to `--add-dir`, not the agent dir, whose
+/// `settings.json` (hooks, permissions) the agent must not be free to edit.
+pub fn digest_dir(data_dir: &Path, agent: &AgentId) -> PathBuf {
+    agent_dir(data_dir, agent).join("digests")
+}
+
 /// SHA-256 of the token, as stored in the engine.
 pub fn token_hash(token: &str) -> [u8; 32] {
     Sha256::digest(token.as_bytes()).into()
@@ -288,9 +295,9 @@ pub fn plan_spawn(
     argv.push(settings.display().to_string());
     // The `=` form: the flag is variadic and would swallow the prompt (spike S4).
     argv.push(format!("--mcp-config={}", mcp.display()));
-    // Digests are written here, outside the agent's cwd: without it every read
-    // of one asks for permission. Also the `=` form, for the same reason.
-    argv.push(format!("--add-dir={}", dir.display()));
+    // Digests are written outside the agent's cwd: without this every read of
+    // one asks for permission. Also the `=` form, for the same reason.
+    argv.push(format!("--add-dir={}", dir.join("digests").display()));
     argv.push("--append-system-prompt".into());
     argv.push(req.system_prompt.into());
     if let Some(mode) = &opts.permission_mode {
