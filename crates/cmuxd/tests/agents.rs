@@ -12,7 +12,7 @@ use cmux_core::ids::{AgentId, TermId};
 use cmux_core::model::State;
 use cmux_proto::api::{AnswerAction, AnswerReq, Created, route};
 use cmux_proto::view::{
-    Activity, Delivery, DeliveryPath, ItemKind, ItemView, Recipient, StateView, TaskState,
+    Activity, Delivery, DeliveryPath, ItemKind, ItemView, Life, Recipient, StateView, TaskState,
 };
 use cmuxd::actor::{ActorHandle, EffectRunner};
 use cmuxd::agent::AgentRuntime;
@@ -1231,6 +1231,57 @@ async fn a_task_agent_spawns_sub_agents_up_to_the_limit_and_gets_their_reports()
         a.report.as_ref().map(|r| r.summary.as_str()),
         Some("lint is clean")
     );
+    env.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_sub_agent_is_stopped_and_the_task_agent_can_spawn_another() {
+    let task = json!({
+        "first": [{"tool": "spawn_subagent", "args": {"name": "lint", "prompt": "run the linter"}}],
+        "later": [
+            {"when": "lint is clean", "tool": "spawn_subagent",
+             "args": {"name": "docs", "prompt": "fix the docs"}},
+        ],
+    });
+    let lint_script = json!({"first": [
+        {"tool": "report_result", "args": {"status": "success", "summary": "lint is clean"}},
+    ]});
+    let docs_script = json!({"first": [{"print": "docs is up"}]});
+    let (env, plan) = plan_with_task(
+        task,
+        &[("T-0001/lint", lint_script), ("T-0001/docs", docs_script)],
+    )
+    .await;
+    let (tid, lint, docs) = (
+        format!("{plan}/T-0001"),
+        format!("{plan}/T-0001/lint"),
+        format!("{plan}/T-0001/docs"),
+    );
+    // The report lands, and the finished sub-agent's process goes: it stays
+    // listed, stopped, with its report.
+    let lint_term = eventually("lint to get a terminal", async || env.term_of(&lint).await).await;
+    let a = env
+        .wait("the lint sub-agent to be stopped", |v| {
+            agent_view(v, &lint).filter(|a| a.life == Life::Stopped)
+        })
+        .await;
+    assert_eq!(
+        a.report.as_ref().map(|r| r.summary.as_str()),
+        Some("lint is clean")
+    );
+    let hub = env.app().hub.clone();
+    eventually("the lint process to end", async || {
+        hub.get_term(lint_term)
+            .filter(|t| t.exited().borrow().is_some())
+            .map(|_| ())
+    })
+    .await;
+    // The task agent was woken by the report and starts the next one.
+    env.screen_has(&tid, "TOOL spawn_subagent: started sub-agent T-0001/docs")
+        .await;
+    env.screen_has(&docs, "docs is up").await;
+    let v = env.view().await;
+    assert_eq!(agent_view(&v, &docs).unwrap().life, Life::Running);
     env.shutdown().await;
 }
 

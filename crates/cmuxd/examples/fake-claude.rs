@@ -22,7 +22,9 @@
 //! `{"first": [steps], "later": [steps]}`. Any step may carry `"when": text`
 //! and then runs only if the turn's prompt contains that text. Steps:
 //!
-//! - `{"tool": name, "args": {..}}`: an MCP `tools/call`; prints `TOOL <name>: <text>`
+//! - `{"tool": name, "args": {..}}`: an MCP `tools/call`; first runs `PreToolUse`
+//!   with `tool_name` `mcp__cmux__<name>` (the server's name in `mcp.json`), as
+//!   Claude does before every tool; prints `TOOL <name>: <text>`
 //! - `{"permission": {"tool": "Bash", "input": {"command": ".."}}}`: runs
 //!   `PreToolUse`; if that denies (`permissionDecision`) it prints
 //!   `PRETOOL deny: <reason>` and stops there, as Claude does. Otherwise runs
@@ -256,6 +258,15 @@ impl Session {
             return;
         }
         if let Some(name) = step["tool"].as_str() {
+            // Claude runs PreToolUse for MCP tools too, named `mcp__<server>__<tool>`.
+            self.hooks.run(
+                "PreToolUse",
+                json!({
+                    "tool_name": format!("mcp__cmux__{name}"),
+                    "tool_input": step["args"],
+                    "tool_use_id": "toolu_1",
+                }),
+            );
             let text = self.mcp.call(name, &step["args"]);
             say(format!("TOOL {name}: {text}"));
         } else if let Some(p) = step.get("permission") {
