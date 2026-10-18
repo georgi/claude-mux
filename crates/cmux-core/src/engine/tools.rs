@@ -72,10 +72,11 @@ impl ToolCall {
     }
 }
 
-/// Reads `.../pull/<n>` out of a pull request URL.
+/// Reads `.../pull/<n>` out of an `https` pull request URL.
 fn parse_pr(url: &str) -> Result<PrRef, EngineError> {
-    let number = url
-        .split_once("/pull/")
+    let number = Some(url)
+        .filter(|u| u.starts_with("https://"))
+        .and_then(|u| u.split_once("/pull/"))
         .map(|(_, rest)| {
             rest.chars()
                 .take_while(char::is_ascii_digit)

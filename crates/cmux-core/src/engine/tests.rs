@@ -3548,3 +3548,20 @@ fn a_change_touching_no_plan_still_persists_the_globals() {
         .unwrap();
     assert!(has_fx(&o, |e| matches!(e, Effect::PersistGlobals)));
 }
+
+#[test]
+fn only_https_pull_request_urls_are_accepted() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("pr-scheme", 1);
+    let a = h.start(&pid, &exec, 1);
+    for url in [
+        "http://github.com/o/r/pull/42",
+        "javascript:alert(1)//pull/42",
+        "file:///etc/pull/42",
+        "github.com/o/r/pull/42",
+    ] {
+        let e = err_of(h.tool(&a, ToolCall::SetTaskPr { url: url.into() }));
+        assert!(e.to_string().contains("pull request URL"), "{url}: {e}");
+    }
+    assert!(h.task(&pid, 1).pr.is_none());
+}
