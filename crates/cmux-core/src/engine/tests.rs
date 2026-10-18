@@ -3418,3 +3418,57 @@ fn a_new_attempt_closes_the_old_attempts_exited_item() {
     assert_eq!(h.task(&pid, 1).attempt, 2);
     assert_eq!(h.status(item), Delivery::Dismissed);
 }
+
+#[test]
+fn loose_terminals_are_created_sized_titled_and_closed() {
+    let mut h = H::new();
+    let o = h
+        .client(ClientAction::CreateTerminal {
+            kind: TermKind::Shell,
+            cwd: PathBuf::from("/home"),
+            size: (100, 30),
+        })
+        .unwrap();
+    let id = TermId(text_of(&o).parse().unwrap());
+    assert_eq!(h.st.loose, vec![id]);
+    assert_eq!(h.st.terminals[&id].size, (100, 30));
+    let second = h
+        .client(ClientAction::CreateTerminal {
+            kind: TermKind::Claude,
+            cwd: PathBuf::from("/home"),
+            size: (80, 24),
+        })
+        .unwrap();
+    assert_ne!(text_of(&second), id.0.to_string());
+
+    let size = |rows, owner: Option<&str>| RunnerEvent::TermSize {
+        term: id,
+        rows,
+        cols: 90,
+        owner: owner.map(|o| ClientId(o.into())),
+    };
+    h.runner(size(40, Some("web")));
+    assert_eq!(h.st.terminals[&id].size, (90, 40));
+    assert_eq!(h.st.terminals[&id].size_owner, Some(ClientId("web".into())));
+    // Unchanged: no new rev (H::go checks this).
+    h.runner(size(40, Some("web")));
+    h.runner(RunnerEvent::TermTitle {
+        term: id,
+        title: Some("vim".into()),
+    });
+    h.runner(RunnerEvent::TermTitle {
+        term: id,
+        title: Some("vim".into()),
+    });
+    // A gone terminal is ignored.
+    h.runner(RunnerEvent::TermTitle {
+        term: TermId(99),
+        title: None,
+    });
+
+    h.client(ClientAction::CloseTerminal { term: id }).unwrap();
+    assert!(!h.st.terminals.contains_key(&id));
+    assert!(!h.st.loose.contains(&id));
+    let e = err_of(h.client(ClientAction::CloseTerminal { term: id }));
+    assert!(e.to_string().contains("no terminal"), "{e}");
+}

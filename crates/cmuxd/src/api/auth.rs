@@ -99,7 +99,7 @@ fn bearer(h: &HeaderMap) -> Option<&str> {
     (scheme.eq_ignore_ascii_case("bearer") && !token.trim().is_empty()).then(|| token.trim())
 }
 
-fn cookie(h: &HeaderMap) -> Option<&str> {
+pub(super) fn cookie(h: &HeaderMap) -> Option<&str> {
     h.get_all(header::COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
@@ -143,7 +143,11 @@ pub async fn middleware(
     next.run(req).await
 }
 
-fn authenticate(app: &AppState, transport: Transport, h: &HeaderMap) -> ApiResult<Principal> {
+pub(super) fn authenticate(
+    app: &AppState,
+    transport: Transport,
+    h: &HeaderMap,
+) -> ApiResult<Principal> {
     if transport == Transport::Unix {
         // `uid_guard` already ran.
         return Ok(Principal {
