@@ -197,6 +197,7 @@ fn executor_snapshot() {
             ),
             ("CMUX_TOKEN".into(), TOKEN.into()),
             ("TERM".into(), "xterm-256color".into()),
+            ("CMUX_PERMISSION_WAIT_SECS".into(), "600".into()),
         ]
     );
     assert_eq!(s.session_id, SESSION);
@@ -359,7 +360,8 @@ fn env_scrub_removes_session_vars_and_remote_prefix_and_keeps_the_rest() {
             "CMUX_SOCK",
             "CMUX_AGENT",
             "CMUX_TOKEN",
-            "TERM"
+            "TERM",
+            "CMUX_PERMISSION_WAIT_SECS"
         ]
     );
     let get = |k: &str| out.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());

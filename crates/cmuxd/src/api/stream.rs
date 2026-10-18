@@ -8,9 +8,10 @@
 //!    authenticated the upgrade);
 //! 2. the server sends `welcome`, then `state` (full snapshot) or `deltas`
 //!    (always sent, possibly empty), then `presence`;
-//! 3. for each entry of `hello.terms`: a binary `Output` frame with the
-//!    missed bytes (omitted when there are none) or a `Snapshot` frame, then
-//!    a `size` message, as for `subscribe`;
+//! 3. for each entry of `hello.terms`: a `size` message, then a binary
+//!    `Output` frame with the missed bytes (omitted when there are none) or a
+//!    `Snapshot` frame, as for `subscribe` (the size comes first so the client
+//!    parser has the terminal's size before it replays a snapshot);
 //! 4. live: `deltas`, `presence`, `size`, `exit` and binary `Output` frames.
 //!
 //! Terminal ids on the wire are the engine's `TermId`s; the hub names the
@@ -643,19 +644,20 @@ impl Conn {
         if let Some(t) = self.app.hub.get_term(id) {
             return Some(t);
         }
-        // The engine registers a terminal (and tells clients) before its PTY
-        // exists: a client that reacts to the state delta at once would
-        // otherwise be told "no terminal". Give the PTY a moment.
-        let known = self
-            .app
-            .actor
-            .query(move |s| s.terminals.contains_key(&id))
-            .await
-            .ok()?;
-        if !known {
-            return None;
-        }
+        // Only a loose terminal can be known to the engine before its PTY
+        // exists (`POST /v1/terminals` registers it first); an agent's appears
+        // in state once its PTY is up, so a miss there is final. Wait for the
+        // loose one only while the engine still lists it.
         for _ in 0..200 {
+            let starting = self
+                .app
+                .actor
+                .query(move |s| s.terminals.get(&id).is_some_and(|t| t.agent.is_none()))
+                .await
+                .ok()?;
+            if !starting {
+                return None;
+            }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             if let Some(t) = self.app.hub.get_term(id) {
                 return Some(t);
@@ -708,11 +710,6 @@ impl Conn {
                 data,
             }),
         };
-        if let Some(f) = frame
-            && !send_frame(&self.out, f).await
-        {
-            return false;
-        }
         let size = ServerMsg::Size {
             term: id,
             rows: sub.size.rows,
@@ -720,6 +717,11 @@ impl Conn {
             owner: sub.size.owner.map(ClientId),
         };
         if !send_msg(&self.out, &size).await {
+            return false;
+        }
+        if let Some(f) = frame
+            && !send_frame(&self.out, f).await
+        {
             return false;
         }
         self.next_gen += 1;

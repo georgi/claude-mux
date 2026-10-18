@@ -1073,3 +1073,36 @@ async fn a_hook_that_disconnects_leaves_no_waiter() {
     let _ = &env.tmp;
     env.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exited_agents_terminal_keeps_its_final_screen_in_the_hub() {
+    let env = start_fake(
+        &[("executor", executor_script(json!([])))],
+        Duration::from_secs(600),
+    )
+    .await;
+    let (_, exec) = accepted_plan(&env).await;
+    let term = env.term_of(&exec).await.unwrap();
+    let agent: AgentId = exec.parse().unwrap();
+    env.app()
+        .actor
+        .client(
+            cmux_core::ids::ClientId("test".into()),
+            cmux_core::engine::ClientAction::StopAgent { agent },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let hub = env.app().hub.clone();
+    eventually("the process to end", async || {
+        hub.get_term(term)
+            .filter(|t| t.exited().borrow().is_some())
+            .map(|_| ())
+    })
+    .await;
+    // Give the runner time to (wrongly) drop it, then look again.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let t = hub.get_term(term).expect("terminal removed after exit");
+    assert!(t.screen_text().contains("TOOLS: "));
+    env.shutdown().await;
+}

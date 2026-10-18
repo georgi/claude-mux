@@ -258,10 +258,7 @@ async fn connect_order_and_input_echoes_in_order() {
         since_seq: None,
     })
     .await;
-    // A snapshot, then the size.
-    let Item::Frame(Frame::Snapshot { seq, .. }) = ws.next().await else {
-        panic!("snapshot first")
-    };
+    // The size, then a snapshot: the client parser needs the size first.
     assert!(matches!(
         ws.msg().await,
         ServerMsg::Size {
@@ -270,6 +267,9 @@ async fn connect_order_and_input_echoes_in_order() {
             ..
         }
     ));
+    let Item::Frame(Frame::Snapshot { seq, .. }) = ws.next().await else {
+        panic!("snapshot after the size")
+    };
 
     let mut next = Some(seq);
     let mut all = Vec::new();
@@ -315,6 +315,7 @@ async fn reconnect_within_the_ring_sends_only_the_missing_bytes() {
         since_seq: None,
     })
     .await;
+    assert!(matches!(ws.msg().await, ServerMsg::Size { .. }));
     let Item::Frame(Frame::Snapshot { seq, .. }) = ws.next().await else {
         panic!()
     };

@@ -106,6 +106,24 @@ impl AgentRuntime {
         move |handle| Box::new(AgentRunner { rt, handle })
     }
 
+    /// Removes exited terminals the engine no longer lists (a resumed agent's
+    /// old one, a closed one) from the hub.
+    fn forget_gone_terminals(&self, state: &State) {
+        for key in self.hub.ids() {
+            let listed = key
+                .strip_prefix('t')
+                .and_then(|n| n.parse::<u32>().ok())
+                .is_some_and(|n| state.terminals.contains_key(&TermId(n)));
+            let exited = self
+                .hub
+                .get(&key)
+                .is_some_and(|t| t.exited().borrow().is_some());
+            if exited && !listed {
+                self.hub.remove(&key);
+            }
+        }
+    }
+
     fn note_started(&self, id: &str) {
         self.started
             .lock()
@@ -184,6 +202,7 @@ impl EffectRunner for AgentRunner {
                 let Some(req) = SpawnRequest::from_effect(effect) else {
                     return false;
                 };
+                self.rt.forget_gone_terminals(state);
                 let spec = build_spawn(&self.rt.spawn, &req);
                 let cfg = if req.level == Level::Sub {
                     TermConfig::small()
@@ -309,9 +328,9 @@ async fn start_agent(
         Err(_) => None,
     };
     let code = info.and_then(|i| i.signal.is_none().then_some(i.code as i32));
+    // The terminal stays in the hub with its final screen until the engine
+    // drops its record (see `forget_gone_terminals`).
     handle.send(Command::Runner(RunnerEvent::Exited { agent, code }));
-    // The stream has seen the exit by now; the engine owns the record.
-    rt.hub.remove(&id);
 }
 
 /// The one line pasted into the PTY for a digest. A long or multi-line digest
