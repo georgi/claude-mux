@@ -597,16 +597,89 @@ testing_secs = 30
         assert!(!Config::load(&o).unwrap().auto_resume);
     }
 
+    /// The reference in README.md: it loads, it shows every key, and the keys
+    /// with a default show that default. A `#key` line (no space) is a key
+    /// without a default, shown with an example value.
     #[test]
-    fn the_readme_example_loads_with_the_defaults() {
+    fn readme_config_reference_matches_the_defaults() {
         let readme = include_str!("../../../README.md");
-        let start = readme.find("```toml\nlisten").expect("example") + "```toml\n".len();
-        let text = &readme[start..start + readme[start..].find("```").unwrap()];
-        let c: Config = toml::from_str(text).unwrap();
-        assert_eq!(c.limits, LimitsConfig::default());
-        assert_eq!(c.timeouts.stall_secs, TimeoutsConfig::default().stall_secs);
-        assert!(c.auto_resume);
-        assert_eq!(c.github, GithubConfig::default());
+        let at = readme
+            .find("<!-- config-reference")
+            .expect("reference marker");
+        let rest = &readme[at..];
+        let start = rest.find("```toml\n").expect("toml block") + "```toml\n".len();
+        let block = &rest[start..start + rest[start..].find("```").unwrap()];
+        let text: String = block
+            .lines()
+            .map(|l| match l.strip_prefix('#') {
+                Some(r) if r.starts_with(|c: char| c.is_ascii_lowercase() || c == '[') => r,
+                _ => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut c: Config = toml::from_str(&text).unwrap();
+
+        // Every key without a default has an example.
+        let options = [
+            c.data_dir.is_some(),
+            c.socket.is_some(),
+            c.name.is_some(),
+            c.public_url.is_some(),
+            c.tls.is_some(),
+            c.agents.executor.permission_mode.is_some(),
+            c.agents.executor.model.is_some(),
+            c.timeouts.permission_wait_secs.is_some(),
+            c.push.ntfy.is_some(),
+            c.push.ntfy_token.is_some(),
+            c.push.subject.is_some(),
+        ];
+        assert!(options.iter().all(|o| *o), "{options:?}");
+        // Without them, what is left is the defaults.
+        (c.data_dir, c.socket, c.name, c.public_url, c.tls) = (None, None, None, None, None);
+        c.agents.executor = LevelConfig::default();
+        c.timeouts.permission_wait_secs = None;
+        c.push = PushConfig::default();
+        assert_eq!(c.listen.as_deref(), Some(DEFAULT_TCP));
+        c.listen = None;
+        assert_eq!(c, Config::default());
+
+        // Every key and table of the defaults is named.
+        fn names(prefix: &str, t: &toml::Table, out: &mut Vec<String>) {
+            for (k, v) in t {
+                match v {
+                    toml::Value::Table(sub) => {
+                        let path = format!("{prefix}{k}");
+                        out.push(format!("[{path}]"));
+                        names(&format!("{path}."), sub, out);
+                    }
+                    _ => out.push(format!("{k} =")),
+                }
+            }
+        }
+        let mut all = Vec::new();
+        names(
+            "",
+            &toml::Table::try_from(Config::default()).unwrap(),
+            &mut all,
+        );
+        all.extend(
+            [
+                "data_dir =",
+                "socket =",
+                "listen =",
+                "name =",
+                "public_url =",
+            ]
+            .map(String::from),
+        );
+        all.extend(["[tls]", "cert =", "key =", "permission_mode =", "model ="].map(String::from));
+        all.extend(["ntfy =", "ntfy_token =", "subject ="].map(String::from));
+        for name in all {
+            assert!(
+                text.lines().any(|l| l.trim_start().starts_with(&name)),
+                "README config reference lacks {name}"
+            );
+        }
     }
 
     #[test]

@@ -333,8 +333,12 @@ impl Shared {
         self.exit_tx.send_replace(Some(info));
     }
 
-    /// Flusher thread: one coalesced chunk per batch interval.
+    /// Flusher thread: at most one coalesced chunk per batch interval. The
+    /// first output after a quiet interval goes out at once (a typed key's
+    /// echo waits for no timer); output that follows within the interval
+    /// waits for its end, so a burst still costs one chunk per interval.
     fn flush_loop(&self) {
+        let mut last: Option<std::time::Instant> = None;
         loop {
             let mut st = self.lock();
             while st.pending.is_empty() && !st.closed {
@@ -343,9 +347,14 @@ impl Shared {
             if st.pending.is_empty() {
                 return;
             }
-            drop(st);
-            std::thread::sleep(self.batch);
-            self.lock().flush();
+            let wait = last.map_or(Duration::ZERO, |t| self.batch.saturating_sub(t.elapsed()));
+            if !wait.is_zero() {
+                drop(st);
+                std::thread::sleep(wait);
+                st = self.lock();
+            }
+            st.flush();
+            last = Some(std::time::Instant::now());
         }
     }
 

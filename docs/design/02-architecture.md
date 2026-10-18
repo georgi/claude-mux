@@ -213,7 +213,7 @@ Each terminal has:
 - a subscriber list;
 - the size and the size owner.
 
-The PTY reader appends to the ring, feeds the parser, and notifies subscribers. Output to each subscriber is batched every 16 ms, so a burst of spinner redraws costs one frame per tick, which is the same coalescing as claude-mux's `dirty` flag.
+The PTY reader appends to the ring, feeds the parser, and notifies subscribers. Output to each subscriber is sent at most once per 16 ms, so a burst of spinner redraws costs one frame per tick. The first output after a quiet tick goes out at once, so a typed key's echo waits for no timer. This is the same coalescing as claude-mux's `dirty` flag.
 
 When a client subscribes with `since_seq`:
 - if `since_seq` is still in the ring, it receives the bytes after it;
@@ -472,7 +472,9 @@ The templates live in `cmux-core/prompts/` and are compiled in. A file of the sa
 
 ## 12. Open questions
 
-1. **Server restarts kill PTYs.** Agents are resumed with `--resume`, but a turn in flight is lost. Keeping PTYs alive across a `cmuxd` upgrade would need a separate PTY-holder process. This is left out of v1.
-2. **Several users.** The design is single-user. Teams would need accounts and per-plan access, which is out of scope.
-3. **Executor model**: should the executor default to a cheaper model? This is a per-level config setting with no default.
-4. **Other engines** (Codex and others): `claude/spawn.rs`, the hooks and the transcript reader are the engine seam.
+Status after M5. **Answered** means the build settled the question; **open** means it stays for after v1.
+
+1. **Server restarts kill PTYs.** *Answered for v1, PTY holder still open.* On start, `cmuxd` marks the old processes gone, resumes the agents that were working with `--resume` (`auto_resume = true`, the default), and resets unconfirmed deliveries to pending. A turn in flight is lost. Idle agents are resumed on demand (`R` in the tree, `cmux resume`). Keeping PTYs alive across an upgrade would still need a separate PTY-holder process.
+2. **Several users.** *Open, out of scope.* The design stays single-user. Use a dedicated Unix user per person on a shared machine.
+3. **Executor model.** *Answered.* Each level has its own `model` and `permission_mode` in `config.toml` (`[agents.executor]`, `[agents.task]`, `[agents.sub]`). There is no default model: an unset `model` means Claude's own default. An unset `permission_mode` means `auto`.
+4. **Other engines** (Codex and others). *Open.* `claude/spawn.rs`, the hooks and the transcript reader stay the engine seam. The real-claude suite (`cargo test -p cmuxd --test real_claude -- --ignored`) checks the Claude behaviour that this seam depends on.
