@@ -299,6 +299,47 @@ export type SettingsResp = { tasks_per_plan: number, subagents_per_task: number,
  */
 live_processes: number, permission_wait_secs: number, claude: Array<LevelSettings>, };
 
+export type NotifyKind = "permission" | "question" | "plan_review" | "stalled" | "ci_failing" | "plan_done";
+
+export type VapidResp = { 
+/**
+ * The uncompressed P-256 public key, URL-safe base64 without padding:
+ * the `applicationServerKey` for `PushManager.subscribe`.
+ */
+public_key: string, };
+
+export type PushKeys = { 
+/**
+ * URL-safe base64.
+ */
+p256dh: string, 
+/**
+ * URL-safe base64.
+ */
+auth: string, };
+
+export type PushSubscribeReq = { endpoint: string, keys: PushKeys, 
+/**
+ * What this device wants; empty means nothing.
+ */
+kinds: Array<NotifyKind>, };
+
+export type PushUnsubscribeReq = { endpoint: string, };
+
+export type PushPayload = { kind: NotifyKind, 
+/**
+ * The item to answer; `None` for `plan_done`.
+ */
+item: number | null, 
+/**
+ * The plan id, for `plan_done`.
+ */
+plan: string | null, 
+/**
+ * At most [`PUSH_SUMMARY_MAX`] characters.
+ */
+summary: string, };
+
 export type AgentHookReq = { 
 /**
  * `CMUX_AGENT`.

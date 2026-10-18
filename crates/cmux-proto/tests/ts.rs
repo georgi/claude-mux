@@ -39,7 +39,8 @@ fn generate() -> String {
         TranscriptResp, MessageReq, AnswerAction, AnswerReq, NewTerminalKind,
         CreateTerminalReq, SessionSummary, ProjectsResp, ScrollbackResp, PairStartReq,
         PairStartResp, PairCompleteReq, PairCompleteResp, DeviceView, DevicesResp, RepoInfo,
-        ReposResp, AddRepoReq, LevelSettings, SettingsResp,
+        ReposResp, AddRepoReq, LevelSettings, SettingsResp, NotifyKind, VapidResp, PushKeys,
+        PushSubscribeReq, PushUnsubscribeReq, PushPayload,
         AgentHookReq, AgentHookResp, AgentToolReq, AgentToolResp, serde_json::Value,
         // Stream
         ClientKind, TermPos, ClientMsg, ServerMsg, PresenceEntry,

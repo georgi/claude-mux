@@ -2821,15 +2821,20 @@ fn plan_done_needs_all_tasks_settled_and_cancel_stops_everything() {
         &o,
         |e| matches!(e, Effect::KillAgent { agent, .. } if *agent == a)
     ));
-    h.tool(
-        &exec,
-        ToolCall::UpdatePlan {
-            state: Some(PlanState::Done),
-            title: None,
-        },
-    )
-    .unwrap();
+    let o = h
+        .tool(
+            &exec,
+            ToolCall::UpdatePlan {
+                state: Some(PlanState::Done),
+                title: None,
+            },
+        )
+        .unwrap();
     assert_eq!(h.plan(&pid).state, PlanState::Done);
+    assert!(has_fx(
+        &o,
+        |e| matches!(e, Effect::NotifyPlanDone { plan } if *plan == pid)
+    ));
     assert!(
         err_of(h.tool(
             &exec,

@@ -28,6 +28,7 @@ use crate::config::{self, Config, ConfigError};
 use crate::devices::Devices;
 use crate::diag::{Diag, DiagLayer};
 use crate::git::github::{self, Gh, GhCli};
+use crate::push::{Push, PushRunner};
 use crate::store::{Store, StoreError, StoreWriter};
 use crate::term::hub::Hub;
 
@@ -184,7 +185,16 @@ impl ServerBuilder {
             let sub = tracing_subscriber::registry().with(DiagLayer(diag.clone()));
             let _ = tracing::subscriber::set_global_default(sub);
         }
+        let push = Push::open(
+            &data_dir,
+            &config.push,
+            config.public_url.as_deref(),
+            diag.clone(),
+        )
+        .map(Arc::new)
+        .map_err(|e| ServerError::Io("push".into(), e))?;
         let writer = StoreWriter::start(store.clone());
+        let push_runner = PushRunner(push.clone());
         let actor = actor::spawn(
             state,
             ActorOptions {
@@ -196,20 +206,13 @@ impl ServerBuilder {
             move |handle| {
                 let mut all: Vec<Box<dyn EffectRunner>> = vec![Box::new(PersistRunner(writer))];
                 all.extend(runners.into_iter().map(|make| make(handle.clone())));
+                all.push(Box::new(push_runner));
                 Box::new(CompositeRunner(all))
             },
         );
         let devices = Devices::open(&data_dir, clock.clone())
             .map_err(|e| ServerError::Io("devices.json".into(), e))?;
-        let app = AppState::new(
-            actor,
-            devices,
-            config.clone(),
-            diag,
-            data_dir,
-            hub,
-            transcripts,
-        );
+        let app = AppState::new(actor, devices, config.clone(), diag, hub, transcripts, push);
         close_orphan_terminals(&app).await;
         let extra = extra.unwrap_or_else(|| Box::new(Extra::default));
 

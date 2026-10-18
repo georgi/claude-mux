@@ -45,6 +45,12 @@ pub mod route {
     pub const SETTINGS: &str = "/v1/settings";
     /// `POST` (bearer token) sets the web session cookie; `DELETE` clears it.
     pub const SESSION: &str = "/v1/session";
+    /// `GET` (VapidResp): the server's Web Push key.
+    pub const PUSH_VAPID: &str = "/v1/push/vapid";
+    /// `POST` (PushSubscribeReq): add or update this browser's subscription.
+    pub const PUSH_SUBSCRIBE: &str = "/v1/push/subscribe";
+    /// `POST` (PushUnsubscribeReq): drop a subscription.
+    pub const PUSH_UNSUBSCRIBE: &str = "/v1/push/unsubscribe";
     pub const AGENT_HOOK: &str = "/v1/agent/hook";
     pub const AGENT_TOOL: &str = "/v1/agent/tool";
 
@@ -559,6 +565,93 @@ pub struct SettingsResp {
     pub permission_wait_secs: u64,
     pub claude: Vec<LevelSettings>,
 }
+
+// ---------------------------------------------------------------------------
+// Push notifications (architecture 11.3)
+// ---------------------------------------------------------------------------
+
+/// What a device can choose to be notified about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum NotifyKind {
+    Permission,
+    Question,
+    PlanReview,
+    /// A stalled agent, or one that exited without a report.
+    Stalled,
+    CiFailing,
+    PlanDone,
+}
+
+impl NotifyKind {
+    pub const ALL: [NotifyKind; 6] = [
+        NotifyKind::Permission,
+        NotifyKind::Question,
+        NotifyKind::PlanReview,
+        NotifyKind::Stalled,
+        NotifyKind::CiFailing,
+        NotifyKind::PlanDone,
+    ];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NotifyKind::Permission => "permission",
+            NotifyKind::Question => "question",
+            NotifyKind::PlanReview => "plan_review",
+            NotifyKind::Stalled => "stalled",
+            NotifyKind::CiFailing => "ci_failing",
+            NotifyKind::PlanDone => "plan_done",
+        }
+    }
+}
+
+/// `GET /push/vapid`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct VapidResp {
+    /// The uncompressed P-256 public key, URL-safe base64 without padding:
+    /// the `applicationServerKey` for `PushManager.subscribe`.
+    pub public_key: String,
+}
+
+/// The `keys` of a browser `PushSubscription`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PushKeys {
+    /// URL-safe base64.
+    pub p256dh: String,
+    /// URL-safe base64.
+    pub auth: String,
+}
+
+/// `POST /push/subscribe`. The same endpoint again replaces the kinds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PushSubscribeReq {
+    pub endpoint: String,
+    pub keys: PushKeys,
+    /// What this device wants; empty means nothing.
+    pub kinds: Vec<NotifyKind>,
+}
+
+/// `POST /push/unsubscribe`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PushUnsubscribeReq {
+    pub endpoint: String,
+}
+
+/// What a push carries: never a message body or a tool input beyond the
+/// summary. The service worker answers `item` with its actions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PushPayload {
+    pub kind: NotifyKind,
+    /// The item to answer; `None` for `plan_done`.
+    pub item: Option<u64>,
+    /// The plan id, for `plan_done`.
+    pub plan: Option<String>,
+    /// At most [`PUSH_SUMMARY_MAX`] characters.
+    pub summary: String,
+}
+
+/// The longest push summary, in characters.
+pub const PUSH_SUMMARY_MAX: usize = 60;
 
 // ---------------------------------------------------------------------------
 // Agent endpoint (Unix socket only; agent tokens only)

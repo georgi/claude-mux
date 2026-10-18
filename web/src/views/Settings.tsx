@@ -1,6 +1,18 @@
 import { useEffect, useState } from "preact/hooks";
 import type { Api } from "../api/http";
 import type { DeviceView, SettingsResp, StatusResp } from "../api/types";
+import {
+  disablePush,
+  enablePush,
+  kindsOf,
+  loadNotify,
+  NOTIFY_KINDS,
+  type PushState,
+  pushState,
+  saveNotify,
+  updateKinds,
+} from "../push";
+import { isIos, isStandalone, useInstall } from "../pwa";
 import { AddRepo, useRepos } from "./Board";
 
 interface Props {
@@ -34,35 +46,14 @@ function uptime(s: number): string {
   return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
 }
 
-/** The item kinds a device can choose to be notified about. */
-export const NOTIFY_KINDS = [
-  ["permission", "Permission requests"],
-  ["question", "Questions"],
-  ["plan_review", "Plans ready for review"],
-  ["stalled", "Stalled or exited agents"],
-  ["ci_failing", "CI failing"],
-  ["plan_done", "Finished plans"],
-] as const;
-
-const NOTIFY_KEY = "cmux.notify";
-
-export function loadNotify(): Record<string, boolean> {
-  try {
-    const raw = localStorage.getItem(NOTIFY_KEY);
-    if (raw) return JSON.parse(raw) as Record<string, boolean>;
-  } catch {
-    // Private mode or bad JSON: the defaults.
-  }
-  return Object.fromEntries(NOTIFY_KINDS.map(([k]) => [k, true]));
-}
-
 /** Settings (UI design 4.3). */
 export function Settings({ api, readOnly }: Props) {
   return (
     <section class="settings form-page">
       <h2>Settings</h2>
       <Devices api={api} readOnly={readOnly} />
-      <Notifications />
+      <Notifications api={api} />
+      <Install />
       <Repositories api={api} readOnly={readOnly} />
       <ServerSettings api={api} />
       <Status api={api} />
@@ -111,16 +102,39 @@ function Devices({ api, readOnly }: Props) {
   );
 }
 
-function Notifications() {
+const PUSH_TEXT: Record<PushState, string> = {
+  unsupported: "This browser has no Web Push. On iOS, add the app to the home screen first.",
+  insecure: "Web Push needs HTTPS.",
+  denied: "Notifications are blocked for this site in the browser settings.",
+  off: "Push is off on this device.",
+  on: "Push is on for this device.",
+};
+
+function Notifications({ api }: { api: Api }) {
   const [on, setOn] = useState(loadNotify);
+  const [push, setPush] = useState<PushState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    pushState().then(setPush, () => setPush("unsupported"));
+  }, []);
+  const run = async (f: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await f();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+      setPush(await pushState().catch(() => "unsupported" as const));
+    }
+  };
   const flip = (k: string) => {
     const next = { ...on, [k]: !on[k] };
     setOn(next);
-    try {
-      localStorage.setItem(NOTIFY_KEY, JSON.stringify(next));
-    } catch {
-      // Not stored; it still applies until reload.
-    }
+    saveNotify(next);
+    if (push === "on") void run(() => updateKinds(api, kindsOf(next)));
   };
   return (
     <section>
@@ -131,8 +145,40 @@ function Notifications() {
           <input type="checkbox" checked={on[k] !== false} onChange={() => flip(k)} /> {label}
         </label>
       ))}
+      {push && <p class="muted small">{PUSH_TEXT[push]}</p>}
+      {push === "off" && (
+        <button disabled={busy} onClick={() => void run(() => enablePush(api, kindsOf(on)))}>
+          Enable push
+        </button>
+      )}
+      {push === "on" && (
+        <button class="ghost" disabled={busy} onClick={() => void run(() => disablePush(api))}>
+          Disable
+        </button>
+      )}
+      {error && <p class="error small">{error}</p>}
     </section>
   );
+}
+
+function Install() {
+  const install = useInstall();
+  if (isStandalone()) return null;
+  if (install)
+    return (
+      <section>
+        <h3>App</h3>
+        <button onClick={() => void install()}>Install app</button>
+      </section>
+    );
+  if (isIos())
+    return (
+      <section>
+        <h3>App</h3>
+        <p class="muted small">Install: Share → Add to Home Screen.</p>
+      </section>
+    );
+  return null;
 }
 
 function Repositories({ api, readOnly }: Props) {

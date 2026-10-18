@@ -121,9 +121,11 @@ pub async fn middleware(
         Err(e) => return e.into_response(),
     };
     if mutating(req.method()) {
-        // Starting a session only mints a cookie; read-only devices may.
-        let is_session = req.uri().path() == route::SESSION;
-        if !principal.scope.can_write() && !is_session {
+        // Starting a session only mints a cookie, and a push subscription
+        // only notifies; read-only devices may do both.
+        let path = req.uri().path();
+        let read_ok = path == route::SESSION || path.starts_with("/v1/push/");
+        if !principal.scope.can_write() && !read_ok {
             return ApiError::new(ErrorCode::Forbidden, "error: this device is read-only")
                 .into_response();
         }
@@ -270,6 +272,7 @@ async fn revoke_device(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     if app.devices.revoke(&id)? {
+        app.push.drop_device(&id)?;
         app.diag.log(
             "info",
             "device_revoked",

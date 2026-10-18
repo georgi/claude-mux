@@ -10,6 +10,7 @@
 pub mod auth;
 mod idem;
 pub mod projects;
+pub mod push;
 pub mod rest;
 pub mod stream;
 pub mod terminals;
@@ -75,6 +76,8 @@ pub struct Shared {
     pub github: crate::git::github::Status,
     /// Agents' conversations, for `/transcript` and `sub_chat`.
     pub transcripts: Arc<Transcripts>,
+    /// Web Push subscriptions and the VAPID key.
+    pub push: Arc<crate::push::Push>,
     idem: idem::Cache,
 }
 
@@ -91,11 +94,12 @@ impl AppState {
         devices: Devices,
         config: Config,
         diag: Diag,
-        data_dir: std::path::PathBuf,
         hub: Arc<Hub>,
         transcripts: Arc<Transcripts>,
+        push: Arc<crate::push::Push>,
     ) -> AppState {
         let clock = actor.clock().clone();
+        let data_dir = config.data_dir();
         let p = &config.pairing;
         let pairing = Pairing::new(clock.clone(), p.ttl_secs, p.attempts_per_min);
         let info = ServerInfo {
@@ -120,6 +124,7 @@ impl AppState {
             base_url,
             github: crate::git::github::Status::default(),
             transcripts,
+            push,
         }))
     }
 }
@@ -207,6 +212,7 @@ pub fn router_with(app: AppState, transport: Transport, extra: Extra) -> Router 
         .merge(auth::routes())
         .merge(terminals::routes())
         .merge(projects::routes())
+        .merge(push::routes())
         .merge(extra.authed)
         .layer(middleware::from_fn_with_state(
             app.clone(),

@@ -442,6 +442,8 @@ impl Ctx<'_> {
             }
             Some(PlanState::Done) => {
                 self.plan_mut(pi).state = PlanState::Done;
+                let plan = self.plan(pi).id.clone();
+                self.fx.push(Effect::NotifyPlanDone { plan });
                 text("the plan is done")
             }
             _ => text("plan updated"),
