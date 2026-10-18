@@ -58,7 +58,10 @@ fn parse_utf8(b: &[u8]) -> (Key, usize) {
     if b.len() < len {
         return (Key::Unknown, b.len());
     }
-    match std::str::from_utf8(&b[..len]).ok().and_then(|s| s.chars().next()) {
+    match std::str::from_utf8(&b[..len])
+        .ok()
+        .and_then(|s| s.chars().next())
+    {
         Some(c) => (Key::Char(c), len),
         None => (Key::Unknown, len),
     }
@@ -206,15 +209,24 @@ pub fn parse_mouse(b: &[u8]) -> Option<(Option<Mouse>, usize)> {
     if !b.starts_with(b"\x1b[<") {
         return None;
     }
-    let Some(end) = b[3..].iter().position(|&c| c == b'M' || c == b'm').map(|i| i + 3) else {
+    let Some(end) = b[3..]
+        .iter()
+        .position(|&c| c == b'M' || c == b'm')
+        .map(|i| i + 3)
+    else {
         return Some((None, b.len()));
     };
     let body = std::str::from_utf8(&b[3..end]).ok();
-    let nums: Vec<u16> = body.map(|s| s.split(';').filter_map(|n| n.parse().ok()).collect()).unwrap_or_default();
+    let nums: Vec<u16> = body
+        .map(|s| s.split(';').filter_map(|n| n.parse().ok()).collect())
+        .unwrap_or_default();
     let m = match nums[..] {
-        [button, col, row] if col >= 1 && row >= 1 => {
-            Some(Mouse { button, col: col - 1, row: row - 1, release: b[end] == b'm' })
-        }
+        [button, col, row] if col >= 1 && row >= 1 => Some(Mouse {
+            button,
+            col: col - 1,
+            row: row - 1,
+            release: b[end] == b'm',
+        }),
         _ => None,
     };
     Some((m, end + 1))
@@ -242,15 +254,30 @@ mod tests {
         assert_eq!(parse_all(b"\x1b"), vec![Key::Esc]);
         assert_eq!(
             parse_mouse(b"\x1b[<64;10;5Mrest"),
-            Some((Some(Mouse { button: 64, col: 9, row: 4, release: false }), 11))
+            Some((
+                Some(Mouse {
+                    button: 64,
+                    col: 9,
+                    row: 4,
+                    release: false
+                }),
+                11
+            ))
         );
         assert_eq!(find_mouse(b"ab\x1b[<0;1;1m"), Some(2));
         assert!(parse_mouse(b"\x1b[<0;1;1m").unwrap().0.unwrap().release);
         assert_eq!(parse_all(b"\x1bx"), vec![Key::Alt('x')]);
         assert_eq!(
             parse_all(b"\x1b[1;5A\x1b[1;3D\x1b\x1b[C"),
-            vec![Key::CtrlArrow(Dir::Up), Key::AltArrow(Dir::Left), Key::AltArrow(Dir::Right)]
+            vec![
+                Key::CtrlArrow(Dir::Up),
+                Key::AltArrow(Dir::Left),
+                Key::AltArrow(Dir::Right)
+            ]
         );
-        assert_eq!(parse_all(b"\x1b[200~hi\x1b[201~"), vec![Key::Unknown, Key::Char('h'), Key::Char('i'), Key::Unknown]);
+        assert_eq!(
+            parse_all(b"\x1b[200~hi\x1b[201~"),
+            vec![Key::Unknown, Key::Char('h'), Key::Char('i'), Key::Unknown]
+        );
     }
 }

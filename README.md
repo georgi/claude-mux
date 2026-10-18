@@ -45,7 +45,7 @@ You need a Rust toolchain and the [Claude Code](https://docs.claude.com/en/docs/
 ```sh
 git clone https://github.com/georgi/claude-mux.git
 cd claude-mux
-cargo install --path .
+cargo install --path crates/cmux
 ```
 
 ## Quick start

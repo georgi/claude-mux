@@ -1,0 +1,92 @@
+{
+ "hooks": {
+  "SessionStart": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "__SPIKES_DIR__/hooks/log-hook.sh SessionStart",
+      "timeout": 4
+     }
+    ]
+   }
+  ],
+  "UserPromptSubmit": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "__SPIKES_DIR__/hooks/log-hook.sh UserPromptSubmit",
+      "timeout": 4
+     }
+    ]
+   }
+  ],
+  "Stop": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "__SPIKES_DIR__/hooks/log-hook.sh Stop",
+      "timeout": 4
+     }
+    ]
+   }
+  ],
+  "Notification": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "__SPIKES_DIR__/hooks/log-hook.sh Notification",
+      "timeout": 4
+     }
+    ]
+   }
+  ],
+  "PreToolUse": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "__SPIKES_DIR__/hooks/log-hook.sh PreToolUse",
+      "timeout": 4
+     }
+    ]
+   }
+  ],
+  "PermissionRequest": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "__SPIKES_DIR__/hooks/log-hook.sh PermissionRequest",
+      "timeout": 4
+     }
+    ]
+   }
+  ],
+  "SessionEnd": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "__SPIKES_DIR__/hooks/log-hook.sh SessionEnd",
+      "timeout": 4
+     }
+    ]
+   }
+  ],
+  "PostToolUse": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "__SPIKES_DIR__/hooks/log-hook.sh PostToolUse",
+      "timeout": 4
+     }
+    ]
+   }
+  ]
+ }
+}

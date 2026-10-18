@@ -1,0 +1,8 @@
+[package]
+name = "cmuxd"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cmux-core = { path = "../cmux-core" }
+cmux-proto = { path = "../cmux-proto" }

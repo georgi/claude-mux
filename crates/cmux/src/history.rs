@@ -33,7 +33,9 @@ pub fn claude_dir() -> PathBuf {
 }
 
 pub fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 /// Cache of parsed transcripts keyed by path, invalidated by (mtime, len).
@@ -49,13 +51,19 @@ pub fn scan(index: &SharedIndex) -> Vec<SessionInfo> {
     let mut files = Vec::new();
     if let Ok(projects) = std::fs::read_dir(claude_dir().join("projects")) {
         for p in projects.flatten() {
-            let Ok(entries) = std::fs::read_dir(p.path()) else { continue };
+            let Ok(entries) = std::fs::read_dir(p.path()) else {
+                continue;
+            };
             for e in entries.flatten() {
                 let path = e.path();
                 if path.extension().is_some_and(|x| x == "jsonl")
                     && let Ok(md) = e.metadata()
                 {
-                    files.push((path, md.modified().unwrap_or(SystemTime::UNIX_EPOCH), md.len()));
+                    files.push((
+                        path,
+                        md.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                        md.len(),
+                    ));
                 }
             }
         }
@@ -65,12 +73,17 @@ pub fn scan(index: &SharedIndex) -> Vec<SessionInfo> {
         let idx = index.lock().unwrap();
         files
             .iter()
-            .filter(|(p, m, l)| !matches!(idx.cache.get(p), Some((cm, cl, _)) if cm == m && cl == l))
+            .filter(
+                |(p, m, l)| !matches!(idx.cache.get(p), Some((cm, cl, _)) if cm == m && cl == l),
+            )
             .cloned()
             .collect()
     };
 
-    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(8);
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(8);
     let chunk = todo.len().div_ceil(workers).max(1);
     let parsed: Vec<_> = std::thread::scope(|s| {
         let handles: Vec<_> = todo
@@ -83,7 +96,10 @@ pub fn scan(index: &SharedIndex) -> Vec<SessionInfo> {
                 })
             })
             .collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
     });
 
     let mut idx = index.lock().unwrap();
@@ -94,7 +110,7 @@ pub fn scan(index: &SharedIndex) -> Vec<SessionInfo> {
         .iter()
         .filter_map(|(p, _, _)| idx.cache.get(p).and_then(|(_, _, i)| i.clone()))
         .collect();
-    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    out.sort_by_key(|s| std::cmp::Reverse(s.modified));
     out
 }
 
@@ -114,7 +130,11 @@ fn parse_transcript(path: &Path, modified: SystemTime, len: u64) -> Option<Sessi
     let mut f = File::open(path).ok()?;
     let head = read_range(&mut f, 0, HEAD_BYTES);
     let tail = if len > HEAD_BYTES {
-        read_range(&mut f, len.saturating_sub(TAIL_BYTES).max(HEAD_BYTES), TAIL_BYTES)
+        read_range(
+            &mut f,
+            len.saturating_sub(TAIL_BYTES).max(HEAD_BYTES),
+            TAIL_BYTES,
+        )
     } else {
         String::new()
     };
@@ -129,23 +149,31 @@ fn parse_transcript(path: &Path, modified: SystemTime, len: u64) -> Option<Sessi
     for line in head.lines().chain(tail.lines()) {
         let is_user = line.contains("\"type\":\"user\"");
         let wants_cwd = cwd.is_none() && line.contains("\"cwd\":");
-        let is_title = line.contains("\"type\":\"custom-title\"") || line.contains("\"type\":\"ai-title\"");
+        let is_title =
+            line.contains("\"type\":\"custom-title\"") || line.contains("\"type\":\"ai-title\"");
         let is_last = line.contains("\"type\":\"last-prompt\"");
         if !(wants_cwd || is_title || is_last || (is_user && first_prompt.is_none())) {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         if cwd.is_none()
             && let Some(c) = v.get("cwd").and_then(Value::as_str)
         {
             cwd = Some(PathBuf::from(c));
-            branch = v.get("gitBranch").and_then(Value::as_str).map(str::to_string);
+            branch = v
+                .get("gitBranch")
+                .and_then(Value::as_str)
+                .map(str::to_string);
         }
         match v.get("type").and_then(Value::as_str) {
             Some("custom-title") => custom_title = str_field(&v, "customTitle").or(custom_title),
             Some("ai-title") => ai_title = str_field(&v, "aiTitle").or(ai_title),
             Some("last-prompt") => last_prompt = str_field(&v, "lastPrompt").or(last_prompt),
-            Some("user") if first_prompt.is_none() && v.get("isMeta") != Some(&Value::Bool(true)) => {
+            Some("user")
+                if first_prompt.is_none() && v.get("isMeta") != Some(&Value::Bool(true)) =>
+            {
                 first_prompt = user_text(&v);
             }
             _ => {}
@@ -161,11 +189,22 @@ fn parse_transcript(path: &Path, modified: SystemTime, len: u64) -> Option<Sessi
         .or_else(|| first_prompt.clone())
         .or_else(|| last_prompt.clone())
         .unwrap_or_else(|| "(untitled)".into());
-    Some(SessionInfo { id, cwd, title: one_line(&title), first_prompt, last_prompt, modified, branch })
+    Some(SessionInfo {
+        id,
+        cwd,
+        title: one_line(&title),
+        first_prompt,
+        last_prompt,
+        modified,
+        branch,
+    })
 }
 
 fn str_field(v: &Value, k: &str) -> Option<String> {
-    v.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
+    v.get(k)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// Extract the human-written text of a user message. Skips tool results and
@@ -203,15 +242,23 @@ pub struct LiveSession {
 
 pub fn live_sessions() -> Vec<LiveSession> {
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(claude_dir().join("sessions")) else { return out };
+    let Ok(entries) = std::fs::read_dir(claude_dir().join("sessions")) else {
+        return out;
+    };
     for e in entries.flatten() {
         let path = e.path();
         if path.extension().is_none_or(|x| x != "json") {
             continue;
         }
-        let Ok(s) = std::fs::read_to_string(&path) else { continue };
-        let Ok(v) = serde_json::from_str::<Value>(&s) else { continue };
-        let Some(pid) = v.get("pid").and_then(Value::as_u64) else { continue };
+        let Ok(s) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&s) else {
+            continue;
+        };
+        let Some(pid) = v.get("pid").and_then(Value::as_u64) else {
+            continue;
+        };
         let pid = pid as u32;
         // Stale files can outlive their process.
         if unsafe { libc::kill(pid as i32, 0) } != 0 {
@@ -219,7 +266,11 @@ pub fn live_sessions() -> Vec<LiveSession> {
         }
         out.push(LiveSession {
             pid,
-            session_id: v.get("sessionId").and_then(Value::as_str).unwrap_or_default().to_string(),
+            session_id: v
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
             status: v.get("status").and_then(Value::as_str).map(str::to_string),
         });
     }
@@ -227,7 +278,10 @@ pub fn live_sessions() -> Vec<LiveSession> {
 }
 
 pub fn age(t: SystemTime) -> String {
-    let s = SystemTime::now().duration_since(t).map(|d| d.as_secs()).unwrap_or(0);
+    let s = SystemTime::now()
+        .duration_since(t)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     match s {
         0..60 => "now".into(),
         60..3600 => format!("{}m", s / 60),

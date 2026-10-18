@@ -1,0 +1,15 @@
+# Spike runs write logs (hook payloads, tokens), Claude's config and history,
+# and build output here. Only the harness itself is tracked.
+cfg/*
+!cfg/.claude.json
+repo/
+*.jsonl
+*.log
+hooks/resp-*.json
+hooks/sleep-*
+s7-vt100/target/
+s7-vt100/Cargo.lock
+s7-vt100/capture.bin
+s7-vt100/marks.json
+s7-vt100/xterm/node_modules/
+s7-vt100/xterm/package-lock.json

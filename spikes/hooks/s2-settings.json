@@ -1,0 +1,1 @@
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"python3 __SPIKES_DIR__/hooks/s2-stop.py"}]}]}}

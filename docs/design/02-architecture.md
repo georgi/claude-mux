@@ -326,7 +326,7 @@ binary:    [0x02][term_id u32][seq u64][bytes]   // PTY output
 ```
 claude --session-id <uuid>
        --settings  <data>/plans/<plan>/agents/<id>/settings.json      (hooks only)
-       --mcp-config <data>/plans/<plan>/agents/<id>/mcp.json          (one server: "cmux")
+       --mcp-config=<data>/plans/<plan>/agents/<id>/mcp.json          (one server: "cmux"; "=" form, the flag is variadic)
        --append-system-prompt "<prompts/{executor,task,subagent}.md, filled>"
        [--permission-mode <per level>] [--model <per level>]
        "<kickoff prompt>"
@@ -358,7 +358,7 @@ Each agent's `settings.json` registers `cmuxd hook <event>` for these events: `S
 | `PermissionRequest` | **Remote approval.** If a task allow-rule matches, answer allow at once. Otherwise create a `Permission` item, push it to clients, and hold the hook open until a client answers or `permission_wait` passes (default 10 min, the hook's `timeout` set to match). The answer is returned as the hook's decision. On timeout the hook returns no decision, so Claude shows its normal prompt in the terminal |
 | `Notification` | A fallback when a permission prompt shows without `PermissionRequest`: `activity = NeedsPermission` and a needs-you item. Answering it then sends the prompt's keys to the PTY (spike S6) |
 | `PreToolUse` | Watchdog progress. Policy guard rails: a sub-agent may not run `git push`, and nobody may check out the base branch in a task worktree |
-| `SessionEnd` | `life = Exited`; synthesizes an implicit report if there is none |
+| `SessionEnd` | `life = Exited`; synthesizes an implicit report if there is none. Ignored for `reason: "clear"` (`/clear` keeps the process; `SessionStart` follows) |
 
 **Allow always for this task** adds an `AllowRule {tool, pattern}` to the task. The rule is matched in the hook, and it never touches the user's Claude settings.
 

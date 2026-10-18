@@ -1,0 +1,2 @@
+{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"__SPIKES_DIR__/hooks/log-hook.sh FLAG_UPS"}]}],
+"Stop":[{"hooks":[{"type":"command","command":"__SPIKES_DIR__/hooks/log-hook.sh FLAG_STOP"}]}]}}

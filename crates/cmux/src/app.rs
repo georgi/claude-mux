@@ -23,7 +23,10 @@ pub enum Mode {
     Scroll,
     Prompt(Prompt),
     /// tmux `choose-window`: a filterable list of the open tabs.
-    Windows { query: String, selected: usize },
+    Windows {
+        query: String,
+        selected: usize,
+    },
 }
 
 pub struct Prompt {
@@ -173,23 +176,39 @@ impl App {
             let p = t.parser.lock().unwrap();
             let s = p.screen();
             let pane_input = matches!(self.mode, Mode::Normal | Mode::Prefix);
-            let (ac, bp, kp) = (s.application_cursor(), s.bracketed_paste() || !pane_input, s.application_keypad());
-            let am = self.opts.mouse && pane_input && s.mouse_protocol_mode() == vt100::MouseProtocolMode::AnyMotion;
+            let (ac, bp, kp) = (
+                s.application_cursor(),
+                s.bracketed_paste() || !pane_input,
+                s.application_keypad(),
+            );
+            let am = self.opts.mouse
+                && pane_input
+                && s.mouse_protocol_mode() == vt100::MouseProtocolMode::AnyMotion;
             drop(p);
             if ac != self.outer_app_cursor {
-                self.passthrough.extend_from_slice(if ac { b"\x1b[?1h" } else { b"\x1b[?1l" });
+                self.passthrough
+                    .extend_from_slice(if ac { b"\x1b[?1h" } else { b"\x1b[?1l" });
                 self.outer_app_cursor = ac;
             }
             if bp != self.outer_bracketed_paste {
-                self.passthrough.extend_from_slice(if bp { b"\x1b[?2004h" } else { b"\x1b[?2004l" });
+                self.passthrough.extend_from_slice(if bp {
+                    b"\x1b[?2004h"
+                } else {
+                    b"\x1b[?2004l"
+                });
                 self.outer_bracketed_paste = bp;
             }
             if kp != self.outer_app_keypad {
-                self.passthrough.extend_from_slice(if kp { b"\x1b=" } else { b"\x1b>" });
+                self.passthrough
+                    .extend_from_slice(if kp { b"\x1b=" } else { b"\x1b>" });
                 self.outer_app_keypad = kp;
             }
             if am != self.outer_any_motion {
-                self.passthrough.extend_from_slice(if am { b"\x1b[?1003h" } else { b"\x1b[?1003l" });
+                self.passthrough.extend_from_slice(if am {
+                    b"\x1b[?1003h"
+                } else {
+                    b"\x1b[?1003l"
+                });
                 self.outer_any_motion = am;
             }
         }
@@ -198,7 +217,12 @@ impl App {
 
     /// The screen area between the tab bar and the status line.
     pub fn body_area(&self) -> Rect {
-        Rect { x: 0, y: 1, width: self.cols.max(1), height: self.rows.saturating_sub(2).max(1) }
+        Rect {
+            x: 0,
+            y: 1,
+            width: self.cols.max(1),
+            height: self.rows.saturating_sub(2).max(1),
+        }
     }
 
     pub fn active_pane(&self) -> Option<&Pane> {
@@ -268,8 +292,18 @@ impl App {
 
     fn on_output(&mut self, id: u64) {
         let active_id = self.active_pane_id();
-        let visible = self.windows.get(self.active).is_some_and(|w| w.get(id).is_some());
-        let Some(pane) = self.windows.iter_mut().flat_map(|w| w.panes.iter_mut()).find(|p| p.id == id) else { return };
+        let visible = self
+            .windows
+            .get(self.active)
+            .is_some_and(|w| w.get(id).is_some());
+        let Some(pane) = self
+            .windows
+            .iter_mut()
+            .flat_map(|w| w.panes.iter_mut())
+            .find(|p| p.id == id)
+        else {
+            return;
+        };
         pane.dirty.store(false, Ordering::Release);
         pane.last_output = Instant::now();
         let mut p = pane.parser.lock().unwrap();
@@ -290,8 +324,12 @@ impl App {
     }
 
     fn on_exit(&mut self, id: u64) {
-        let Some(wi) = self.windows.iter().position(|w| w.get(id).is_some()) else { return };
-        let Some(mut pane) = self.windows[wi].take(id) else { return };
+        let Some(wi) = self.windows.iter().position(|w| w.get(id).is_some()) else {
+            return;
+        };
+        let Some(mut pane) = self.windows[wi].take(id) else {
+            return;
+        };
         let name = pane.name();
         pane.kill();
         if self.windows[wi].panes.is_empty() {
@@ -309,7 +347,7 @@ impl App {
 
     fn on_tick(&mut self) {
         self.tick += 1;
-        if self.tick % 4 == 0 {
+        if self.tick.is_multiple_of(4) {
             self.refresh_live();
             for p in self.windows.iter_mut().flat_map(|w| w.panes.iter_mut()) {
                 if p.has_exited() {
@@ -317,7 +355,7 @@ impl App {
                 }
             }
         }
-        if self.tick % 20 == 0
+        if self.tick.is_multiple_of(20)
             && let Some(p) = self.active_pane_mut()
         {
             p.branch = crate::pane::git_branch(&p.cwd);
@@ -350,12 +388,17 @@ impl App {
         self.live = history::live_sessions();
         let active_id = self.active_pane_id();
         let mut ring = false;
-        for t in self.windows.iter_mut().flat_map(|w| w.panes.iter_mut()).filter(|t| t.is_claude()) {
-            let found = self
-                .live
-                .iter()
-                .find(|l| Some(l.pid) == t.pid)
-                .or_else(|| self.live.iter().find(|l| Some(&l.session_id) == t.session_id.as_ref()));
+        for t in self
+            .windows
+            .iter_mut()
+            .flat_map(|w| w.panes.iter_mut())
+            .filter(|t| t.is_claude())
+        {
+            let found = self.live.iter().find(|l| Some(l.pid) == t.pid).or_else(|| {
+                self.live
+                    .iter()
+                    .find(|l| Some(&l.session_id) == t.session_id.as_ref())
+            });
             let Some(l) = found else { continue };
             if !l.session_id.is_empty() {
                 t.session_id = Some(l.session_id.clone());
@@ -382,12 +425,29 @@ impl App {
 
     // ---- spawning -----------------------------------------------------------
 
-    fn claude_spec(&self, cwd: PathBuf, mut args: Vec<String>, session_id: Option<String>) -> SpawnSpec {
+    fn claude_spec(
+        &self,
+        cwd: PathBuf,
+        mut args: Vec<String>,
+        session_id: Option<String>,
+    ) -> SpawnSpec {
         args.extend(self.opts.claude_args.iter().cloned());
-        SpawnSpec { kind: Kind::Claude, program: self.opts.claude.clone(), args, cwd, session_id }
+        SpawnSpec {
+            kind: Kind::Claude,
+            program: self.opts.claude.clone(),
+            args,
+            cwd,
+            session_id,
+        }
     }
 
-    fn open_claude(&mut self, cwd: PathBuf, args: Vec<String>, session_id: Option<String>, place: Place) -> bool {
+    fn open_claude(
+        &mut self,
+        cwd: PathBuf,
+        args: Vec<String>,
+        session_id: Option<String>,
+        place: Place,
+    ) -> bool {
         let spec = self.claude_spec(cwd, args, session_id);
         self.spawn(spec, place)
     }
@@ -395,7 +455,10 @@ impl App {
     /// Start a process in a new window or in a split of the focused pane.
     fn spawn(&mut self, spec: SpawnSpec, place: Place) -> bool {
         if !spec.cwd.is_dir() {
-            self.flash(format!("directory not found: {}", history::tilde(&spec.cwd)));
+            self.flash(format!(
+                "directory not found: {}",
+                history::tilde(&spec.cwd)
+            ));
             return false;
         }
         let id = self.next_id;
@@ -408,7 +471,13 @@ impl App {
             Some(axis) => {
                 let w = &mut self.windows[self.active];
                 w.layout.split(w.active, id, axis);
-                let r = w.layout.layout(area).into_iter().find(|(p, _)| *p == id).map(|(_, r)| r).unwrap_or_default();
+                let r = w
+                    .layout
+                    .layout(area)
+                    .into_iter()
+                    .find(|(p, _)| *p == id)
+                    .map(|(_, r)| r)
+                    .unwrap_or_default();
                 // A split pane has a header row, so it needs one row more.
                 if r.height < 3 || r.width < 10 {
                     w.layout.remove(id);
@@ -449,14 +518,29 @@ impl App {
     /// A login shell, like a tmux window without a command.
     fn open_shell(&mut self, cwd: PathBuf, place: Place) {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        self.spawn(SpawnSpec { kind: Kind::Shell, program: shell, args: vec!["-l".into()], cwd, session_id: None }, place);
+        self.spawn(
+            SpawnSpec {
+                kind: Kind::Shell,
+                program: shell,
+                args: vec!["-l".into()],
+                cwd,
+                session_id: None,
+            },
+            place,
+        );
     }
 
     /// Run `command` through the shell, like `tmux new-window CMD`. The pane
     /// closes when the command exits.
     fn open_command(&mut self, cwd: PathBuf, command: &str, place: Place) {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-        let label = command.split_whitespace().next().unwrap_or(command).rsplit('/').next().unwrap_or(command);
+        let label = command
+            .split_whitespace()
+            .next()
+            .unwrap_or(command)
+            .rsplit('/')
+            .next()
+            .unwrap_or(command);
         let spec = SpawnSpec {
             kind: Kind::Command(label.to_string()),
             program: shell,
@@ -469,16 +553,30 @@ impl App {
 
     fn new_session(&mut self, cwd: PathBuf, place: Place) {
         let id = uuid::Uuid::new_v4().to_string();
-        self.open_claude(cwd, vec!["--session-id".into(), id.clone()], Some(id), place);
+        self.open_claude(
+            cwd,
+            vec!["--session-id".into(), id.clone()],
+            Some(id),
+            place,
+        );
     }
 
     fn resume_session(&mut self, s: &SessionInfo, fork: bool) {
         if !fork
-            && let Some(wi) = self.windows.iter().position(|w| w.panes.iter().any(|p| p.session_id.as_deref() == Some(&s.id)))
+            && let Some(wi) = self.windows.iter().position(|w| {
+                w.panes
+                    .iter()
+                    .any(|p| p.session_id.as_deref() == Some(&s.id))
+            })
         {
             self.select_window(wi);
             let w = &mut self.windows[wi];
-            if let Some(id) = w.panes.iter().find(|p| p.session_id.as_deref() == Some(&s.id)).map(|p| p.id) {
+            if let Some(id) = w
+                .panes
+                .iter()
+                .find(|p| p.session_id.as_deref() == Some(&s.id))
+                .map(|p| p.id)
+            {
                 w.focus(id);
             }
             self.flash("session is already open in this pane");
@@ -489,8 +587,12 @@ impl App {
             args.push("--fork-session".into());
         }
         let elsewhere = self.live.iter().any(|l| l.session_id == s.id);
-        if self.open_claude(s.cwd.clone(), args, if fork { None } else { Some(s.id.clone()) }, Place::Window)
-            && elsewhere
+        if self.open_claude(
+            s.cwd.clone(),
+            args,
+            if fork { None } else { Some(s.id.clone()) },
+            Place::Window,
+        ) && elsewhere
             && !fork
         {
             self.flash("note: this session is also running in another terminal");
@@ -507,7 +609,12 @@ impl App {
             if self.active != i {
                 self.last_window_id = Some(cur.id);
             }
-            cur.pane().parser.lock().unwrap().screen_mut().set_scrollback(0);
+            cur.pane()
+                .parser
+                .lock()
+                .unwrap()
+                .screen_mut()
+                .set_scrollback(0);
         }
         self.active = i;
         let w = &mut self.windows[i];
@@ -533,7 +640,9 @@ impl App {
     }
 
     pub fn current_cwd(&self) -> PathBuf {
-        self.active_pane().map(|t| t.cwd.clone()).unwrap_or_else(|| self.home_cwd.clone())
+        self.active_pane()
+            .map(|t| t.cwd.clone())
+            .unwrap_or_else(|| self.home_cwd.clone())
     }
 
     // ---- panes --------------------------------------------------------------
@@ -542,8 +651,14 @@ impl App {
     /// window go to the previous or next tab.
     fn select_pane_dir(&mut self, dir: Dir) {
         let area = self.body_area();
-        let Some(w) = self.windows.get_mut(self.active) else { return };
-        let target = if w.panes.len() > 1 { layout::neighbor(&w.layout.layout(area), w.active, dir) } else { None };
+        let Some(w) = self.windows.get_mut(self.active) else {
+            return;
+        };
+        let target = if w.panes.len() > 1 {
+            layout::neighbor(&w.layout.layout(area), w.active, dir)
+        } else {
+            None
+        };
         match (target, dir) {
             (Some(id), _) => {
                 w.zoomed = false;
@@ -558,7 +673,9 @@ impl App {
 
     /// tmux `select-pane -t :.+`: the next pane in layout order.
     fn cycle_pane(&mut self, delta: isize) {
-        let Some(w) = self.windows.get_mut(self.active) else { return };
+        let Some(w) = self.windows.get_mut(self.active) else {
+            return;
+        };
         let ids = w.layout.leaves();
         if ids.len() < 2 {
             return;
@@ -570,7 +687,9 @@ impl App {
     }
 
     fn select_pane_index(&mut self, n: usize) {
-        let Some(w) = self.windows.get_mut(self.active) else { return };
+        let Some(w) = self.windows.get_mut(self.active) else {
+            return;
+        };
         match w.layout.leaves().get(n) {
             Some(&id) => {
                 w.zoomed = false;
@@ -582,7 +701,9 @@ impl App {
     }
 
     fn last_pane(&mut self) {
-        let Some(w) = self.windows.get_mut(self.active) else { return };
+        let Some(w) = self.windows.get_mut(self.active) else {
+            return;
+        };
         match w.last.filter(|id| w.get(*id).is_some()) {
             Some(id) => {
                 w.zoomed = false;
@@ -594,7 +715,9 @@ impl App {
     }
 
     fn toggle_zoom(&mut self) {
-        let Some(w) = self.windows.get_mut(self.active) else { return };
+        let Some(w) = self.windows.get_mut(self.active) else {
+            return;
+        };
         if w.panes.len() > 1 {
             w.zoomed = !w.zoomed;
             self.relayout();
@@ -604,7 +727,9 @@ impl App {
     /// tmux `resize-pane -L/-R/-U/-D N`: move the pane's divider by N cells.
     fn resize_pane(&mut self, dir: Dir, n: i32) {
         let area = self.body_area();
-        let Some(w) = self.windows.get_mut(self.active) else { return };
+        let Some(w) = self.windows.get_mut(self.active) else {
+            return;
+        };
         let (axis, delta) = match dir {
             Dir::Left => (Axis::Horizontal, -n),
             Dir::Right => (Axis::Horizontal, n),
@@ -618,7 +743,9 @@ impl App {
 
     /// tmux `swap-pane -U/-D`: exchange the pane with the previous or next one.
     fn swap_pane(&mut self, delta: isize) {
-        let Some(w) = self.windows.get_mut(self.active) else { return };
+        let Some(w) = self.windows.get_mut(self.active) else {
+            return;
+        };
         let ids = w.layout.leaves();
         if ids.len() < 2 {
             return;
@@ -631,7 +758,9 @@ impl App {
 
     /// tmux `break-pane`: move the pane to a new window.
     fn break_pane(&mut self) {
-        let Some(w) = self.windows.get_mut(self.active) else { return };
+        let Some(w) = self.windows.get_mut(self.active) else {
+            return;
+        };
         if w.panes.len() < 2 {
             self.flash("the window has only one pane");
             return;
@@ -647,7 +776,9 @@ impl App {
 
     /// tmux `select-layout`, or the next preset for `None` (tmux `next-layout`).
     fn select_layout(&mut self, preset: Option<usize>) {
-        let Some(w) = self.windows.get_mut(self.active) else { return };
+        let Some(w) = self.windows.get_mut(self.active) else {
+            return;
+        };
         if w.panes.len() < 2 {
             return;
         }
@@ -684,7 +815,13 @@ impl App {
     }
 
     pub fn refilter(&mut self) {
-        let words: Vec<String> = self.picker.query.to_lowercase().split_whitespace().map(str::to_string).collect();
+        let words: Vec<String> = self
+            .picker
+            .query
+            .to_lowercase()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
         let here = self.current_cwd();
         self.picker.filtered = self
             .picker
@@ -709,11 +846,17 @@ impl App {
             })
             .map(|(i, _)| i)
             .collect();
-        self.picker.selected = self.picker.selected.min(self.picker.filtered.len().saturating_sub(1));
+        self.picker.selected = self
+            .picker
+            .selected
+            .min(self.picker.filtered.len().saturating_sub(1));
     }
 
     pub fn picker_selection(&self) -> Option<&SessionInfo> {
-        self.picker.filtered.get(self.picker.selected).map(|&i| &self.picker.sessions[i])
+        self.picker
+            .filtered
+            .get(self.picker.selected)
+            .map(|&i| &self.picker.sessions[i])
     }
 
     fn picker_key(&mut self, k: Key) {
@@ -724,7 +867,9 @@ impl App {
             Key::Esc => self.close_picker(),
             Key::Ctrl('c') => self.close_picker(),
             Key::Up | Key::Ctrl('p') | Key::Ctrl('k') => p.selected = p.selected.saturating_sub(1),
-            Key::Down | Key::Ctrl('n') | Key::Ctrl('j') => p.selected = (p.selected + 1).min(n.saturating_sub(1)),
+            Key::Down | Key::Ctrl('n') | Key::Ctrl('j') => {
+                p.selected = (p.selected + 1).min(n.saturating_sub(1))
+            }
             Key::PageUp => p.selected = p.selected.saturating_sub(page),
             Key::PageDown => p.selected = (p.selected + page).min(n.saturating_sub(1)),
             Key::Home => p.selected = 0,
@@ -928,7 +1073,10 @@ impl App {
     }
 
     fn last_window(&mut self) {
-        match self.last_window_id.and_then(|id| self.windows.iter().position(|w| w.id == id)) {
+        match self
+            .last_window_id
+            .and_then(|id| self.windows.iter().position(|w| w.id == id))
+        {
             Some(i) => self.select_window(i),
             None => self.flash("no last window"),
         }
@@ -978,7 +1126,10 @@ impl App {
 
     fn open_windows(&mut self, query: String) {
         if !self.windows.is_empty() {
-            self.mode = Mode::Windows { query, selected: self.active };
+            self.mode = Mode::Windows {
+                query,
+                selected: self.active,
+            };
         }
     }
 
@@ -989,15 +1140,19 @@ impl App {
             .filter(|&i| {
                 let w = &self.windows[i];
                 q.is_empty()
-                    || w.panes
-                        .iter()
-                        .any(|p| format!("{} {} {}", w.name(), p.name(), p.cwd.display()).to_lowercase().contains(&q))
+                    || w.panes.iter().any(|p| {
+                        format!("{} {} {}", w.name(), p.name(), p.cwd.display())
+                            .to_lowercase()
+                            .contains(&q)
+                    })
             })
             .collect()
     }
 
     fn windows_key(&mut self, k: Key) {
-        let Mode::Windows { query, selected } = &self.mode else { return };
+        let Mode::Windows { query, selected } = &self.mode else {
+            return;
+        };
         let (mut query, mut selected) = (query.clone(), *selected);
         let matches = self.window_matches(&query);
         let pos = matches.iter().position(|&i| i == selected).unwrap_or(0);
@@ -1006,9 +1161,15 @@ impl App {
         let up = matches!(k, Key::Up | Key::Ctrl('p')) || (cmd && k == Key::Char('k'));
         let down = matches!(k, Key::Down | Key::Ctrl('n')) || (cmd && k == Key::Char('j'));
         if up {
-            selected = matches.get(pos.saturating_sub(1)).copied().unwrap_or(selected);
+            selected = matches
+                .get(pos.saturating_sub(1))
+                .copied()
+                .unwrap_or(selected);
         } else if down {
-            selected = matches.get((pos + 1).min(matches.len().saturating_sub(1))).copied().unwrap_or(selected);
+            selected = matches
+                .get((pos + 1).min(matches.len().saturating_sub(1)))
+                .copied()
+                .unwrap_or(selected);
         }
         match k {
             _ if up || down => {}
@@ -1065,10 +1226,23 @@ impl App {
     /// A small subset of tmux commands, with their aliases.
     fn run_command(&mut self, line: &str) {
         let words: Vec<&str> = line.split_whitespace().collect();
-        let Some((&cmd, args)) = words.split_first() else { return };
+        let Some((&cmd, args)) = words.split_first() else {
+            return;
+        };
         let has = |f: &str| args.contains(&f);
-        let flag = |name: &str| args.iter().position(|a| *a == name).and_then(|i| args.get(i + 1)).copied();
-        let rest = || args.iter().filter(|a| !a.starts_with('-')).copied().collect::<Vec<_>>().join(" ");
+        let flag = |name: &str| {
+            args.iter()
+                .position(|a| *a == name)
+                .and_then(|i| args.get(i + 1))
+                .copied()
+        };
+        let rest = || {
+            args.iter()
+                .filter(|a| !a.starts_with('-'))
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
         // The command after the flags; -c, -n and -t take a value.
         let command = || {
             let mut out = Vec::new();
@@ -1085,15 +1259,23 @@ impl App {
             out.join(" ")
         };
         let dir = || {
-            let dir = flag("-c").map(history::expand_tilde).unwrap_or_else(|| self.current_cwd());
+            let dir = flag("-c")
+                .map(history::expand_tilde)
+                .unwrap_or_else(|| self.current_cwd());
             std::fs::canonicalize(&dir).unwrap_or(dir)
         };
-        let target = || flag("-t").and_then(|t| t.trim_start_matches([':', '.']).parse::<usize>().ok());
+        let target =
+            || flag("-t").and_then(|t| t.trim_start_matches([':', '.']).parse::<usize>().ok());
         let dir_flag = || {
-            [("-L", Dir::Left), ("-R", Dir::Right), ("-U", Dir::Up), ("-D", Dir::Down)]
-                .into_iter()
-                .find(|(f, _)| args.contains(f))
-                .map(|(_, d)| d)
+            [
+                ("-L", Dir::Left),
+                ("-R", Dir::Right),
+                ("-U", Dir::Up),
+                ("-D", Dir::Down),
+            ]
+            .into_iter()
+            .find(|(f, _)| args.contains(f))
+            .map(|(_, d)| d)
         };
         match cmd {
             "new-window" | "neww" => {
@@ -1105,7 +1287,11 @@ impl App {
                 }
             }
             "split-window" | "splitw" => {
-                let axis = if has("-h") { Axis::Horizontal } else { Axis::Vertical };
+                let axis = if has("-h") {
+                    Axis::Horizontal
+                } else {
+                    Axis::Vertical
+                };
                 self.open_in(dir(), &command(), Place::Split(axis));
             }
             "kill-window" | "killw" => self.kill_window(),
@@ -1136,7 +1322,11 @@ impl App {
                 if has("-Z") {
                     self.toggle_zoom();
                 } else if let Some(d) = dir_flag() {
-                    let n = args.iter().filter_map(|a| a.parse::<i32>().ok()).next_back().unwrap_or(1);
+                    let n = args
+                        .iter()
+                        .filter_map(|a| a.parse::<i32>().ok())
+                        .next_back()
+                        .unwrap_or(1);
                     self.resize_pane(d, n);
                 } else {
                     self.flash("usage: resize-pane -L|-R|-U|-D [N] | -Z");
@@ -1165,11 +1355,22 @@ impl App {
                 let id = rest();
                 if id.is_empty() {
                     self.open_picker();
-                } else if let Some(s) = self.picker.sessions.iter().find(|s| s.id.starts_with(&id)).cloned() {
+                } else if let Some(s) = self
+                    .picker
+                    .sessions
+                    .iter()
+                    .find(|s| s.id.starts_with(&id))
+                    .cloned()
+                {
                     self.resume_session(&s, false);
                 } else {
                     let cwd = self.current_cwd();
-                    self.open_claude(cwd, vec!["--resume".into(), id.clone()], Some(id), Place::Window);
+                    self.open_claude(
+                        cwd,
+                        vec!["--resume".into(), id.clone()],
+                        Some(id),
+                        Place::Window,
+                    );
                 }
             }
             "display-message" | "display" => self.display_info(),
@@ -1193,7 +1394,15 @@ impl App {
             } else if m.is_motion()
                 && let Some(w) = self.windows.get_mut(self.active)
             {
-                w.layout.drag(&path, if axis == Axis::Horizontal { m.col } else { m.row }, area);
+                w.layout.drag(
+                    &path,
+                    if axis == Axis::Horizontal {
+                        m.col
+                    } else {
+                        m.row
+                    },
+                    area,
+                );
                 w.preset = None;
                 self.relayout();
             }
@@ -1255,7 +1464,9 @@ impl App {
             Mode::Normal => {}
         }
 
-        let Some(w) = self.windows.get_mut(self.active) else { return };
+        let Some(w) = self.windows.get_mut(self.active) else {
+            return;
+        };
         if m.is_left_press() && w.is_split() {
             let hit = w.layout.dividers(area).into_iter().find(|d| match d.axis {
                 Axis::Horizontal => m.col == d.at && (d.area.y..d.area.bottom()).contains(&m.row),
@@ -1270,7 +1481,9 @@ impl App {
                 return;
             }
         }
-        let Some((id, on_header)) = w.pane_at(area, m.col, m.row) else { return };
+        let Some((id, on_header)) = w.pane_at(area, m.col, m.row) else {
+            return;
+        };
         // A click on another pane or on a header only moves the focus.
         if m.is_left_press() && (id != w.active || on_header) {
             w.focus(id);
@@ -1280,7 +1493,14 @@ impl App {
             return;
         }
         let focused = id == w.active;
-        let Some(body) = w.areas(area).into_iter().find(|a| a.id == id).map(|a| a.body) else { return };
+        let Some(body) = w
+            .areas(area)
+            .into_iter()
+            .find(|a| a.id == id)
+            .map(|a| a.body)
+        else {
+            return;
+        };
         let Some(t) = w.get(id) else { return };
         let mut p = t.parser.lock().unwrap();
         let screen = p.screen();
@@ -1317,7 +1537,11 @@ impl App {
         } else {
             // Normal screen (Claude Code): scroll our own scrollback.
             let cur = p.screen().scrollback();
-            let next = if m.wheel_up() { cur + WHEEL_LINES } else { cur.saturating_sub(WHEEL_LINES) };
+            let next = if m.wheel_up() {
+                cur + WHEEL_LINES
+            } else {
+                cur.saturating_sub(WHEEL_LINES)
+            };
             p.screen_mut().set_scrollback(next);
         }
     }
@@ -1351,8 +1575,13 @@ impl App {
     }
 
     fn prompt_key(&mut self, k: Key) {
-        let Mode::Prompt(prompt) = &mut self.mode else { return };
-        if matches!(prompt.kind, PromptKind::ConfirmQuit | PromptKind::ConfirmKill | PromptKind::ConfirmKillPane) {
+        let Mode::Prompt(prompt) = &mut self.mode else {
+            return;
+        };
+        if matches!(
+            prompt.kind,
+            PromptKind::ConfirmQuit | PromptKind::ConfirmKill | PromptKind::ConfirmKillPane
+        ) {
             let kind = prompt.kind;
             self.mode = Mode::Normal;
             if matches!(k, Key::Char('y') | Key::Char('Y')) {
@@ -1371,9 +1600,13 @@ impl App {
             }
             Key::Ctrl('u') => prompt.input.clear(),
             Key::Char(c) => prompt.input.push(c),
-            Key::Tab if prompt.kind == PromptKind::NewDir => prompt.input = complete_dir(&prompt.input),
+            Key::Tab if prompt.kind == PromptKind::NewDir => {
+                prompt.input = complete_dir(&prompt.input)
+            }
             Key::Enter => {
-                let Mode::Prompt(p) = std::mem::replace(&mut self.mode, Mode::Normal) else { return };
+                let Mode::Prompt(p) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+                    return;
+                };
                 match p.kind {
                     PromptKind::Rename => {
                         if let Some(w) = self.windows.get_mut(self.active) {
@@ -1391,7 +1624,9 @@ impl App {
                         Ok(n) if n >= 1 => self.select_window(n - 1),
                         _ => self.flash("not a window index"),
                     },
-                    PromptKind::ConfirmQuit | PromptKind::ConfirmKill | PromptKind::ConfirmKillPane => {}
+                    PromptKind::ConfirmQuit
+                    | PromptKind::ConfirmKill
+                    | PromptKind::ConfirmKillPane => {}
                 }
             }
             _ => {}
@@ -1401,7 +1636,13 @@ impl App {
 
 /// Encode a mouse event for a child, in the protocol it asked for. `row` and
 /// `col` are relative to the pane. Returns `None` when the child's mode filters the event.
-fn encode_mouse(m: Mouse, row: u16, col: u16, mode: vt100::MouseProtocolMode, enc: vt100::MouseProtocolEncoding) -> Option<Vec<u8>> {
+fn encode_mouse(
+    m: Mouse,
+    row: u16,
+    col: u16,
+    mode: vt100::MouseProtocolMode,
+    enc: vt100::MouseProtocolEncoding,
+) -> Option<Vec<u8>> {
     use vt100::MouseProtocolMode as M;
     let wanted = match mode {
         M::None => false,
@@ -1416,12 +1657,23 @@ fn encode_mouse(m: Mouse, row: u16, col: u16, mode: vt100::MouseProtocolMode, en
     }
     let (x, y) = (col as u32 + 1, row as u32 + 1);
     match enc {
-        vt100::MouseProtocolEncoding::Sgr => {
-            Some(format!("\x1b[<{};{};{}{}", m.button, x, y, if m.release { 'm' } else { 'M' }).into_bytes())
-        }
+        vt100::MouseProtocolEncoding::Sgr => Some(
+            format!(
+                "\x1b[<{};{};{}{}",
+                m.button,
+                x,
+                y,
+                if m.release { 'm' } else { 'M' }
+            )
+            .into_bytes(),
+        ),
         legacy => {
             // Legacy encodings cannot say which button was released.
-            let b = if m.release { (m.button & !3) | 3 } else { m.button } as u32;
+            let b = if m.release {
+                (m.button & !3) | 3
+            } else {
+                m.button
+            } as u32;
             let mut out = b"\x1b[M".to_vec();
             for v in [b + 32, x + 32, y + 32] {
                 match legacy {
@@ -1444,7 +1696,9 @@ fn complete_dir(input: &str) -> String {
         Some(i) => (&input[..=i], &input[i + 1..]),
         None => ("./", input),
     };
-    let Ok(entries) = std::fs::read_dir(history::expand_tilde(parent)) else { return input.to_string() };
+    let Ok(entries) = std::fs::read_dir(history::expand_tilde(parent)) else {
+        return input.to_string();
+    };
     let mut matches: Vec<String> = entries
         .flatten()
         .filter(|e| e.path().is_dir())
@@ -1452,7 +1706,9 @@ fn complete_dir(input: &str) -> String {
         .filter(|n| n.starts_with(partial) && (partial.starts_with('.') || !n.starts_with('.')))
         .collect();
     matches.sort();
-    let Some(first) = matches.first() else { return input.to_string() };
+    let Some(first) = matches.first() else {
+        return input.to_string();
+    };
     let mut common = first.clone();
     for m in &matches[1..] {
         while !m.starts_with(&common) {
@@ -1460,5 +1716,9 @@ fn complete_dir(input: &str) -> String {
         }
     }
     let base = if input.contains('/') { parent } else { "" };
-    if matches.len() == 1 { format!("{base}{common}/") } else { format!("{base}{common}") }
+    if matches.len() == 1 {
+        format!("{base}{common}/")
+    } else {
+        format!("{base}{common}")
+    }
 }

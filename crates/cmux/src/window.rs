@@ -62,15 +62,26 @@ impl Window {
     /// The visible panes and where they go inside `area`.
     pub fn areas(&self, area: Rect) -> Vec<PaneArea> {
         if !self.is_split() {
-            return vec![PaneArea { id: self.active, header: None, body: area }];
+            return vec![PaneArea {
+                id: self.active,
+                header: None,
+                body: area,
+            }];
         }
         self.layout
             .layout(area)
             .into_iter()
             .map(|(id, r)| PaneArea {
                 id,
-                header: Some(Rect { height: 1.min(r.height), ..r }),
-                body: Rect { y: r.y + 1.min(r.height), height: r.height.saturating_sub(1), ..r },
+                header: Some(Rect {
+                    height: 1.min(r.height),
+                    ..r
+                }),
+                body: Rect {
+                    y: r.y + 1.min(r.height),
+                    height: r.height.saturating_sub(1),
+                    ..r
+                },
             })
             .collect()
     }
@@ -110,7 +121,11 @@ impl Window {
             self.last = None;
         }
         if self.active == id {
-            let next = self.last.take().filter(|l| self.get(*l).is_some()).or_else(|| self.layout.leaves().first().copied());
+            let next = self
+                .last
+                .take()
+                .filter(|l| self.get(*l).is_some())
+                .or_else(|| self.layout.leaves().first().copied());
             if let Some(next) = next {
                 self.active = next;
                 if let Some(p) = self.get_mut(next) {
@@ -123,7 +138,9 @@ impl Window {
 
     /// Tab name: the user-set name, else the focused pane's name.
     pub fn name(&self) -> String {
-        self.custom_name.clone().unwrap_or_else(|| self.pane().name())
+        self.custom_name
+            .clone()
+            .unwrap_or_else(|| self.pane().name())
     }
 
     pub fn attention(&self) -> bool {
