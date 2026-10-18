@@ -177,6 +177,7 @@ dependencies = [
 name = "cmux-proto"
 version = "0.1.0"
 dependencies = [
+ "cmux-core",
  "serde",
  "serde_json",
 ]
