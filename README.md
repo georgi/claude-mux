@@ -208,10 +208,11 @@ keybind = cmd+ctrl+j=text:\x02\x1b[1;3B
 keybind = cmd+ctrl+k=text:\x02\x1b[1;3A
 keybind = cmd+ctrl+l=text:\x02\x1b[1;3C
 keybind = cmd+shift+enter=text:\x02z
-# Shell, lazygit, new session in another directory, tabs with an alert
+# Shell, lazygit, new session in another directory, session picker, tabs with an alert
 keybind = cmd+shift+t=text:\x02t
 keybind = cmd+g=text:\x02g
 keybind = cmd+shift+o=text:\x02C
+keybind = cmd+p=text:\x02s
 keybind = cmd+j=text:\x02\x1bn
 keybind = cmd+shift+j=text:\x02\x1bp
 # Claude: Shift+Enter inserts a newline
@@ -223,6 +224,7 @@ keybind = shift+enter=text:\n
 | `Cmd-1`…`Cmd-9`, `Cmd-0`        | Go to a tab                               |
 | `Cmd-t`                         | New Claude session                        |
 | `Cmd-Shift-o`                   | New session in another directory          |
+| `Cmd-p`                         | Resume or fork a past session (picker)    |
 | `Cmd-Shift-t` / `Cmd-g`         | New shell / lazygit                       |
 | `Cmd-Shift-[` / `Cmd-Shift-]`   | Previous / next tab                       |
 | `Cmd-j` / `Cmd-Shift-j`         | Next / previous tab with an alert         |
