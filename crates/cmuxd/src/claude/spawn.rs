@@ -63,6 +63,8 @@ pub const SESSION_ENV_PREFIXES: &[&str] = &[
     "CCR_",
     "CLAUDE_COWORK_",
     "CLAUDE_CODE_SYNC_",
+    // The real-claude suite found `CLAUDE_CODE_BRIDGE_SESSION_ID` (Remote Control).
+    "CLAUDE_CODE_BRIDGE_",
 ];
 
 /// Whether `name` is on the scrub lists.

@@ -199,17 +199,27 @@ There are two focus zones, as in draft 1.
 
 ### 3.6 Board view
 
-`v` replaces the body with a table of the plan's tasks:
+`prefix v` replaces the body with the plan's tasks as cards in five columns by state. `v`, `q` or `Esc` goes back.
 
 ```
- auth-refactor · accepted · 1/5 merged · 3 agents · 412k tokens               v back
- ID      STATE        TITLE     DEPS     AGENT  BRANCH          PR    CI  ✓    AGE
- T-0001  merged       schema    -        ✓      claude/t-0001   #38   ✓   4/4  2h
- T-0002  testing      api       T-0001   ⠹ +2   claude/t-0002   #41   ◐   2/5  48m
- T-0003  in_progress  ui        T-0002   ⠹      claude/t-0003   -     -   0/3  2m
- T-0004  blocked      perms     -        ⚑      claude/t-0004   -     -   1/2  31m
- T-0005  todo         rollout   T-0003   ·      -               -     -   0/2  -
+ auth-refactor · accepted · 1/6 merged · 6 agents · 480k tokens                              v back
+ todo 2              active 2            passing 1           merged 1            blocked 0
+┌──────────────────┐┌──────────────────┐┌──────────────────┐┌──────────────────┐
+│○ T-0003 ui       ││⠹ T-0002 api      ││○ T-0006 metrics …││✓ T-0001 schema   │
+│todo              ││testing #41 … 2/5 ││passing #43 ✓ 3/3 ││merged #38 ✓ 4/4  │
+└──────────────────┘└──────────────────┘└──────────────────┘└──────────────────┘
+┌──────────────────┐┌──────────────────┐
+│○ T-0005 rollout  ││⚑ T-0004 perms    │
+│todo              ││in_progress 1/2   │
+└──────────────────┘└──────────────────┘
 ```
+
+- The header shows the plan title, its state, merged / total tasks, the number of agents and the token sum.
+- The columns are `todo`; `active` (`in_progress`, `testing`, `failing`); `passing`; `merged`; `blocked` (`blocked`, `cancelled`). Each column title shows its card count.
+- A card shows the agent glyph (`✓` for merged, `⚑` for blocked, failing or cancelled), the task id and title, then the state, the PR mark with its CI glyph, and the criteria count.
+- Arrow keys or `hjkl` move the selection. Left and right skip empty columns. The selected column scrolls to keep the card visible.
+- `Enter` opens the task's window. The other tree keys (`s`, `x`, `R`, `c`, `o`, `g`, `D`, `A`) act on the selected card.
+- `cmux board <plan>` prints the same tasks as a table (task, state, criteria, agent, PR with CI, title), for scripts and for a terminal without the TUI. The web app shows the board as a table too (section 4.1).
 
 ## 4. Web app
 

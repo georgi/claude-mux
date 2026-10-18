@@ -427,6 +427,7 @@ fn env_scrub_removes_session_vars_and_remote_prefix_and_keeps_the_rest() {
         ("CLAUDE_CODE_SESSION_ID", "outer"),
         ("CLAUDE_CODE_REMOTE_SESSION_ID", "outer"),
         ("CLAUDE_CODE_REMOTE", "true"),
+        ("CLAUDE_CODE_BRIDGE_SESSION_ID", "outer"),
         ("CLAUDE_CODE_OAUTH_TOKEN", "keep"),
         ("AI_AGENT", "x"),
         ("TERM", "dumb"),

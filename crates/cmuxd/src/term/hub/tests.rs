@@ -255,6 +255,24 @@ fn bursts_are_coalesced_into_few_chunks() {
 }
 
 #[test]
+fn an_echo_after_a_quiet_interval_waits_for_no_batch_timer() {
+    let cfg = TermConfig {
+        batch: Duration::from_secs(2),
+        ..TermConfig::default()
+    };
+    let term = Terminal::spawn("t", &cat(), &cfg).unwrap();
+    let mut sub = term.subscribe(None);
+    // Let the batch interval of anything the start printed run out.
+    std::thread::sleep(Duration::from_millis(2100));
+    let sent = Instant::now();
+    term.input("a", b"k");
+    read_until(&mut sub.rx, |s| s.contains('k'));
+    let took = sent.elapsed();
+    assert!(took < Duration::from_secs(1), "echo took {took:?}");
+    term.kill();
+}
+
+#[test]
 fn exit_is_observable() {
     let term = Terminal::spawn("t", &sh("echo bye; exit 3"), &TermConfig::default()).unwrap();
     let mut exited = term.exited();

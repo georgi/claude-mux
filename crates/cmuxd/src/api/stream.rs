@@ -23,6 +23,10 @@
 //! resubscribes at the next byte it owes the client and the client sees either
 //! the missing bytes or a `Snapshot` frame (reset the parser on those).
 //!
+//! A token is never taken from the URL (architecture 9): URLs end up in proxy
+//! and browser logs, so an upgrade with a `token` or `access_token` query
+//! parameter is refused before it is looked at.
+//!
 //! WebSocket compression (permessage-deflate) is not offered: the tungstenite
 //! version axum uses does not implement it.
 
@@ -31,8 +35,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -148,8 +152,13 @@ async fn upgrade(
     State(app): State<AppState>,
     Extension(transport): Extension<Transport>,
     headers: HeaderMap,
+    RawQuery(query): RawQuery,
     ws: WebSocketUpgrade,
 ) -> Response {
+    if query.as_deref().is_some_and(token_in_query) {
+        return ApiError::invalid("error: send the token in hello or a header, never in the URL")
+            .into_response();
+    }
     // A bearer header or cookie authenticates the upgrade itself; otherwise
     // the token comes in `hello`.
     let pre = auth::authenticate(&app, transport, &headers).ok();
@@ -163,6 +172,12 @@ async fn upgrade(
     ws.max_message_size(MAX_MESSAGE)
         .max_frame_size(MAX_MESSAGE)
         .on_upgrade(move |socket| connection(app, socket, pre))
+}
+
+/// A query string that carries a credential.
+fn token_in_query(q: &str) -> bool {
+    url::form_urlencoded::parse(q.as_bytes())
+        .any(|(k, _)| k.eq_ignore_ascii_case("token") || k.eq_ignore_ascii_case("access_token"))
 }
 
 /// Browsers send cookies on cross-site WebSocket upgrades; require the

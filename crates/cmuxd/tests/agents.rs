@@ -1378,3 +1378,152 @@ async fn an_agent_that_exits_without_a_report_hands_its_last_answer_to_the_paren
     env.screen_has(&exec, "ECHO [cmux]").await;
     env.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Security (architecture 9; the index is in tests/security.rs)
+// ---------------------------------------------------------------------------
+
+/// Logs row: a session with a prompt, a tool call, a permission request with
+/// its answer, a message and a pairing, and not one of their texts or tokens
+/// in the diagnostics log, which still records each event.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_diagnostics_log_holds_no_prompt_tool_input_or_token() {
+    let env = start_fake(
+        &[(
+            "executor",
+            json!({
+                "first": [
+                    {"permission": {"tool": "Bash", "input": {"command": "echo SECRET-TOOL-INPUT"}}},
+                    {"tool": "create_task", "args": {"title": "SECRET-TOOL-ARG"}},
+                    {"say": "SECRET-ANSWER"},
+                ],
+                "later": [{"say": "SECRET-LATER-ANSWER"}],
+            }),
+        )],
+        Duration::from_secs(600),
+    )
+    .await;
+    let r = env
+        .post(
+            route::PLANS,
+            &json!({"title": "demo", "repos": [{"path": env.repo.display().to_string()}],
+                    "request": "build it SECRET-PROMPT"}),
+        )
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let plan = r.json::<Created>().unwrap().id;
+    let exec = format!("{plan}/executor");
+    let held = env
+        .wait("a permission item", |v| Env::pending_permissions(v).pop())
+        .await;
+    env.answer(held.id.0, AnswerAction::Deny, Some("SECRET-DENY-REASON"))
+        .await;
+    env.screen_has(&exec, "PERM deny: SECRET-DENY-REASON").await;
+    env.wait("the executor to idle", |v| {
+        v.agents
+            .iter()
+            .any(|a| a.id.to_string() == exec && a.activity == Activity::Idle)
+            .then_some(())
+    })
+    .await;
+    let r = env
+        .post(
+            &route::agent(&exec.replace('/', "%2F"), "messages"),
+            &json!({"text": "SECRET-MESSAGE", "steer": false}),
+        )
+        .await;
+    assert!(r.status < 300, "{}", r.text());
+    // A user message reaches the agent as a digest file it is told to read.
+    env.screen_has(&exec, "ECHO [cmux] 1 new message").await;
+
+    // A device token, too.
+    let start: cmux_proto::api::PairStartResp = env
+        .post(route::PAIR_START, &json!({}))
+        .await
+        .json()
+        .unwrap();
+    let done: cmux_proto::api::PairCompleteResp = env
+        .post(
+            route::PAIR_COMPLETE,
+            &json!({"code": start.code, "device_name": "SECRET-DEVICE-NAME"}),
+        )
+        .await
+        .json()
+        .unwrap();
+    let mcp = std::fs::read_to_string(
+        agent_dir(&env.app().data_dir, &exec.parse().unwrap()).join("mcp.json"),
+    )
+    .unwrap();
+    let mcp: Value = serde_json::from_str(&mcp).unwrap();
+    let agent_token = mcp["mcpServers"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()["env"]["CMUX_TOKEN"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!agent_token.is_empty());
+    let log_text = env.app().diag.path();
+    let mut log = std::fs::read_to_string(&log_text).unwrap();
+    if let Ok(old) = std::fs::read_to_string(log_text.with_extension("jsonl.1")) {
+        log += &old;
+    }
+    for event in ["agent_hook", "agent_tool", "paired"] {
+        assert!(
+            log.contains(&format!("\"event\":\"{event}\"")),
+            "{event}:\n{log}"
+        );
+    }
+    for secret in [
+        "SECRET",
+        "build it",
+        "echo ",
+        done.token.as_str(),
+        agent_token.as_str(),
+    ] {
+        assert!(!log.contains(secret), "{secret:?} in the log:\n{log}");
+    }
+    env.shutdown().await;
+}
+
+/// A push stays inside the 4096 bytes every push service must take
+/// (RFC 8030 7.2), however long the tool input, and carries a summary of at
+/// most 60 characters that leaves the rest of the input out.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_push_stays_inside_the_web_push_payload_limit() {
+    use cmux_proto::api::{NotifyKind, PUSH_SUMMARY_MAX, PushSubscribeReq};
+    let long = format!("echo {} SECRET-TAIL", "ü€😀".repeat(2000));
+    let env = start_fake(
+        &[("executor", permission_script(&[long.as_str()]))],
+        Duration::from_secs(600),
+    )
+    .await;
+    let mock = mock_http::MockHttp::start().await;
+    let browser = mock_http::Browser::new();
+    let sub = PushSubscribeReq {
+        endpoint: format!("{}/push/phone", mock.base),
+        keys: browser.keys(),
+        kinds: vec![NotifyKind::Permission],
+    };
+    let r = env.post(route::PUSH_SUBSCRIBE, &sub).await;
+    assert_eq!(r.status, 204, "{}", r.text());
+    env.create_plan().await;
+    let hit = mock.wait_for(1).await;
+    assert!(hit.body.len() <= 4096, "{} bytes", hit.body.len());
+    let p = browser.open(&hit.body);
+    assert_eq!(p.kind, NotifyKind::Permission);
+    assert!(
+        p.summary.chars().count() <= PUSH_SUMMARY_MAX,
+        "{}",
+        p.summary
+    );
+    assert!(
+        p.summary.starts_with("executor: Bash echo "),
+        "{}",
+        p.summary
+    );
+    assert!(!p.summary.contains("SECRET"), "{}", p.summary);
+    env.shutdown().await;
+}
