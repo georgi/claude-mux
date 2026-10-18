@@ -714,14 +714,138 @@ fn a_report_from_an_idle_agent_lands_at_once() {
     assert_eq!(h.task(&pid, 1).pr.as_ref().unwrap().number, 7);
 }
 
+fn report_with_pr(h: &mut H, a: &AgentId, status: ReportStatus, pr: Option<&str>) {
+    h.tool(
+        a,
+        ToolCall::ReportResult {
+            status,
+            summary: format!("{status:?} summary"),
+            pr_url: pr.map(Into::into),
+        },
+    )
+    .unwrap();
+}
+
+fn slots(h: &H, p: &PlanId) -> usize {
+    let live = |a: &&Agent| a.is_live() && !a.landed && a.level == Level::Task;
+    h.plan(p).agents.iter().filter(live).count()
+}
+
+fn child_reports<'a>(h: &'a H, to: &AgentId) -> Vec<&'a InboxItem> {
+    h.items_to(to)
+        .into_iter()
+        .filter(|i| i.kind == ItemKind::ChildReport)
+        .collect()
+}
+
 #[test]
-fn one_report_per_attempt_and_a_new_attempt_may_report_again() {
+fn blocked_report_is_superseded_by_success_with_pr() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("supersede", 1);
+    let a = h.start(&pid, &exec, 1);
+    h.report(&a, ReportStatus::Blocked).unwrap();
+    h.stop(&a, false);
+    assert_eq!(h.task(&pid, 1).state, TaskState::Blocked);
+    assert_eq!(child_reports(&h, &exec).len(), 1);
+    // The agent works on after the executor's answer and reports again.
+    h.hook(
+        &a,
+        Hook::UserPromptSubmit {
+            prompt: "go on".into(),
+        },
+    )
+    .unwrap();
+    report_with_pr(
+        &mut h,
+        &a,
+        ReportStatus::Success,
+        Some("https://github.com/o/r/pull/9"),
+    );
+    h.stop(&a, false);
+    assert_eq!(h.task(&pid, 1).state, TaskState::Testing);
+    let reports = child_reports(&h, &exec);
+    assert_eq!(reports.len(), 2);
+    assert!(reports[0].body.contains("Blocked"));
+    assert!(reports[1].body.contains("Success"));
+    assert_ne!(reports[0].dedupe, reports[1].dedupe);
+    // Success is final.
+    let e = err_of(h.report(&a, ReportStatus::Failed));
+    assert!(e.to_string().contains("only a blocked report"), "{e}");
+}
+
+#[test]
+fn blocked_then_success_without_pr_passes_and_failed_fails() {
+    for (status, want) in [
+        (ReportStatus::Success, TaskState::Passing),
+        (ReportStatus::Failed, TaskState::Failing),
+    ] {
+        let mut h = H::new();
+        let (pid, exec) = h.accepted_plan("supersede", 1);
+        let a = h.start(&pid, &exec, 1);
+        h.report(&a, ReportStatus::Blocked).unwrap();
+        h.stop(&a, false);
+        // Idle agent: the new report lands at once.
+        h.report(&a, status).unwrap();
+        assert_eq!(h.task(&pid, 1).state, want);
+        assert_eq!(child_reports(&h, &exec).len(), 2);
+    }
+}
+
+#[test]
+fn blocked_may_be_repeated_and_frees_the_slot_each_time() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("repeat", 1);
+    let a = h.start(&pid, &exec, 1);
+    h.report(&a, ReportStatus::Blocked).unwrap();
+    h.stop(&a, false);
+    assert_eq!(slots(&h, &pid), 0);
+    // A second blocked report, while the agent is working, re-takes the slot
+    // until it lands at the next Stop.
+    h.hook(
+        &a,
+        Hook::UserPromptSubmit {
+            prompt: "go on".into(),
+        },
+    )
+    .unwrap();
+    h.report(&a, ReportStatus::Blocked).unwrap();
+    h.stop(&a, false);
+    assert_eq!(slots(&h, &pid), 0);
+    assert_eq!(child_reports(&h, &exec).len(), 2);
+    assert_eq!(h.task(&pid, 1).state, TaskState::Blocked);
+    h.report(&a, ReportStatus::Success).unwrap();
+    assert_eq!(h.task(&pid, 1).state, TaskState::Passing);
+    assert_eq!(child_reports(&h, &exec).len(), 3);
+}
+
+#[test]
+fn late_report_after_the_task_moved_on_is_posted_but_does_not_move_it() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("late", 1);
+    let a = h.start(&pid, &exec, 1);
+    h.report(&a, ReportStatus::Blocked).unwrap();
+    h.stop(&a, false);
+    h.tool(
+        &exec,
+        ToolCall::TransitionTask {
+            task: t(1),
+            to: TaskState::InProgress,
+        },
+    )
+    .unwrap();
+    h.report(&a, ReportStatus::Success).unwrap();
+    assert_eq!(h.task(&pid, 1).state, TaskState::InProgress);
+    assert_eq!(child_reports(&h, &exec).len(), 2);
+}
+
+#[test]
+fn final_report_per_attempt_and_a_new_attempt_may_report_again() {
     let mut h = H::new();
     let (pid, exec) = h.accepted_plan("attempts", 1);
     let a = h.start(&pid, &exec, 1);
     h.report(&a, ReportStatus::Success).unwrap();
     let e = err_of(h.report(&a, ReportStatus::Failed));
-    assert!(e.to_string().contains("one report per attempt"), "{e}");
+    assert!(e.to_string().contains("only a blocked report"), "{e}");
     h.stop(&a, false);
     // Rework: the executor blocks the task, stops the old agent, spawns again.
     h.tool(

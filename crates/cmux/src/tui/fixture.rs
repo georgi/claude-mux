@@ -47,6 +47,7 @@ fn success() -> Report {
         pr_url: None,
         attempt: 1,
         implicit: false,
+        supersedes_blocked: false,
     }
 }
 

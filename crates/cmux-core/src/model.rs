@@ -168,7 +168,7 @@ pub struct Task {
     pub worktree: Option<PathBuf>,
     pub pr: Option<PrRef>,
     pub agent: Option<AgentId>,
-    /// Attempt counter; one report is accepted per attempt.
+    /// Attempt counter; one report is accepted per attempt (a blocked one may be superseded by a later report).
     pub attempt: u32,
     /// "Allow always for this task" answers.
     pub allow_rules: Vec<AllowRule>,
@@ -368,6 +368,10 @@ pub struct Report {
     pub attempt: u32,
     /// Synthesized by the server when the agent exited without reporting.
     pub implicit: bool,
+    /// Replaces an earlier `blocked` report of the same attempt; it moves the
+    /// task only while the task is still `blocked`.
+    #[serde(default)]
+    pub supersedes_blocked: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1101,6 +1105,7 @@ mod tests {
             pr_url: None,
             attempt: 1,
             implicit: true,
+            supersedes_blocked: false,
         });
         assert_eq!(agent.parent, Some(exec.clone()));
         plan.agents.push(agent);

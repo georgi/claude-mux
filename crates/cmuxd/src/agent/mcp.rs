@@ -240,7 +240,7 @@ const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "report_result",
-        about: "Finish with exactly one report: success, blocked or failed. Then end your turn.",
+        about: "Finish with one report: success, blocked or failed, then end your turn. A blocked report may be followed by one later report once you are unblocked; success and failed are final.",
         args: &[
             ("status", "string", "success, blocked or failed"),
             ("summary", "string", "What happened, with evidence"),
