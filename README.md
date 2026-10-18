@@ -278,7 +278,15 @@ question_secs = 3600
 permission_wait_secs = 600
 stall_secs = 900                # a working agent with no progress gets ⚠
 idle_without_report_secs = 600
+
+[github]                        # PR and CI tracking through `gh`
+enabled = true
+gh_bin = "gh"
+open_secs = 60                  # every open PR
+testing_secs = 15               # a task in testing whose agent is idle
 ```
+
+`cmuxd` runs `gh auth status` at start. If `gh` is missing or logged out, PR tracking is off and `GET /status` says why (`"github": "off (gh not found)"`). After the third red CI run on a PR, the item goes to you, not to the task agent. Green CI resets the count.
 
 An unknown key is an error, so a typo stops `cmuxd` at start.
 

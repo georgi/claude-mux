@@ -1,6 +1,6 @@
 //! Small text marks that several widgets share.
 
-use cmux_proto::view::{ClientId, StateView, TermId};
+use cmux_proto::view::{ClientId, PrRef, StateView, TermId};
 
 /// `⇲ 120×40` when another client owns the terminal's size (UI design 3.4),
 /// to go in the pane header. `None` when `me` owns it or nobody does.
@@ -19,10 +19,33 @@ pub fn queue_mark(n: usize) -> String {
     }
 }
 
+/// `#41 ✓`, `#41 ✗` or `#41 …` by the PR's CI; `#41` before the first poll
+/// or without checks.
+pub fn pr_mark(pr: &PrRef) -> String {
+    match pr.ci {
+        Some(ci) => format!("#{} {}", pr.number, ci.glyph()),
+        None => format!("#{}", pr.number),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cmux_proto::view::{TermKind, TerminalView};
+    use cmux_proto::view::{CiMark, TermKind, TerminalView};
+
+    #[test]
+    fn pr_mark_shows_the_ci() {
+        let mut pr = PrRef::new("https://github.com/o/r/pull/41", 41);
+        assert_eq!(pr_mark(&pr), "#41");
+        for (ci, want) in [
+            (CiMark::Passing, "#41 ✓"),
+            (CiMark::Failing, "#41 ✗"),
+            (CiMark::Pending, "#41 …"),
+        ] {
+            pr.ci = Some(ci);
+            assert_eq!(pr_mark(&pr), want);
+        }
+    }
 
     #[test]
     fn size_mark_only_for_foreign_owner() {

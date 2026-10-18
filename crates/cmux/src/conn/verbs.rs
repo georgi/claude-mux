@@ -657,7 +657,7 @@ fn board_table(sv: &StateView, tasks: &[&TaskView]) -> String {
                 format!("{}/{}", t.criteria_done, t.criteria_total),
                 agent,
                 t.pr.as_ref()
-                    .map_or_else(|| "-".into(), |p| format!("#{}", p.number)),
+                    .map_or_else(|| "-".into(), crate::tui::marks::pr_mark),
                 t.title.clone(),
             ]
         })

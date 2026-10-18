@@ -69,6 +69,8 @@ pub struct Shared {
     pub hub: Arc<Hub>,
     /// The URL put into pairing QR codes; set once the TCP listener is bound.
     pub base_url: std::sync::RwLock<String>,
+    /// The GitHub poller, as `/status` shows it.
+    pub github: crate::git::github::Status,
     idem: idem::Cache,
 }
 
@@ -111,6 +113,7 @@ impl AppState {
             presence: stream::Presence::default(),
             hub,
             base_url,
+            github: crate::git::github::Status::default(),
         }))
     }
 }

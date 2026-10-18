@@ -226,6 +226,57 @@ pub struct Note {
 pub struct PrRef {
     pub url: String,
     pub number: u64,
+    /// The last CI rollup the GitHub poller saw; `None` before the first poll
+    /// and for a PR without checks.
+    #[serde(default)]
+    pub ci: Option<CiMark>,
+    /// Transitions into a failing rollup since CI was last green. At
+    /// [`CI_FAILURE_CAP`] the item goes to the human instead of the task agent.
+    #[serde(default)]
+    pub ci_failures: u8,
+}
+
+impl PrRef {
+    pub fn new(url: impl Into<String>, number: u64) -> Self {
+        PrRef {
+            url: url.into(),
+            number,
+            ci: None,
+            ci_failures: 0,
+        }
+    }
+}
+
+/// Red CI runs after which the task agent is no longer asked to fix them.
+pub const CI_FAILURE_CAP: u8 = 3;
+
+/// The CI mark shown next to a PR number (`#41 ✓`, `#41 ✗`, `#41 …`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CiMark {
+    Pending,
+    Passing,
+    Failing,
+}
+
+impl CiMark {
+    /// `None` for a PR without checks.
+    pub fn from_conclusion(ci: CiConclusion) -> Option<CiMark> {
+        match ci {
+            CiConclusion::Success => Some(CiMark::Passing),
+            CiConclusion::Failure => Some(CiMark::Failing),
+            CiConclusion::Pending => Some(CiMark::Pending),
+            CiConclusion::None => None,
+        }
+    }
+
+    pub fn glyph(self) -> char {
+        match self {
+            CiMark::Pending => '…',
+            CiMark::Passing => '✓',
+            CiMark::Failing => '✗',
+        }
+    }
 }
 
 /// A tool pattern the user approved for a task (`"Bash"`, `"cargo test*"`).
@@ -453,11 +504,17 @@ pub enum ItemKind {
     UserMessage,
     Steer,
     PrChanged,
-    Permission { tool: String, input_summary: String },
+    Permission {
+        tool: String,
+        input_summary: String,
+    },
     Question,
     PlanReview,
     Stalled,
     ExitedWithoutReport,
+    /// A PR's CI went red [`CI_FAILURE_CAP`] times (UI design 2.3: Open PR,
+    /// Message the task agent).
+    CiFailing,
 }
 
 impl ItemKind {
@@ -470,6 +527,7 @@ impl ItemKind {
                 | ItemKind::PlanReview
                 | ItemKind::Stalled
                 | ItemKind::ExitedWithoutReport
+                | ItemKind::CiFailing
         )
     }
 }
@@ -1101,10 +1159,7 @@ mod tests {
             by: Some(exec.clone()),
             text: "n".into(),
         });
-        t.pr = Some(PrRef {
-            url: "https://github.com/a/b/pull/1".into(),
-            number: 1,
-        });
+        t.pr = Some(PrRef::new("https://github.com/a/b/pull/1", 1));
         t.agent = Some(aid.clone());
         t.allow_rules.push(AllowRule {
             tool: "Bash".into(),

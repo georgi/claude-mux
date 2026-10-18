@@ -180,6 +180,9 @@ pub struct StatusResp {
     pub live_processes: u32,
     pub clients: u32,
     pub agents: Vec<AgentStatus>,
+    /// The PR poller: `on`, `starting` or `off (<reason>)`.
+    #[serde(default)]
+    pub github: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -808,6 +811,7 @@ mod tests {
                 agent: agent(),
                 rss_kb: Some(100),
             }],
+            github: "off (gh not found)".into(),
         });
     }
 

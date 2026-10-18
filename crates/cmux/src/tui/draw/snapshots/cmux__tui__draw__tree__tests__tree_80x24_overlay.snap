@@ -5,14 +5,14 @@ expression: "snap(80, 24, TreeMode::Full, Focus::Tree)"
 ┌ plans ─────────────────────┐
 │▾◆ auth-refactor    accepted│
 │   ⚑ ◆ executor             │
-│   ✓ T-0001 schema       #38│
-│  ▾⠹ T-0002 api       ✉1 #41│ «sel»
+│   ✓ T-0001 schema     #38 ✓│
+│  ▾⠹ T-0002 api     ✉1 #41 …│ «sel»
 │   ├ ⠹ tests                │
 │   └ ✓ docs                 │
 │   ○ T-0003 ui      ← T-0002│
 │   ⚑ T-0004 perms       asks│
 │   ○ T-0005 rollout ← T-0003│
-│   ○ T-0006 metrics das… #43│
+│   ○ T-0006 metrics d… #43 ✓│
 │▸○ docs-site           draft│
 │▸✓ ci-migration         done│
 │ $ loose                   2│

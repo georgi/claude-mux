@@ -831,3 +831,80 @@ async fn huge_terminal_sizes_are_refused() {
     .await;
     assert_eq!(r.status, 400, "{}", r.text());
 }
+
+async fn github_status(ep: &Endpoint) -> String {
+    let st: cmux_proto::api::StatusResp = req(ep, "GET", route::STATUS, &[]).await.json().unwrap();
+    st.github
+}
+
+/// Waits until the poller has left `starting`.
+async fn settled_github_status(ep: &Endpoint) -> String {
+    for _ in 0..200 {
+        let s = github_status(ep).await;
+        if s != "starting" {
+            return s;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the GitHub poller never started");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_gh_missing_the_server_starts_and_status_says_github_is_off() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = config(tmp.path());
+    cfg.github.gh_bin = tmp.path().join("no-such-gh").display().to_string();
+    // The real ticker, so the poller runs as in production.
+    let server = ServerBuilder::new(cfg).start().await.unwrap();
+    let ep = Endpoint::Unix(server.socket_path.clone());
+    let s = settled_github_status(&ep).await;
+    assert!(s.starts_with("off ("), "{s}");
+    assert!(s.contains("no-such-gh not found"), "{s}");
+    // The server still serves.
+    assert_eq!(req(&ep, "GET", route::STATE, &[]).await.status, 200);
+    server.shutdown().await;
+}
+
+struct LoggedIn;
+
+impl cmuxd::git::github::Gh for LoggedIn {
+    fn auth_status(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn pr_view(&self, _: &str) -> Result<String, String> {
+        Err("no PRs here".into())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn github_status_is_on_after_a_good_auth_check_and_off_when_disabled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = ServerBuilder::new(config(tmp.path()))
+        .tick(None)
+        .gh(std::sync::Arc::new(LoggedIn))
+        .start()
+        .await
+        .unwrap();
+    let ep = Endpoint::Unix(server.socket_path.clone());
+    assert_eq!(settled_github_status(&ep).await, "on");
+    server.shutdown().await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = config(tmp.path());
+    cfg.github.enabled = false;
+    let server = ServerBuilder::new(cfg)
+        .gh(std::sync::Arc::new(LoggedIn))
+        .start()
+        .await
+        .unwrap();
+    let ep = Endpoint::Unix(server.socket_path.clone());
+    assert_eq!(github_status(&ep).await, "off (disabled in config)");
+    server.shutdown().await;
+
+    // Tests that drive time by hand get no poller.
+    let tmp = tempfile::tempdir().unwrap();
+    let server = start_with(tmp.path(), config(tmp.path())).await.unwrap();
+    let ep = Endpoint::Unix(server.socket_path.clone());
+    assert_eq!(github_status(&ep).await, "off (no ticker)");
+    server.shutdown().await;
+}

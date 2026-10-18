@@ -1,0 +1,1 @@
+{"mergedAt":null,"reviewDecision":"","state":"CLOSED","statusCheckRollup":[{"__typename":"CheckRun","completedAt":"2026-10-18T16:21:04Z","conclusion":"SUCCESS","detailsUrl":"https://github.com/georgi/claude-mux/actions/runs/39144486936/job/117725445511","name":"check (ubuntu-latest)","startedAt":"2026-10-18T16:19:43Z","status":"COMPLETED","workflowName":"CI"}]}
