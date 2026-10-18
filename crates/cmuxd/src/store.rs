@@ -2,7 +2,7 @@
 //! the per-plan journal (architecture 5.4).
 //!
 //! ```text
-//! <data>/cmuxd.lock               flock; held for the life of the process
+//! <data>/cmuxd.lock               POSIX record lock; held for the life of the process
 //! <data>/plans/<plan>/state.json  one `Plan`
 //! <data>/plans/<plan>/events.jsonl
 //! <data>/inbox.json               inbox items and the next item id
@@ -14,14 +14,14 @@
 //! a [`StoreWriter`] thread that coalesces them for 200 ms, so the engine
 //! actor never waits for the disk.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use cmux_core::ids::{PlanId, TermId};
@@ -84,12 +84,67 @@ impl Globals {
     }
 }
 
+/// Data dirs this process has open, by canonical path.
+fn claimed() -> &'static Mutex<HashSet<PathBuf>> {
+    static CLAIMED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    CLAIMED.get_or_init(Mutex::default)
+}
+
+/// This process's claim on one data dir. Dropped after the lock file.
+#[derive(Debug)]
+struct Claim(PathBuf);
+
+impl Claim {
+    fn take(key: PathBuf) -> Option<Claim> {
+        let mut set = claimed().lock().unwrap_or_else(PoisonError::into_inner);
+        // Not `then_some(Claim(key))`: that would drop a Claim here, under the
+        // lock, when the key is taken, and its Drop would deadlock.
+        if set.insert(key.clone()) {
+            Some(Claim(key))
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        claimed()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
+
+/// Takes an exclusive record lock on the whole file, without blocking.
+///
+/// Unlike `flock(2)`, a record lock belongs to the process, not to the open
+/// file. A child forked while we hold it (the git and PTY spawns in this
+/// process, say) does not inherit it, so it cannot keep the directory locked
+/// after we let go. With `flock` the child's copy of the fd did exactly that
+/// until the child execed, which made reopens flake under load.
+fn lock_exclusive(file: &File) -> io::Result<()> {
+    // SAFETY: an all-zero `flock` is valid; the fields we use are set below.
+    let mut fl: libc::flock = unsafe { std::mem::zeroed() };
+    fl.l_type = libc::F_WRLCK as _;
+    fl.l_whence = libc::SEEK_SET as _;
+    // SAFETY: the fd is open and `fl` is live for the whole call.
+    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &fl as *const libc::flock) };
+    if rc == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 /// An open, locked data directory.
 #[derive(Debug)]
 pub struct Store {
     dir: PathBuf,
-    /// Dropping the file releases the flock.
+    /// Closing the file releases the lock. It is declared before `_claim`, so
+    /// the lock is gone before this process lets another `Store` claim the dir.
     _lock: File,
+    _claim: Claim,
 }
 
 impl Store {
@@ -100,6 +155,11 @@ impl Store {
             move |e| StoreError::Io(p, e)
         };
         crate::config::ensure_private_dir(dir).map_err(io_err(dir))?;
+        // A second `Store` in this process is refused before the file is
+        // touched: closing any fd on the file drops this process's record
+        // locks on it, including the live one.
+        let key = fs::canonicalize(dir).map_err(io_err(dir))?;
+        let claim = Claim::take(key).ok_or_else(|| StoreError::Locked(dir.to_path_buf()))?;
         let lock_path = dir.join("cmuxd.lock");
         let mut lock = OpenOptions::new()
             .create(true)
@@ -108,11 +168,8 @@ impl Store {
             .mode(0o600)
             .open(&lock_path)
             .map_err(io_err(&lock_path))?;
-        // SAFETY: the fd is open and owned by `lock` for the whole call.
-        let rc = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if rc != 0 {
-            let e = io::Error::last_os_error();
-            return if e.kind() == io::ErrorKind::WouldBlock {
+        if let Err(e) = lock_exclusive(&lock) {
+            return if matches!(e.raw_os_error(), Some(libc::EAGAIN | libc::EACCES)) {
                 Err(StoreError::Locked(dir.to_path_buf()))
             } else {
                 Err(StoreError::Io(lock_path, e))
@@ -123,6 +180,7 @@ impl Store {
         Ok(Store {
             dir: dir.to_path_buf(),
             _lock: lock,
+            _claim: claim,
         })
     }
 
@@ -449,6 +507,27 @@ mod tests {
         ));
         drop(first);
         Store::open(tmp.path()).unwrap();
+    }
+
+    #[test]
+    fn a_forked_child_does_not_hold_the_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path()).unwrap();
+        // SAFETY: the child only sleeps and exits, both safe straight after fork.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            unsafe {
+                libc::usleep(1_000_000);
+                libc::_exit(0);
+            }
+        }
+        drop(store);
+        let reopened = Store::open(tmp.path());
+        // Reap the child before asserting, so a failure leaves nothing behind.
+        let mut status = 0;
+        unsafe { libc::waitpid(pid, &mut status, 0) };
+        reopened.unwrap();
     }
 
     #[test]

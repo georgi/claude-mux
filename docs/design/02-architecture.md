@@ -251,7 +251,7 @@ The parsing reuses claude-mux's `history.rs` rules: skip meta lines, skip `<`-wr
 $XDG_RUNTIME_DIR/cmuxd/api.sock     0600 in a 0700 directory
 ```
 
-A `flock` on the data directory ensures that only one `cmuxd` runs per user.
+An exclusive POSIX record lock (`fcntl`) on `cmuxd.lock` in the data directory ensures that only one `cmuxd` runs per user. It is per process, so a child forked while the lock is held does not keep it.
 
 ### 5.5 Running it
 
