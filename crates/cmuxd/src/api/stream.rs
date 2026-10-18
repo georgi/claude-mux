@@ -502,9 +502,13 @@ struct InputJob {
 /// Writes to PTYs in order, off the async threads (a full PTY buffer blocks).
 fn input_loop(mut rx: mpsc::Receiver<InputJob>) {
     while let Some(job) = rx.blocking_recv() {
-        if !job.term.input(&job.client, &job.data) {
-            // The child stopped reading (or is gone). Best effort: a full
-            // outgoing queue means the client is not reading either.
+        if job.term.input(&job.client, &job.data) {
+            continue;
+        }
+        // An exited terminal drops input silently, as it always has.
+        // The child stopped reading: best effort, as a full outgoing queue
+        // means the client is not reading either.
+        if !job.term.has_exited() {
             let msg = ServerMsg::Error {
                 code: ErrorCode::Limit,
                 message: "error: the terminal is not accepting input".into(),
@@ -836,5 +840,81 @@ impl Forwarder {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use crate::term::hub::{Hub, TermConfig, term_key};
+    use crate::term::pty::{INPUT_QUEUE_BYTES, PtySpec};
+    use cmux_core::ids::TermId;
+
+    fn job(term: &Arc<Terminal>, data: Vec<u8>, out: &Out) -> InputJob {
+        InputJob {
+            term: term.clone(),
+            client: "c1".into(),
+            data,
+            out: out.clone(),
+        }
+    }
+
+    fn exited(hub: &Hub, id: u32) -> Arc<Terminal> {
+        let t = hub
+            .create(
+                &term_key(TermId(id)),
+                &PtySpec::new("true", &[]),
+                &TermConfig::small(),
+            )
+            .unwrap();
+        let mut rx = t.exited();
+        let end = std::time::Instant::now() + Duration::from_secs(10);
+        while rx.borrow_and_update().is_none() {
+            assert!(std::time::Instant::now() < end, "timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        t
+    }
+
+    #[test]
+    fn input_to_an_exited_terminal_is_dropped_silently() {
+        let hub = Hub::new();
+        let t = exited(&hub, 1);
+        let (out, mut out_rx) = mpsc::channel(4);
+        let (tx, rx) = mpsc::channel(4);
+        tx.try_send(job(&t, b"x".to_vec(), &out)).unwrap();
+        tx.try_send(job(&t, b"y".to_vec(), &out)).unwrap();
+        drop(tx);
+        input_loop(rx);
+        assert!(out_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn input_to_a_live_child_that_stopped_reading_reports_limit() {
+        let hub = Hub::new();
+        let t = hub
+            .create(
+                &term_key(TermId(2)),
+                &PtySpec::new("sleep", &["30"]),
+                &TermConfig::small(),
+            )
+            .unwrap();
+        // The writer takes a chunk off the queue before it blocks on the PTY,
+        // so the second full chunk waits and the third is refused.
+        let full = vec![b'x'; INPUT_QUEUE_BYTES];
+        assert!(t.write(&full));
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(t.write(&full));
+        assert!(!t.write(&full));
+        let (out, mut out_rx) = mpsc::channel(4);
+        let (tx, rx) = mpsc::channel(4);
+        tx.try_send(job(&t, full, &out)).unwrap();
+        drop(tx);
+        input_loop(rx);
+        let Message::Text(body) = out_rx.try_recv().expect("an error frame") else {
+            panic!("expected a text frame");
+        };
+        assert!(body.contains("not accepting input"));
+        t.kill();
     }
 }

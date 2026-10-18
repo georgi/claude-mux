@@ -116,8 +116,9 @@ impl AgentRuntime {
     }
 
     /// Removes exited terminals the engine no longer lists (a resumed agent's
-    /// old one, a closed one) from the hub, and the oldest of the rest beyond
-    /// [`EXITED_KEPT`]. Terminals whose `Spawned` is still queued stay.
+    /// old one, a closed one) from the hub, and the oldest exited agent
+    /// terminals beyond [`EXITED_KEPT`]. Loose terminals the engine still
+    /// lists and terminals whose `Spawned` is still queued stay.
     fn forget_gone_terminals(&self, state: &State) {
         let unlisted = self.unlisted.lock().unwrap_or_else(|e| e.into_inner());
         let mut kept = Vec::new();
@@ -132,10 +133,14 @@ impl AgentRuntime {
             if !exited || unlisted.contains(&key) {
                 continue;
             }
-            if state.terminals.contains_key(&TermId(n)) {
-                kept.push((n, key));
-            } else {
-                self.hub.remove(&key);
+            match state.terminals.get(&TermId(n)) {
+                // A loose terminal stays until its `CloseTerminal` drops the
+                // record, so it is neither counted nor evicted.
+                Some(t) if t.agent.is_none() => {}
+                Some(_) => kept.push((n, key)),
+                None => {
+                    self.hub.remove(&key);
+                }
             }
         }
         kept.sort();
@@ -469,6 +474,7 @@ mod tests {
 mod forget_tests {
     use super::*;
     use crate::term::pty::PtySpec;
+    use cmux_core::ids::{AgentPath, PlanId};
     use cmux_core::model::{TermKind, Terminal};
 
     fn listed(id: u32) -> Terminal {
@@ -480,6 +486,14 @@ mod forget_tests {
             size: (80, 24),
             size_owner: None,
             title: None,
+        }
+    }
+
+    fn agent_terminal(id: u32) -> Terminal {
+        let plan = PlanId::new(2026, 10, 18, "Auth refactor");
+        Terminal {
+            agent: Some(AgentId::new(plan, AgentPath::Executor)),
+            ..listed(id)
         }
     }
 
@@ -529,11 +543,29 @@ mod forget_tests {
         let mut state = State::default();
         for id in 1..=(EXITED_KEPT as u32 + 3) {
             exited_terminal(&hub, id);
-            state.terminals.insert(TermId(id), listed(id));
+            state.terminals.insert(TermId(id), agent_terminal(id));
         }
         rt.forget_gone_terminals(&state);
         let ids = hub.ids();
         assert_eq!(ids.len(), EXITED_KEPT);
         assert!(!ids.contains(&"t1".to_string()) && ids.contains(&"t4".to_string()));
+    }
+
+    #[test]
+    fn loose_terminals_are_never_evicted_for_agent_ones() {
+        let hub = Arc::new(Hub::new());
+        let rt = runtime(&hub);
+        let mut state = State::default();
+        // Older loose shells first, then one exited agent terminal.
+        for id in 1..=(EXITED_KEPT as u32 + 3) {
+            exited_terminal(&hub, id);
+            state.terminals.insert(TermId(id), listed(id));
+        }
+        exited_terminal(&hub, 100);
+        state.terminals.insert(TermId(100), agent_terminal(100));
+        rt.forget_gone_terminals(&state);
+        let ids = hub.ids();
+        assert_eq!(ids.len(), EXITED_KEPT + 3 + 1);
+        assert!(ids.contains(&"t1".to_string()) && ids.contains(&"t100".to_string()));
     }
 }

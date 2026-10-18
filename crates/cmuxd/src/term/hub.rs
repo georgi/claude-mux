@@ -578,6 +578,12 @@ impl Terminal {
         self.shared.exit_tx.subscribe()
     }
 
+    /// Whether the child has exited. Set before the PTY input is closed, so a
+    /// refused write after this is final.
+    pub fn has_exited(&self) -> bool {
+        self.shared.lock().exit.is_some()
+    }
+
     pub fn kill(&self) {
         if let Some(pty) = self.shared.pty.get() {
             pty.kill();
