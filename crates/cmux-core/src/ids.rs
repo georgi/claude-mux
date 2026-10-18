@@ -64,7 +64,9 @@ pub fn slugify(title: &str) -> String {
 
 /// `P-YYYYMMDD-slug`, e.g. `P-20261018-auth-refactor`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 pub struct PlanId(String);
 
 impl PlanId {
@@ -113,7 +115,9 @@ string_serde!(PlanId);
 
 /// `T-0003`: four or more digits, zero-padded to four.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 pub struct TaskId(u32);
 
 impl TaskId {
@@ -151,7 +155,9 @@ string_serde!(TaskId);
 
 /// An agent's place in a plan: `executor`, `T-0003` or `T-0003/<name>`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 pub enum AgentPath {
     Executor,
     Task(TaskId),
@@ -235,7 +241,9 @@ string_serde!(AgentPath);
 
 /// Globally unique agent id: `<PlanId>/<AgentPath>`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(feature = "ts", ts(type = "string"))]
 pub struct AgentId {
     plan: PlanId,
     path: AgentPath,
@@ -278,6 +286,7 @@ string_serde!(AgentId);
 
 /// Terminal id, allocated from `State::next_term_id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(transparent)]
 pub struct TermId(pub u32);
 
@@ -289,6 +298,7 @@ impl fmt::Display for TermId {
 
 /// Inbox item id, displayed `I-<n>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(transparent)]
 pub struct ItemId(pub u64);
 
@@ -314,6 +324,7 @@ impl FromStr for ItemId {
 
 /// Identifies a connected client (TUI, web, CLI).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(transparent)]
 pub struct ClientId(pub String);
 

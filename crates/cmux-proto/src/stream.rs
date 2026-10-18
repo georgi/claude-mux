@@ -18,11 +18,12 @@
 //! per batch of new entries until `unsub_chat`.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::api::{ErrorCode, Scope, ServerInfo};
 use crate::view::{AgentId, ChatEntry, ClientId, DeltaView, StateView, TermId};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientKind {
     Tui,
@@ -31,14 +32,14 @@ pub enum ClientKind {
 }
 
 /// A terminal the client already has bytes of, up to (not including) `seq`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct TermPos {
     pub id: TermId,
     pub since_seq: u64,
 }
 
 /// Client to server.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
     Hello {
@@ -91,7 +92,7 @@ pub enum ClientMsg {
 }
 
 /// Server to client.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
     Welcome {
@@ -142,7 +143,7 @@ pub enum ServerMsg {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PresenceEntry {
     pub id: ClientId,
     pub kind: ClientKind,

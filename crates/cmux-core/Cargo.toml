@@ -3,8 +3,12 @@ name = "cmux-core"
 version.workspace = true
 edition.workspace = true
 
+[features]
+ts = ["dep:ts-rs"]
+
 [dependencies]
 serde.workspace = true
+ts-rs = { version = "12.0.1", optional = true, features = ["no-serde-warnings"] }
 
 [dev-dependencies]
 serde_json.workspace = true

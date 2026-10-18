@@ -7,6 +7,7 @@
 use cmux_core::engine::{ErrorKind, HookReply, ItemAction, PermissionDecision};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use ts_rs::TS;
 
 use crate::view::{
     AgentId, ChatEntry, Repo, TaskId, TaskState, TermId, TermKind, TerminalView, Timestamp,
@@ -85,7 +86,7 @@ pub mod route {
 // Errors, scopes, status
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     /// Missing, bad or expired credentials. 401.
@@ -132,13 +133,14 @@ impl From<ErrorKind> for ErrorCode {
 }
 
 /// Body of every non-2xx response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ErrorBody {
     pub code: ErrorCode,
     /// Human text; engine errors start with `error:`.
     pub message: String,
     /// Seconds to wait, for `rate_limited`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub retry_after: Option<u64>,
 }
 
@@ -153,7 +155,7 @@ impl ErrorBody {
 }
 
 /// What a device token may do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
     /// Everything, including terminals and pairing (shell-equivalent).
@@ -169,14 +171,14 @@ impl Scope {
 }
 
 /// Also the `server` field of the stream `welcome`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ServerInfo {
     pub version: String,
     pub name: String,
 }
 
 /// `GET /status`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct StatusResp {
     pub server: ServerInfo,
     pub uptime_secs: u64,
@@ -191,14 +193,14 @@ pub struct StatusResp {
     pub github: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct AgentStatus {
     pub agent: AgentId,
     pub rss_kb: Option<u64>,
 }
 
 /// Response to creating a plan (`id` is the plan id) or a task.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct Created {
     pub id: String,
 }
@@ -208,17 +210,18 @@ pub struct Created {
 // ---------------------------------------------------------------------------
 
 /// `POST /plans`. `repos[0]` is where the executor runs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct CreatePlanReq {
     pub title: String,
     pub repos: Vec<RepoSpec>,
     /// The user's request for a planner agent. Absent: no agent starts, the
     /// caller adds the tasks, and accepting the plan starts the executor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub request: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct RepoSpec {
     pub path: String,
     /// The server detects the default branch when absent.
@@ -236,13 +239,13 @@ impl From<&Repo> for RepoSpec {
 }
 
 /// `GET /plans/:id/body` and `PUT /plans/:id/body` (the `plan.md` text).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PlanBody {
     pub text: String,
 }
 
 /// `POST /plans/:id/tasks`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct CreateTaskReq {
     pub title: String,
     #[serde(default)]
@@ -257,7 +260,7 @@ pub struct CreateTaskReq {
 
 /// `PATCH /tasks/:plan/:task`. Absent fields are left alone; `state` is a
 /// transition checked against the table.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PatchTaskReq {
     #[serde(default)]
     pub title: Option<String>,
@@ -272,7 +275,7 @@ pub struct PatchTaskReq {
 }
 
 /// `POST /tasks/:plan/:task/spawn` (queued when paused or at a limit).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SpawnTaskReq {
     #[serde(default)]
     pub instructions: Option<String>,
@@ -283,14 +286,14 @@ pub struct SpawnTaskReq {
 /// `GET /agents/:id/transcript?after=<uuid>&limit=`: the entries after
 /// `after` (oldest first, at most `limit`), or without `after` the last
 /// `limit` entries.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct TranscriptResp {
     pub agent: AgentId,
     pub entries: Vec<ChatEntry>,
 }
 
 /// `POST /agents/:id/messages`: `steer` interrupts, otherwise it is queued.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct MessageReq {
     pub text: String,
     #[serde(default)]
@@ -301,7 +304,7 @@ pub struct MessageReq {
 // Items
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum AnswerAction {
     Allow,
@@ -314,7 +317,7 @@ pub enum AnswerAction {
 }
 
 /// `POST /items/:id/answer`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct AnswerReq {
     pub action: AnswerAction,
     /// The note for `deny` and `send_back`, the text for `reply`.
@@ -351,7 +354,7 @@ impl AnswerReq {
 // ---------------------------------------------------------------------------
 
 /// What `POST /terminals` starts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NewTerminalKind {
     /// A plain interactive Claude; `args` are extra arguments such as
@@ -371,7 +374,7 @@ pub enum NewTerminalKind {
 }
 
 /// `POST /terminals`. The response is a [`TerminalView`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct CreateTerminalReq {
     #[serde(flatten)]
     pub kind: NewTerminalKind,
@@ -403,7 +406,7 @@ impl NewTerminalKind {
 pub type CreateTerminalResp = TerminalView;
 
 /// One past Claude session of the server user, from its transcript.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SessionSummary {
     pub id: String,
     pub cwd: String,
@@ -419,14 +422,14 @@ pub struct SessionSummary {
 }
 
 /// `GET /projects`: newest session first.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ProjectsResp {
     pub sessions: Vec<SessionSummary>,
 }
 
 /// `GET /terminals/:id/scrollback?lines=`: plain text lines of the history
 /// above the visible screen, oldest first.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ScrollbackResp {
     pub term: TermId,
     pub lines: Vec<String>,
@@ -439,14 +442,14 @@ pub struct ScrollbackResp {
 // ---------------------------------------------------------------------------
 
 /// `POST /pair/start` (Unix socket or full scope).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PairStartReq {
     /// Scope of the device that will pair; defaults to `full`.
     #[serde(default)]
     pub scope: Option<Scope>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PairStartResp {
     /// 8 characters, single use.
     pub code: String,
@@ -457,13 +460,13 @@ pub struct PairStartResp {
 }
 
 /// `POST /pair/complete` (no auth; rate limited).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PairCompleteReq {
     pub code: String,
     pub device_name: String,
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PairCompleteResp {
     pub device_id: String,
     /// 256-bit token, shown once; the server keeps only its hash.
@@ -482,7 +485,7 @@ impl std::fmt::Debug for PairCompleteResp {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct DeviceView {
     pub id: String,
     pub name: String,
@@ -494,7 +497,7 @@ pub struct DeviceView {
 }
 
 /// `GET /devices`. `DELETE /devices/:id` revokes and answers 204.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct DevicesResp {
     pub devices: Vec<DeviceView>,
 }
@@ -504,7 +507,7 @@ pub struct DevicesResp {
 // ---------------------------------------------------------------------------
 
 /// `POST /v1/agent/hook`, sent by `cmuxd hook <event>`.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct AgentHookReq {
     /// `CMUX_AGENT`.
     pub agent: AgentId,
@@ -526,7 +529,7 @@ impl std::fmt::Debug for AgentHookReq {
 }
 
 /// What the hook binary prints to stdout. `None` prints nothing.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 pub struct AgentHookResp {
     pub output: Option<Value>,
 }
@@ -572,7 +575,7 @@ fn permission_output(d: &PermissionDecision) -> Value {
 }
 
 /// `POST /v1/agent/tool`, sent by `cmuxd mcp` for a `tools/call`.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct AgentToolReq {
     pub agent: AgentId,
     pub token: String,
@@ -593,7 +596,7 @@ impl std::fmt::Debug for AgentToolReq {
 }
 
 /// The MCP tool result: short plain text; errors start with `error:`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct AgentToolResp {
     pub text: String,
     #[serde(default)]
