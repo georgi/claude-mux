@@ -3,6 +3,9 @@ mod history;
 mod keys;
 mod layout;
 mod pane;
+// Drawing, navigation and forms for the plan features; wired in by the client.
+#[allow(dead_code)]
+mod tui;
 mod ui;
 mod window;
 

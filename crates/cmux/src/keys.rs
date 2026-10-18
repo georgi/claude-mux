@@ -15,6 +15,8 @@ pub enum Key {
     Ctrl(char),
     Alt(char),
     Enter,
+    /// ESC then Enter (steer in the message prompt).
+    AltEnter,
     Tab,
     BackTab,
     Backspace,
@@ -97,7 +99,7 @@ fn parse_escape(b: &[u8]) -> (Key, usize) {
             let (k, n) = parse_one(&b[1..]);
             match k {
                 Key::Char(c) => (Key::Alt(c), 1 + n),
-                Key::Enter => (Key::Enter, 1 + n),
+                Key::Enter => (Key::AltEnter, 1 + n),
                 _ => (Key::Esc, 1),
             }
         }

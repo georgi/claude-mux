@@ -1,0 +1,28 @@
+---
+source: crates/cmux/src/tui/draw/tree.rs
+expression: "snap(80, 24, TreeMode::Strip, Focus::Tree)"
+---
+▾◆
+ ⚑
+ ✓
+ ⠹ «sel»
+  ⠹
+  ✓
+ ○
+ ⚑
+ ○
+ ○
+▸○
+▸✓
+ $
+
+
+
+
+
+
+
+
+
+
+⚑2
