@@ -1236,8 +1236,14 @@ async fn a_task_agent_spawns_sub_agents_up_to_the_limit_and_gets_their_reports()
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_finished_sub_agent_is_stopped_and_the_task_agent_can_spawn_another() {
+    // The limit is two sub-agents per task: `busy` never finishes and holds one
+    // slot, so `docs` can only start once the finished `lint` has freed the other.
+    let never = tempfile::tempdir().unwrap().path().join("never");
     let task = json!({
-        "first": [{"tool": "spawn_subagent", "args": {"name": "lint", "prompt": "run the linter"}}],
+        "first": [
+            {"tool": "spawn_subagent", "args": {"name": "lint", "prompt": "run the linter"}},
+            {"tool": "spawn_subagent", "args": {"name": "busy", "prompt": "wait"}},
+        ],
         "later": [
             {"when": "lint is clean", "tool": "spawn_subagent",
              "args": {"name": "docs", "prompt": "fix the docs"}},
@@ -1247,9 +1253,14 @@ async fn a_finished_sub_agent_is_stopped_and_the_task_agent_can_spawn_another() 
         {"tool": "report_result", "args": {"status": "success", "summary": "lint is clean"}},
     ]});
     let docs_script = json!({"first": [{"print": "docs is up"}]});
+    let busy_script = json!({"first": [{"wait_file": never.display().to_string()}]});
     let (env, plan) = plan_with_task(
         task,
-        &[("T-0001/lint", lint_script), ("T-0001/docs", docs_script)],
+        &[
+            ("T-0001/lint", lint_script),
+            ("T-0001/busy", busy_script),
+            ("T-0001/docs", docs_script),
+        ],
     )
     .await;
     let (tid, lint, docs) = (
@@ -1282,6 +1293,10 @@ async fn a_finished_sub_agent_is_stopped_and_the_task_agent_can_spawn_another() 
     env.screen_has(&docs, "docs is up").await;
     let v = env.view().await;
     assert_eq!(agent_view(&v, &docs).unwrap().life, Life::Running);
+    assert_eq!(
+        agent_view(&v, &format!("{plan}/T-0001/busy")).unwrap().life,
+        Life::Running
+    );
     env.shutdown().await;
 }
 
