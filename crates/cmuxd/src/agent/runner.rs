@@ -17,7 +17,6 @@
 //! hub under `term_key(TermId)` and removed from it once the process exits.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -48,7 +47,6 @@ pub struct AgentRuntime {
     spawn: SpawnConfig,
     pool: WorktreePool,
     pub(crate) waiters: PermissionWaiters,
-    next_term: AtomicU32,
     /// Terminals this runtime started, killed at shutdown.
     started: Mutex<Vec<String>>,
 }
@@ -60,7 +58,6 @@ impl AgentRuntime {
             spawn,
             pool: WorktreePool::default(),
             waiters: PermissionWaiters::default(),
-            next_term: AtomicU32::new(1),
             started: Mutex::new(Vec::new()),
         })
     }
@@ -107,25 +104,6 @@ impl AgentRuntime {
     ) -> impl FnOnce(ActorHandle) -> Box<dyn EffectRunner> + Send + 'static {
         let rt = self.clone();
         move |handle| Box::new(AgentRunner { rt, handle })
-    }
-
-    /// A terminal id the engine has not used and this runtime has not handed out.
-    fn alloc_term(&self, engine_next: u32) -> TermId {
-        // A compare-exchange loop rather than `fetch_update`, which newer
-        // toolchains deprecate under a new name older ones lack.
-        let mut cur = self.next_term.load(Ordering::SeqCst);
-        loop {
-            let n = cur.max(engine_next);
-            match self.next_term.compare_exchange_weak(
-                cur,
-                n + 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return TermId(n),
-                Err(actual) => cur = actual,
-            }
-        }
     }
 
     fn note_started(&self, id: &str) {
@@ -187,12 +165,11 @@ impl EffectRunner for AgentRunner {
                 });
                 true
             }
-            Effect::SpawnAgent { .. } => {
+            Effect::SpawnAgent { term, .. } => {
                 let Some(req) = SpawnRequest::from_effect(effect) else {
                     return false;
                 };
                 let spec = build_spawn(&self.rt.spawn, &req);
-                let term = self.rt.alloc_term(state.next_term_id);
                 let cfg = if req.level == Level::Sub {
                     TermConfig::small()
                 } else {
@@ -202,14 +179,15 @@ impl EffectRunner for AgentRunner {
                     self.rt.clone(),
                     self.handle.clone(),
                     req.agent.clone(),
-                    term,
+                    *term,
                     spec,
                     cfg,
                 ));
                 true
             }
-            Effect::KillAgent { agent } => {
-                if let Some(t) = term_of(state, agent).and_then(|t| self.rt.hub.get_term(t)) {
+            Effect::KillAgent { agent, term } => {
+                let term = term.or_else(|| term_of(state, agent));
+                if let Some(t) = term.and_then(|t| self.rt.hub.get_term(t)) {
                     t.kill();
                 }
                 true
@@ -238,7 +216,7 @@ impl EffectRunner for AgentRunner {
                 true
             }
             // Push notifications belong to a later step.
-            Effect::Notify { .. } | Effect::Persist { .. } => false,
+            Effect::Notify { .. } | Effect::Persist { .. } | Effect::PersistGlobals => false,
         }
     }
 
@@ -401,17 +379,5 @@ mod tests {
             paste_bytes("hi\x1b[201~\nthere"),
             b"\x1b[200~hi [201~ there\x1b[201~\r"
         );
-    }
-
-    #[test]
-    fn term_ids_skip_what_the_engine_knows() {
-        let rt = AgentRuntime::new(
-            Arc::new(Hub::new()),
-            SpawnConfig::new("x".into(), "s".into(), "d".into()),
-        );
-        assert_eq!(rt.alloc_term(1), TermId(1));
-        assert_eq!(rt.alloc_term(1), TermId(2));
-        assert_eq!(rt.alloc_term(7), TermId(7));
-        assert_eq!(rt.alloc_term(3), TermId(8));
     }
 }

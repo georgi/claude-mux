@@ -97,11 +97,14 @@ pub struct PersistRunner(pub StoreWriter);
 
 impl EffectRunner for PersistRunner {
     fn run(&self, effect: &Effect, state: &State) -> bool {
-        let Effect::Persist { plan } = effect else {
-            return false;
-        };
-        if let Some(p) = state.plans.iter().find(|p| p.id == *plan) {
-            self.0.save_plan(p.clone());
+        match effect {
+            Effect::Persist { plan } => {
+                if let Some(p) = state.plans.iter().find(|p| p.id == *plan) {
+                    self.0.save_plan(p.clone());
+                }
+            }
+            Effect::PersistGlobals => {}
+            _ => return false,
         }
         self.0.save_globals(
             Globals::of(state),

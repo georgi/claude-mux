@@ -120,6 +120,7 @@ impl<'a> SpawnRequest<'a> {
         match effect {
             Effect::SpawnAgent {
                 agent,
+                term: _,
                 level,
                 cwd,
                 session_id,

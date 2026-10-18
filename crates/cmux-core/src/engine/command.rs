@@ -415,6 +415,9 @@ pub enum Effect {
     Persist {
         plan: PlanId,
     },
+    /// Save only what belongs to no plan (rev, terminals, inbox): a change
+    /// that touched no plan still bumped `rev`.
+    PersistGlobals,
 }
 
 /// A whole-object change at `rev`; the server builds the view from the state.

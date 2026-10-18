@@ -150,6 +150,8 @@ impl H {
             Ok(o) => {
                 let mut same = before.clone();
                 same.rev = self.st.rev;
+                // A reserved terminal id is a counter no view shows.
+                same.next_term_id = self.st.next_term_id;
                 if same == self.st {
                     assert_eq!(self.st.rev, before.rev, "rev bumped without a change");
                     assert!(
@@ -3471,4 +3473,78 @@ fn loose_terminals_are_created_sized_titled_and_closed() {
     assert!(!h.st.loose.contains(&id));
     let e = err_of(h.client(ClientAction::CloseTerminal { term: id }));
     assert!(e.to_string().contains("no terminal"), "{e}");
+}
+
+#[test]
+fn a_spawned_after_stop_kills_the_process_it_names() {
+    // Stopped while Starting: the term is not on the agent yet, so the kill
+    // must carry the one the runner reports.
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("late-kill", 1);
+    h.tool(
+        &exec,
+        ToolCall::SpawnTask {
+            task: t(1),
+            instructions: None,
+            force: false,
+        },
+    )
+    .unwrap();
+    let a = H::task_agent(&pid, 1);
+    h.client(ClientAction::StopAgent { agent: a.clone() })
+        .unwrap();
+    let o = h.runner(RunnerEvent::Spawned {
+        agent: a.clone(),
+        term: TermId(42),
+        session_id: "s".into(),
+        token_hash: tok(&a),
+    });
+    assert!(has_fx(&o, |e| matches!(
+        e,
+        Effect::KillAgent { agent, term: Some(TermId(42)) } if *agent == a
+    )));
+}
+
+#[test]
+fn spawn_effects_and_loose_terminals_never_share_a_term_id() {
+    let mut h = H::new();
+    let o = h
+        .client(ClientAction::CreatePlan {
+            title: "ids".into(),
+            repos: vec![Repo {
+                path: "/repo".into(),
+                base_branch: "main".into(),
+                remote_url: None,
+            }],
+            request: "r".into(),
+        })
+        .unwrap();
+    let Some(Effect::SpawnAgent { term, .. }) = o
+        .effects
+        .iter()
+        .find(|e| matches!(e, Effect::SpawnAgent { .. }))
+    else {
+        panic!("no spawn effect")
+    };
+    let loose = h
+        .client(ClientAction::CreateTerminal {
+            kind: TermKind::Shell,
+            cwd: "/".into(),
+            size: (80, 24),
+        })
+        .unwrap();
+    assert_ne!(text_of(&loose), term.0.to_string());
+}
+
+#[test]
+fn a_change_touching_no_plan_still_persists_the_globals() {
+    let mut h = H::new();
+    let o = h
+        .client(ClientAction::CreateTerminal {
+            kind: TermKind::Shell,
+            cwd: "/".into(),
+            size: (80, 24),
+        })
+        .unwrap();
+    assert!(has_fx(&o, |e| matches!(e, Effect::PersistGlobals)));
 }

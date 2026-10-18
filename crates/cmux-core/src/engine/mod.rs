@@ -126,6 +126,9 @@ impl Ctx<'_> {
                 plans.push(p);
             }
         }
+        if plans.is_empty() {
+            self.fx.push(Effect::PersistGlobals);
+        }
         self.fx
             .extend(plans.into_iter().map(|plan| Effect::Persist { plan }));
         let deltas = self

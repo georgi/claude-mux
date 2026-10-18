@@ -411,6 +411,7 @@ fn from_effect_reads_spawn_agent_only() {
     let agent = id(AgentPath::Task(TaskId::new(1)));
     let effect = Effect::SpawnAgent {
         agent: agent.clone(),
+        term: cmux_core::ids::TermId(3),
         level: Level::Task,
         cwd: "/wt".into(),
         session_id: Some("sid".into()),
@@ -425,7 +426,7 @@ fn from_effect_reads_spawn_agent_only() {
     assert_eq!(req.session_id, Some("sid"));
     assert!(req.resume);
     assert_eq!((req.system_prompt, req.kickoff), ("sys", "go"));
-    assert!(SpawnRequest::from_effect(&Effect::KillAgent { agent }).is_none());
+    assert!(SpawnRequest::from_effect(&Effect::KillAgent { agent, term: None }).is_none());
 }
 
 #[test]
