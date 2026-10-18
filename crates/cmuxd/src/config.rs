@@ -3,12 +3,13 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use cmux_core::model::{GlobalLimits, Limits, Timeouts};
+use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_TCP: &str = "127.0.0.1:7878";
 
-/// What `config.toml` may say. Every field is optional.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// What `config.toml` may say. Every field is optional; an unknown key is an error.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Where plans, devices and diagnostics live. Default `~/.local/share/cmuxd`.
@@ -26,15 +27,106 @@ pub struct Config {
     pub tls: Option<TlsConfig>,
     pub pairing: PairingConfig,
     pub agents: AgentsConfig,
+    /// After a restart, resume the agents that were working (default on).
+    pub auto_resume: bool,
+    pub limits: LimitsConfig,
+    pub timeouts: TimeoutsConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            data_dir: None,
+            socket: None,
+            listen: None,
+            allow_plain_http: false,
+            name: None,
+            public_url: None,
+            tls: None,
+            pairing: PairingConfig::default(),
+            agents: AgentsConfig::default(),
+            auto_resume: true,
+            limits: LimitsConfig::default(),
+            timeouts: TimeoutsConfig::default(),
+        }
+    }
+}
+
+/// `[limits]` (architecture section 10). Plan limits apply to new plans.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LimitsConfig {
+    pub tasks_per_plan: u32,
+    pub subagents_per_task: u32,
+    /// Claude processes on the whole server.
+    pub live_processes: u32,
+    /// Concurrent git operations (worktree creation).
+    pub git_ops: u32,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        let (p, g) = (Limits::default(), GlobalLimits::default());
+        LimitsConfig {
+            tasks_per_plan: p.tasks_per_plan,
+            subagents_per_task: p.subagents_per_task,
+            live_processes: g.live_processes,
+            git_ops: g.git_ops,
+        }
+    }
+}
+
+impl LimitsConfig {
+    pub fn plan(&self) -> Limits {
+        Limits {
+            tasks_per_plan: self.tasks_per_plan.max(1),
+            subagents_per_task: self.subagents_per_task,
+        }
+    }
+
+    pub fn global(&self) -> GlobalLimits {
+        GlobalLimits {
+            live_processes: self.live_processes.max(1),
+            git_ops: self.git_ops.max(1),
+        }
+    }
+}
+
+/// `[timeouts]`, in seconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TimeoutsConfig {
+    /// `ask_user` and `ask_parent` questions expire after this.
+    pub question_secs: u64,
+    /// How long a `PermissionRequest` hook is held open for a remote answer.
+    /// Unset means `[agents] permission_wait_secs`.
+    pub permission_wait_secs: Option<u64>,
+    /// A working agent with no progress for this long is stalled.
+    pub stall_secs: u64,
+    /// A task or sub-agent idle this long without a report needs a human.
+    pub idle_without_report_secs: u64,
+}
+
+impl Default for TimeoutsConfig {
+    fn default() -> Self {
+        let t = Timeouts::default();
+        TimeoutsConfig {
+            question_secs: t.question / 1000,
+            permission_wait_secs: None,
+            stall_secs: t.stall / 1000,
+            idle_without_report_secs: t.idle_without_report / 1000,
+        }
+    }
 }
 
 /// `[agents]`: how `claude` is started (architecture 7.1).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AgentsConfig {
     /// The `claude` binary (default `claude`, found on `PATH`).
     pub claude_bin: String,
     /// How long a `PermissionRequest` hook is held open for a remote answer.
+    /// `[timeouts] permission_wait_secs` wins when set.
     pub permission_wait_secs: u64,
     /// Mark an agent's working directory trusted in Claude's global config
     /// (`$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json`) before starting
@@ -60,20 +152,21 @@ impl Default for AgentsConfig {
 
 /// `claude` options for one level. An absent `permission_mode` means `auto`
 /// (not the Claude account's own default); an absent `model` means Claude's own.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LevelConfig {
     pub permission_mode: Option<String>,
     pub model: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TlsConfig {
     pub cert: PathBuf,
     pub key: PathBuf,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PairingConfig {
     /// How long a code is valid.
@@ -163,6 +256,25 @@ impl Config {
         }
         if o.listen.is_some() {
             self.listen = o.listen.clone();
+        }
+    }
+
+    /// The permission wait in seconds, at least 1.
+    pub fn permission_wait_secs(&self) -> u64 {
+        let t = self.timeouts.permission_wait_secs;
+        t.unwrap_or(self.agents.permission_wait_secs).max(1)
+    }
+
+    /// The engine timers this config asks for.
+    pub fn engine_timeouts(&self) -> Timeouts {
+        let ms = |s: u64| s.max(1).saturating_mul(1000);
+        let t = &self.timeouts;
+        Timeouts {
+            permission_wait: ms(self.permission_wait_secs()),
+            question: ms(t.question_secs),
+            idle_without_report: ms(t.idle_without_report_secs),
+            stall: ms(t.stall_secs),
+            ..Timeouts::default()
         }
     }
 
@@ -293,6 +405,129 @@ mod tests {
         assert!(!off.agents.pre_trust);
         assert_eq!(c.agents.task.model.as_deref(), Some("haiku"));
         assert!(c.agents.sub.model.is_none());
+    }
+
+    const FULL: &str = r#"
+auto_resume = false
+
+[limits]
+tasks_per_plan = 3
+subagents_per_task = 4
+live_processes = 12
+git_ops = 1
+
+[timeouts]
+question_secs = 1800
+permission_wait_secs = 120
+stall_secs = 600
+idle_without_report_secs = 300
+"#;
+
+    #[test]
+    fn limits_timeouts_and_auto_resume_round_trip() {
+        let c: Config = toml::from_str(FULL).unwrap();
+        assert!(!c.auto_resume);
+        assert_eq!(
+            c.limits,
+            LimitsConfig {
+                tasks_per_plan: 3,
+                subagents_per_task: 4,
+                live_processes: 12,
+                git_ops: 1,
+            }
+        );
+        assert_eq!(
+            c.timeouts,
+            TimeoutsConfig {
+                question_secs: 1800,
+                permission_wait_secs: Some(120),
+                stall_secs: 600,
+                idle_without_report_secs: 300,
+            }
+        );
+        let again: Config = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+        assert_eq!(again, c);
+        // What the engine gets.
+        let t = c.engine_timeouts();
+        assert_eq!(
+            (
+                t.question,
+                t.permission_wait,
+                t.stall,
+                t.idle_without_report
+            ),
+            (1_800_000, 120_000, 600_000, 300_000)
+        );
+        assert_eq!(t.steer, Timeouts::default().steer);
+        assert_eq!(c.limits.plan().tasks_per_plan, 3);
+        assert_eq!(c.limits.plan().subagents_per_task, 4);
+        assert_eq!(c.limits.global().live_processes, 12);
+        assert_eq!(c.limits.global().git_ops, 1);
+    }
+
+    #[test]
+    fn new_keys_default_to_the_engine_defaults() {
+        let c: Config = toml::from_str("").unwrap();
+        assert_eq!(c, Config::default());
+        assert!(c.auto_resume, "on by default");
+        assert_eq!(c.engine_timeouts(), Timeouts::default());
+        assert_eq!(c.limits.plan(), Limits::default());
+        assert_eq!(c.limits.global(), GlobalLimits::default());
+        assert_eq!(
+            Timeouts::default().stall,
+            15 * 60_000,
+            "the stall default is 15 min"
+        );
+        // An empty config round-trips too.
+        let again: Config = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+        assert_eq!(again, c);
+        // `[agents] permission_wait_secs` still works; `[timeouts]` wins.
+        let a: Config = toml::from_str("[agents]\npermission_wait_secs = 77").unwrap();
+        assert_eq!(a.engine_timeouts().permission_wait, 77_000);
+        let both: Config = toml::from_str(
+            "[agents]\npermission_wait_secs = 77\n[timeouts]\npermission_wait_secs = 5",
+        )
+        .unwrap();
+        assert_eq!(both.permission_wait_secs(), 5);
+    }
+
+    #[test]
+    fn an_unknown_key_fails_to_load() {
+        for bad in [
+            "auto_resum = true",
+            "[limits]\ntasks = 3",
+            "[timeouts]\nstall = 600",
+            "[timeouts]\nstall_mins = 10",
+            "[agents]\nbogus = 1",
+            "[pairing]\nttl = 1",
+            "[tls]\ncert = \"c\"\nkey = \"k\"\nca = \"x\"",
+        ] {
+            assert!(toml::from_str::<Config>(bad).is_err(), "{bad:?} loaded");
+        }
+        // And through `Config::load`, as the server reads it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[limits]\nlive = 3\n").unwrap();
+        let o = Overrides {
+            config: Some(path.clone()),
+            ..Overrides::default()
+        };
+        let e = Config::load(&o).unwrap_err();
+        assert!(matches!(e, ConfigError::Parse(..)), "{e}");
+        assert!(e.to_string().contains("live"), "{e}");
+        std::fs::write(&path, FULL).unwrap();
+        assert!(!Config::load(&o).unwrap().auto_resume);
+    }
+
+    #[test]
+    fn the_readme_example_loads_with_the_defaults() {
+        let readme = include_str!("../../../README.md");
+        let start = readme.find("```toml\nlisten").expect("example") + "```toml\n".len();
+        let text = &readme[start..start + readme[start..].find("```").unwrap()];
+        let c: Config = toml::from_str(text).unwrap();
+        assert_eq!(c.limits, LimitsConfig::default());
+        assert_eq!(c.timeouts.stall_secs, TimeoutsConfig::default().stall_secs);
+        assert!(c.auto_resume);
     }
 
     #[test]

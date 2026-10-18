@@ -32,6 +32,9 @@ pub struct State {
     pub data_dir: PathBuf,
     #[serde(default)]
     pub timeouts: Timeouts,
+    /// Limits a new plan starts with. Set by the server from `config.toml`.
+    #[serde(skip)]
+    pub plan_limits: Limits,
     /// `(request_id, untruncated match input)` of each held `PermissionRequest`
     /// hook, by its inbox item. Transient: a restart kills the held hooks.
     #[serde(skip)]
@@ -43,6 +46,7 @@ pub struct State {
 
 /// Engine timers, in milliseconds (architecture sections 7.2, 8.1, 8.3 and 10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Timeouts {
     /// A held permission request falls back to Claude's own prompt after this.
     pub permission_wait: u64,
@@ -52,6 +56,8 @@ pub struct Timeouts {
     pub idle_without_report: u64,
     /// A steer waits this long for `Stop` before it is pasted.
     pub steer: u64,
+    /// A working agent with no progress for this long is stalled.
+    pub stall: u64,
 }
 
 impl Default for Timeouts {
@@ -61,6 +67,7 @@ impl Default for Timeouts {
             question: 60 * 60_000,
             idle_without_report: 10 * 60_000,
             steer: 10_000,
+            stall: 15 * 60_000,
         }
     }
 }
@@ -287,6 +294,12 @@ pub struct Agent {
     /// The report has been landed (posted to the parent, task moved).
     #[serde(default)]
     pub landed: bool,
+    /// Last hook, tool call or screen change, to within 30 s (the watchdog clock).
+    #[serde(default)]
+    pub last_progress: Option<Timestamp>,
+    /// Working with no progress for `Timeouts::stall`; progress clears it.
+    #[serde(default)]
+    pub stalled: bool,
 }
 
 impl Agent {
@@ -324,6 +337,8 @@ impl Agent {
             idle_since: None,
             landed: false,
             unconfirmed: Vec::new(),
+            last_progress: None,
+            stalled: false,
         }
     }
 }

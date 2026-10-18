@@ -103,6 +103,9 @@ pub struct AgentView {
     pub report: Option<Report>,
     pub tokens: TokenUsage,
     pub idle_since: Option<Timestamp>,
+    /// The watchdog flags it: working, with no progress for a while.
+    #[serde(default)]
+    pub stalled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,6 +234,7 @@ impl AgentView {
             report: a.report.clone(),
             tokens: a.tokens,
             idle_since: a.idle_since,
+            stalled: a.stalled,
         }
     }
 }

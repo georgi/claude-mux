@@ -36,6 +36,7 @@ fn agent(plan: &PlanId, path: AgentPath, life: Life, activity: Activity) -> Agen
             ..TokenUsage::default()
         },
         idle_since: None,
+        stalled: false,
         path,
     }
 }

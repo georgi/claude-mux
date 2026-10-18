@@ -1,24 +1,30 @@
 //! API tests against an in-process server on a real Unix socket and a real
 //! TCP port: auth, pairing, idempotency, REST and the store.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::connect_info::ConnectInfo;
 use axum::http::Request;
+use cmux_core::ids::TermId;
+use cmux_core::model::{Activity, Life};
 use cmux_proto::api::{
     Created, DevicesResp, ErrorBody, ErrorCode, PairCompleteReq, PairCompleteResp, PairStartReq,
     PairStartResp, PatchTaskReq, Scope, route,
 };
 use cmux_proto::view::{StateView, TaskDetail, TaskState};
+use cmuxd::agent::AgentRuntime;
 use cmuxd::api::auth::PeerCred;
-use cmuxd::api::{self, Transport};
+use cmuxd::api::{self, Extra, Transport};
+use cmuxd::claude::spawn::SpawnConfig;
 use cmuxd::client::{Endpoint, Response};
 use cmuxd::config::{Config, ConfigError};
 use cmuxd::server::{Server, ServerBuilder, ServerError};
 use serde::Serialize;
 use tower::ServiceExt;
+
+const CMUXD: &str = env!("CARGO_BIN_EXE_cmuxd");
 
 struct Harness {
     server: Server,
@@ -39,6 +45,90 @@ fn config(tmp: &Path) -> Config {
 async fn start_with(tmp: &Path, cfg: Config) -> Result<Server, ServerError> {
     let _ = tmp;
     ServerBuilder::new(cfg).tick(None).start().await
+}
+
+/// `examples/fake-claude`, built on demand (as `tests/agents.rs` does).
+fn fake_claude_path() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let p = exe
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .join("examples")
+        .join("fake-claude");
+    if !p.exists() {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+        let ok = std::process::Command::new(cargo)
+            .args(["build", "-p", "cmuxd", "--example", "fake-claude"])
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok && p.exists(), "cannot build {}", p.display());
+    }
+    p
+}
+
+/// A `claude` that runs the fake with the scripts in `<tmp>/scripts`.
+fn fake_claude(tmp: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmp.join("scripts");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = tmp.join("claude");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\nFAKE_CLAUDE_SCRIPTS='{}' exec '{}' \"$@\"\n",
+            dir.display(),
+            fake_claude_path().display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// A server whose agents run `claude_bin`.
+async fn start_agents(cfg: Config, claude_bin: &Path) -> Result<Server, ServerError> {
+    let builder = ServerBuilder::new(cfg.clone()).tick(None);
+    let mut spawn = SpawnConfig::new(CMUXD.into(), cfg.socket_path(), cfg.data_dir());
+    spawn.claude_bin = claude_bin.display().to_string();
+    let rt = AgentRuntime::new(builder.hub(), spawn);
+    let routes = rt.clone();
+    builder
+        .runner(rt.runner())
+        .extra_routes(move || Extra {
+            unix_only: routes.routes(),
+            ..Extra::default()
+        })
+        .start()
+        .await
+}
+
+/// Polls `f` for up to 20 s.
+async fn eventually<T>(what: &str, mut f: impl AsyncFnMut() -> Option<T>) -> T {
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(v) = f().await {
+            return v;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// The executor's life, activity, session id and terminal.
+async fn executor(s: &Server) -> (Life, Activity, String, Option<TermId>) {
+    s.app
+        .actor
+        .query(|st| {
+            let a = &st.plans[0].agents[0];
+            (a.life, a.activity, a.session_id.clone(), a.term)
+        })
+        .await
+        .unwrap()
 }
 
 async fn harness() -> Harness {
@@ -542,18 +632,32 @@ async fn creating_a_plan_shows_up_in_state() {
 #[tokio::test]
 async fn state_survives_a_restart_and_a_second_server_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
-    let cfg = config(tmp.path());
-    let server = start_with(tmp.path(), cfg.clone()).await.unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let cfg = config(&root);
+    let claude = fake_claude(&root);
+    // The executor works on its kickoff until the file appears (never).
+    std::fs::write(
+        root.join("scripts/executor.json"),
+        serde_json::json!({"first": [{"wait_file": root.join("never").display().to_string()}]})
+            .to_string(),
+    )
+    .unwrap();
+    let server = start_agents(cfg.clone(), &claude).await.unwrap();
     let ep = Endpoint::Unix(server.socket_path.clone());
     let plan = serde_json::json!({
         "title": "persist me",
-        "repos": [{"path": tmp.path().display().to_string(), "base_branch": "trunk"}],
+        "repos": [{"path": root.display().to_string(), "base_branch": "trunk"}],
         "request": "x",
     });
     let created: Created = send(&ep, "POST", route::PLANS, &[], &plan)
         .await
         .json()
         .unwrap();
+    let (_, _, session, _) = eventually("the executor to work", async || {
+        let e = executor(&server).await;
+        (e.0 == Life::Running && e.1 == Activity::Working).then_some(e)
+    })
+    .await;
 
     // A second cmuxd on the same data dir refuses to start.
     let mut other = cfg.clone();
@@ -576,13 +680,29 @@ async fn state_survives_a_restart_and_a_second_server_is_refused() {
     let lines = std::fs::read_to_string(journal).unwrap();
     assert!(lines.contains("client.CreatePlan"), "{lines}");
 
-    let server = start_with(tmp.path(), cfg).await.unwrap();
+    // The shutdown killed the process without the engine seeing it exit,
+    // as a crash would. The next start finds the executor "running".
+    let server = start_agents(cfg, &claude).await.unwrap();
     let ep = Endpoint::Unix(server.socket_path.clone());
     let view: StateView = req(&ep, "GET", route::STATE, &[]).await.json().unwrap();
     assert_eq!(view.plans.len(), 1);
     assert_eq!(view.plans[0].id.to_string(), created.id);
     assert_eq!(view.plans[0].repos[0].base_branch, "trunk");
     assert!(view.rev >= 1);
+    // It was working, so it is resumed in its old session with the note.
+    let (_, _, resumed, term) = eventually("the executor to be resumed", async || {
+        let e = executor(&server).await;
+        (e.0 == Life::Running && e.1 == Activity::Working).then_some(e)
+    })
+    .await;
+    assert_eq!(resumed, session);
+    let term = server.app.hub.get_term(term.unwrap()).unwrap();
+    eventually("the restart note on its screen", async || {
+        term.screen_text()
+            .contains("KICKOFF: [cmux] resumed after a server restart; check the worktree")
+            .then_some(())
+    })
+    .await;
     server.shutdown().await;
 }
 

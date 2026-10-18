@@ -460,6 +460,7 @@ fn label(cmd: &Command) -> String {
         Command::Tool { call, .. } => format!("tool.{}", variant(&format!("{call:?}"))),
         Command::Runner(ev) => format!("runner.{}", variant(&format!("{ev:?}"))),
         Command::Tick => "tick".into(),
+        Command::Recover { .. } => "recover".into(),
     }
 }
 
