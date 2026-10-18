@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::ids::AgentPath;
+use crate::ids::{AgentPath, TermId};
 use crate::model::{
     Activity, Level, Plan, PlanState, PrRef, QueuedSpawn, TaskState, TermKind, Terminal,
     TransitionSource, check_task_transition, pr_to_task_state,
@@ -142,10 +142,15 @@ impl Ctx<'_> {
         )
     }
 
-    fn spawn_fx(&self, pi: usize, ai: usize, resume: bool, kickoff: String) -> Effect {
+    fn spawn_fx(&mut self, pi: usize, ai: usize, resume: bool, kickoff: String) -> Effect {
+        // The one place a process's terminal id is allocated, so the runner
+        // and `CreateTerminal` can never hand out the same one.
+        let term = TermId(self.st.next_term_id.max(1));
+        self.st.next_term_id = term.0 + 1;
         let a = self.agent(pi, ai);
         Effect::SpawnAgent {
             agent: a.id.clone(),
+            term,
             level: a.level,
             cwd: a.cwd.clone(),
             session_id: resume.then(|| a.session_id.clone()),
@@ -453,7 +458,10 @@ impl Ctx<'_> {
             return;
         }
         self.agent_mut(pi, ai).life = Life::Stopped;
-        self.fx.push(Effect::KillAgent { agent: id.clone() });
+        self.fx.push(Effect::KillAgent {
+            agent: id.clone(),
+            term: self.agent(pi, ai).term,
+        });
         self.expire_held_for(&id);
         self.dismiss_stalled(&id);
         self.drain_queue();
@@ -652,7 +660,10 @@ impl Ctx<'_> {
             } => {
                 let (pi, ai) = self.agent_idx(&agent)?;
                 if self.agent(pi, ai).life == Life::Stopped {
-                    self.fx.push(Effect::KillAgent { agent });
+                    self.fx.push(Effect::KillAgent {
+                        agent,
+                        term: Some(term),
+                    });
                     return Ok(());
                 }
                 let cwd = self.agent(pi, ai).cwd.clone();

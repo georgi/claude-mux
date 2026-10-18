@@ -744,7 +744,7 @@ fn one_report_per_attempt_and_a_new_attempt_may_report_again() {
         .unwrap();
     assert!(has_fx(
         &o,
-        |e| matches!(e, Effect::KillAgent { agent } if *agent == a)
+        |e| matches!(e, Effect::KillAgent { agent, .. } if *agent == a)
     ));
     h.tool(
         &exec,
@@ -865,7 +865,7 @@ fn stop_resume_and_late_events() {
         .unwrap();
     assert!(has_fx(
         &o,
-        |e| matches!(e, Effect::KillAgent { agent } if *agent == a)
+        |e| matches!(e, Effect::KillAgent { agent, .. } if *agent == a)
     ));
     assert_eq!(h.agent(&a).life, Life::Stopped);
     assert!(
@@ -2495,7 +2495,7 @@ fn plan_done_needs_all_tasks_settled_and_cancel_stops_everything() {
         .unwrap();
     assert!(has_fx(
         &o,
-        |e| matches!(e, Effect::KillAgent { agent } if *agent == a)
+        |e| matches!(e, Effect::KillAgent { agent, .. } if *agent == a)
     ));
     h.tool(
         &exec,

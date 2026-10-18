@@ -371,6 +371,8 @@ pub enum Effect {
     /// resume (the server generates one otherwise, plus the token).
     SpawnAgent {
         agent: AgentId,
+        /// The terminal id to start it under, allocated by the engine.
+        term: TermId,
         level: Level,
         cwd: PathBuf,
         session_id: Option<String>,
@@ -378,8 +380,11 @@ pub enum Effect {
         system_prompt: String,
         kickoff: String,
     },
+    /// `term` is set when the engine knows the process but has not recorded
+    /// it on the agent (a `Spawned` that arrived after the stop).
     KillAgent {
         agent: AgentId,
+        term: Option<TermId>,
     },
     /// Path B. The server pastes `text` itself when it is one line under 1000
     /// chars; otherwise it writes it to a file and pastes one line,
