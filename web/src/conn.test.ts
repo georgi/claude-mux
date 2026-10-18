@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClientMsg, ServerMsg } from "./api/types";
 import { Conn, type SocketLike, streamUrl } from "./conn";
-import { state, task } from "./fixtures";
+import { entry, state, task } from "./fixtures";
 import { Store } from "./store";
 
 class FakeSocket implements SocketLike {
@@ -131,6 +131,31 @@ describe("Conn", () => {
     s.recvBinary(output(3, "def"));
     expect(sink.out).toBe("hiabcdef");
     expect(sink.resets).toBe(1);
+  });
+
+  it("streams a chat into the store and resumes it after the last entry", () => {
+    const a = "P-20261018-demo/T-0002";
+    conn.start();
+    let s = sockets[0];
+    s.open();
+    s.recv(welcome);
+    conn.subChat(a);
+    conn.subChat(a);
+    expect(s.msgs().filter((m) => m.type === "sub_chat")).toEqual([{ type: "sub_chat", agent: a, after: null }]);
+    s.recv({ type: "chat", agent: a, entries: [entry("1"), entry("2")] });
+    s.recv({ type: "chat", agent: a, entries: [entry("2"), entry("3")] });
+    expect(store.get().chats[a].map((e) => e.uuid)).toEqual(["1", "2", "3"]);
+    s.close();
+    vi.advanceTimersByTime(1000);
+    s = sockets[1];
+    s.open();
+    s.recv(welcome);
+    expect(s.msgs().slice(1)).toEqual([{ type: "sub_chat", agent: a, after: "3" }]);
+    // Two views held it; the last one to let go unsubscribes.
+    conn.unsubChat(a);
+    expect(s.msgs().some((m) => m.type === "unsub_chat")).toBe(false);
+    conn.unsubChat(a);
+    expect(s.msgs().at(-1)).toEqual({ type: "unsub_chat", agent: a });
   });
 
   it("subscribes after welcome to terminals that never got a byte", () => {

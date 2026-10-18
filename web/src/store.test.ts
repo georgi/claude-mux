@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DeltaView } from "./api/types";
-import { agent, item, PLAN, plan, state, task, terminal } from "./fixtures";
+import { agent, entry, item, PLAN, plan, state, task, terminal } from "./fixtures";
 import { applyDelta, initial, reduce, Store } from "./store";
 
 const d = (rev: number, change: DeltaView["change"]): DeltaView => ({ rev, change });
@@ -155,5 +155,18 @@ describe("reduce", () => {
     s.dispatch({ type: "conn", status: "closed" });
     expect(n).toBe(1);
     expect(s.get().conn).toBe("closed");
+  });
+});
+
+describe("chat", () => {
+  it("keeps each agent's entries, and an empty first batch marks it loaded", () => {
+    let m = reduce(initial, { type: "chat", agent: "a", entries: [] });
+    expect(m.chats).toEqual({ a: [] });
+    expect(reduce(m, { type: "chat", agent: "a", entries: [] })).toBe(m);
+    m = reduce(m, { type: "chat", agent: "a", entries: [entry("1")] });
+    m = reduce(m, { type: "chat", agent: "b", entries: [entry("9")] });
+    m = reduce(m, { type: "chat", agent: "a", entries: [entry("1"), entry("2")] });
+    expect(m.chats.a.map((e) => e.uuid)).toEqual(["1", "2"]);
+    expect(m.chats.b.map((e) => e.uuid)).toEqual(["9"]);
   });
 });
