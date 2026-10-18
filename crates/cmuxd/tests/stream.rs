@@ -773,15 +773,28 @@ async fn orphaned_loose_terminals_are_dropped_at_start() {
         .await
         .unwrap();
     assert_eq!(r.status, 201, "{}", r.text());
+    let before = s.app.actor.state_view().await.unwrap();
+    assert_eq!(before.terminals.len(), 1);
     s.shutdown().await;
 
     // The data-dir lock is released by the store thread a moment after shutdown.
+    let mut tries = 0;
     let s = loop {
         match ServerBuilder::new(cfg(tmp.path())).tick(None).start().await {
             Ok(s) => break s,
-            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            Err(e) => {
+                tries += 1;
+                assert!(tries < 100, "server did not restart: {e:#}");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
         }
     };
-    assert!(s.app.actor.state_view().await.unwrap().terminals.is_empty());
+    let after = s.app.actor.state_view().await.unwrap();
+    // The terminal was really saved, then dropped; rev never runs backwards
+    // and its id is not handed out again.
+    assert!(after.terminals.is_empty());
+    assert!(after.rev >= before.rev, "{} < {}", after.rev, before.rev);
+    let next = s.app.actor.query(|s| s.next_term_id).await.unwrap();
+    assert!(next > before.terminals[0].id.0, "next term id {next}");
     s.shutdown().await;
 }
