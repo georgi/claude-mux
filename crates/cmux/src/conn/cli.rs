@@ -72,7 +72,12 @@ pub fn login(args: &[String]) -> Result<()> {
     cfg.add(entry);
     cfg.save(&path)?;
     if let Some(old) = taken {
-        eprintln!("note: {old:?} is already paired with another server; stored as {n:?}");
+        let why = if old == LOCAL {
+            "is reserved for the local server"
+        } else {
+            "is already paired with another server"
+        };
+        eprintln!("note: {old:?} {why}; stored as {n:?}");
     }
     println!("Paired with {n}. `cmux servers` lists the paired servers.");
     Ok(())
@@ -84,6 +89,11 @@ pub fn pair(url: &str, code: &str, name: Option<&str>, device: &str) -> Result<S
     let code = code.trim().to_string();
     if code.is_empty() {
         bail!("no pairing code entered");
+    }
+    // Checked before the code is spent. A name the server picks is renamed by
+    // `rename_clash` instead.
+    if name == Some(LOCAL) {
+        bail!("{LOCAL:?} is reserved for the local server; pick another with --name");
     }
     let resp: PairCompleteResp = Http::anonymous(&url)
         .post(
@@ -99,9 +109,6 @@ pub fn pair(url: &str, code: &str, name: Option<&str>, device: &str) -> Result<S
         None if resp.server.name.is_empty() => host_of(&url),
         None => resp.server.name.clone(),
     };
-    if name == LOCAL {
-        bail!("{LOCAL:?} is reserved for the local server; pick another with --name");
-    }
     Ok(ServerEntry {
         name,
         url,
@@ -111,20 +118,23 @@ pub fn pair(url: &str, code: &str, name: Option<&str>, device: &str) -> Result<S
 
 /// Keeps a login from silently replacing another server's entry: a name the
 /// server chose that is taken by a different URL becomes `NAME-2`, `NAME-3`...
-/// (an explicit `--name` may replace). Returns the name that was taken.
+/// (an explicit `--name` may replace). The reserved `local` is renamed the
+/// same way. A candidate already paired with this URL is reused, so a repeated
+/// login refreshes its token. Returns the name that was taken.
 fn rename_clash(
     cfg: &ClientConfig,
     entry: &mut ServerEntry,
     explicit_name: bool,
 ) -> Option<String> {
     let clashes = |name: &str| cfg.get(name).is_some_and(|old| old.url != entry.url);
-    if explicit_name || !clashes(&entry.name) {
+    let reserved = entry.name == LOCAL;
+    if explicit_name || (!reserved && !clashes(&entry.name)) {
         return None;
     }
     let old = entry.name.clone();
     entry.name = (2..)
         .map(|n| format!("{old}-{n}"))
-        .find(|c| c != LOCAL && !clashes(c) && cfg.get(c).is_none())
+        .find(|c| c != LOCAL && !clashes(c))
         .expect("an unused name exists");
     Some(old)
 }
@@ -381,6 +391,39 @@ mod tests {
         assert_eq!(rename_clash(&cfg, &mut same, false), None);
         let mut new = entry("new", "https://b.example");
         assert_eq!(rename_clash(&cfg, &mut new, false), None);
+    }
+
+    #[test]
+    fn relogin_reuses_the_name_already_paired_with_the_url() {
+        let entry = |name: &str, url: &str, token: &str| ServerEntry {
+            name: name.into(),
+            url: url.into(),
+            token: token.into(),
+        };
+        let mut cfg = ClientConfig::default();
+        cfg.add(entry("vps", "https://a.example", "old"));
+        cfg.add(entry("vps-2", "https://b.example", "old"));
+        // The server is stored as vps-2; logging into it again reuses that name.
+        let mut again = entry("vps", "https://b.example", "new");
+        assert_eq!(rename_clash(&cfg, &mut again, false), Some("vps".into()));
+        assert_eq!(again.name, "vps-2");
+        cfg.add(again);
+        assert_eq!(cfg.servers.len(), 2);
+        assert_eq!(cfg.get("vps-2").unwrap().token, "new");
+    }
+
+    #[test]
+    fn a_server_named_local_is_renamed() {
+        let cfg = ClientConfig::default();
+        let mut e = ServerEntry {
+            name: LOCAL.into(),
+            url: "https://a.example".into(),
+            token: "t".into(),
+        };
+        assert_eq!(rename_clash(&cfg, &mut e, false), Some(LOCAL.into()));
+        assert_eq!(e.name, "local-2");
+        // With --name the reserved name is refused before the code is spent.
+        assert!(pair("https://a.example", "ABCD", Some(LOCAL), "d").is_err());
     }
 
     #[test]
