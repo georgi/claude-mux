@@ -1,0 +1,38 @@
+---
+source: crates/cmux/src/tui/draw/inbox.rs
+expression: "snap(160, 50, 0)"
+---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                          ┌ needs you  2 ────────────────────────────────────────────────────────────┐
+                                          │ ⚑ T-0004         allow Bash?                                             │ «sel»
+                                          │ ⚑ auth-refactor  Which database should T-0005 migrate first, users or s… │
+                                          │                                                                          │
+                                          │                                                                          │
+                                          │                                                                          │
+                                          │                                                                          │
+                                          │                                                                          │
+                                          │                                                                          │
+                                          │                                                                          │
+                                          │                                                                          │
+                                          ├──────────────────────────────────────────────────────────────────────────┤
+                                          │ Bash: cargo test -p api                                                  │
+                                          │                                                                          │
+                                          │                                                                          │
+                                          │                                                                          │
+                                          │ y allow  Y always  n deny  d dismiss  ↵ open  esc close                  │
+                                          └──────────────────────────────────────────────────────────────────────────┘
