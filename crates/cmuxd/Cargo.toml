@@ -16,9 +16,12 @@ libc = "0.2.191"
 portable-pty = "0.9.0"
 qrcode = "0.14.1"
 rand = "0.10.3"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
+ring = "0.17.14"
 sha2 = "0.11.1"
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "io-util", "fs", "process"] }
 toml = "1.1.8"
+url = "2"
 serde.workspace = true
 serde_json.workspace = true
 tracing = "0.1.44"
@@ -26,7 +29,7 @@ uuid.workspace = true
 vt100.workspace = true
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
 axum-server = { version = "0.8.0", default-features = false, features = ["tls-rustls-no-provider"], optional = true }
-rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"], optional = true }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
 rust-embed = { version = "8.13.0", features = ["mime-guess"], optional = true }
 
 [features]
@@ -35,9 +38,8 @@ default = ["web"]
 # `/`. Without a build, `/` serves a placeholder page; see src/api/web.rs.
 web = ["dep:rust-embed"]
 # Built-in TLS for the TCP listener (rustls). Off by default; see src/tls.rs.
-tls = ["dep:axum-server", "dep:rustls"]
+tls = ["dep:axum-server"]
 axum-server = ["dep:axum-server"]
-rustls = ["dep:rustls"]
 
 [dev-dependencies]
 tokio-tungstenite = "0.29.0"

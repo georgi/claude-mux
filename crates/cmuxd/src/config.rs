@@ -34,6 +34,7 @@ pub struct Config {
     pub limits: LimitsConfig,
     pub timeouts: TimeoutsConfig,
     pub github: GithubConfig,
+    pub push: PushConfig,
 }
 
 impl Default for Config {
@@ -52,6 +53,7 @@ impl Default for Config {
             limits: LimitsConfig::default(),
             timeouts: TimeoutsConfig::default(),
             github: GithubConfig::default(),
+            push: PushConfig::default(),
         }
     }
 }
@@ -157,6 +159,21 @@ impl GithubConfig {
             ..Cadence::default()
         }
     }
+}
+
+/// `[push]`: notifications (architecture 11.3). Web Push needs no settings;
+/// its VAPID key is made on first start.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PushConfig {
+    /// An ntfy topic URL (`https://ntfy.sh/<topic>`) that gets every
+    /// notification too, as a plain POST.
+    pub ntfy: Option<String>,
+    /// A bearer token for a protected ntfy topic.
+    pub ntfy_token: Option<String>,
+    /// The VAPID contact, `mailto:` or `https:`. Default: `public_url` when
+    /// it is HTTPS, else a no-reply address.
+    pub subject: Option<String>,
 }
 
 /// `[agents]`: how `claude` is started (architecture 7.1).

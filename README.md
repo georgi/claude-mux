@@ -284,6 +284,11 @@ enabled = true
 gh_bin = "gh"
 open_secs = 60                  # every open PR
 testing_secs = 15               # a task in testing whose agent is idle
+
+[push]                          # notifications; Web Push needs no settings
+# ntfy = "https://ntfy.sh/your-secret-topic"   # also POST every notification here
+# ntfy_token = "tk_..."                        # for a protected topic
+# subject = "mailto:you@example.com"           # VAPID contact; default public_url
 ```
 
 `cmuxd` runs `gh auth status` at start. If `gh` is missing or logged out, PR tracking is off and `GET /status` says why (`"github": "off (gh not found)"`). After the third red CI run on a PR, the item goes to you, not to the task agent. Green CI resets the count.
@@ -311,6 +316,34 @@ cmux servers                     # lists paired servers; * is the default
 ```
 
 The first paired server becomes the default. Use `--name` to choose another name. `cmuxd pair --scope read` makes a read-only device. The default scope is `full`, which can run shells and Claude as your user, so pair only machines you trust. `cmux servers default NAME` changes the default. `cmux logout [NAME]` forgets a server; revoke the device on the box too.
+
+### Phone: the web app and push
+
+The web app is served at `/`. On a phone it installs as an app (PWA) and gets push notifications for new needs-you items: permission requests, questions, plans ready for review, stalled agents, red CI and finished plans. Permission notifications have **Allow** and **Deny** buttons, and questions have **Reply** where the phone supports it. Notifications carry the item id, its kind and a summary of at most 60 characters. They never carry a message or a tool input.
+
+PWAs and Web Push need HTTPS with a valid certificate. `tailscale serve` gives you that on your tailnet:
+
+1. Install Tailscale on the box and on the phone, and log in to the same tailnet. Turn on HTTPS certificates for the tailnet in the admin console (DNS → HTTPS Certificates).
+2. On the box, put HTTPS in front of the port:
+
+   ```sh
+   tailscale serve --bg 7878          # https://box.your-tailnet.ts.net → 127.0.0.1:7878
+   tailscale serve status
+   ```
+
+3. Set the URL in `config.toml`, so pairing QR codes use it, and restart `cmuxd`:
+
+   ```toml
+   public_url = "https://box.your-tailnet.ts.net"
+   ```
+
+4. Run `cmuxd pair` and scan the QR code with the phone. The page logs the phone in.
+5. Install the app. On Android Chrome, use **Install app** in Settings or the browser menu. On iPhone, open the page in Safari, then **Share → Add to Home Screen**, and open the app from the home screen (iOS gives Web Push only to installed apps).
+6. In the app, open **Settings → Notifications** and push **Enable push on this device**. Choose the kinds this device wants.
+
+`cmuxd` makes its VAPID key on first start (`vapid.key` in the data directory, mode 0600) and keeps subscriptions in `push.json`. A subscription that the push service reports as gone (HTTP 404 or 410) is dropped. Revoking a device drops its subscriptions.
+
+No HTTPS, or a phone without Web Push? Set `[push] ntfy` to a topic URL and subscribe to the topic in the [ntfy](https://ntfy.sh) app. It gets the same notifications as a plain POST. Pick a long random topic name: anyone who knows it can read it.
 
 ### Attach
 

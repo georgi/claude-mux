@@ -7,6 +7,7 @@
 //! - [`api`]: the `/v1` routers (`rest`, `auth`)
 //! - [`server`]: listeners and start-up; [`client`]: a tiny local HTTP client
 //! - [`term`]: PTY host and terminal hub
+//! - [`push`]: Web Push and ntfy notifications
 //! - [`config`], [`diag`], [`cli`]
 
 pub mod actor;
@@ -19,6 +20,7 @@ pub mod config;
 pub mod devices;
 pub mod diag;
 pub mod git;
+pub mod push;
 pub mod server;
 pub mod store;
 pub mod term;

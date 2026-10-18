@@ -139,6 +139,9 @@ export function fakeApi(over: Partial<Api> = {}): Api & { calls: Call[] } {
       permission_wait_secs: 600,
       claude: [],
     }),
+    vapid: rec("vapid", { public_key: "BAAA" }),
+    pushSubscribe: rec("pushSubscribe", undefined),
+    pushUnsubscribe: rec("pushUnsubscribe", undefined),
   } as Api;
   return Object.assign({ ...base, ...over }, { calls });
 }

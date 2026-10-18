@@ -299,8 +299,9 @@ impl EffectRunner for AgentRunner {
                 self.rt.waiters.resolve(*item, decision.clone());
                 true
             }
-            // Push notifications belong to a later step.
+            // `push::PushRunner` sends notifications.
             Effect::Notify { .. }
+            | Effect::NotifyPlanDone { .. }
             | Effect::Persist { .. }
             | Effect::DeletePlan { .. }
             | Effect::PersistGlobals => false,

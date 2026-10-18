@@ -23,6 +23,9 @@ use cmuxd::config::Config;
 use cmuxd::server::{Server, ServerBuilder};
 use serde_json::{Value, json};
 
+#[path = "support/mock_http.rs"]
+mod mock_http;
+
 const CMUXD: &str = env!("CARGO_BIN_EXE_cmuxd");
 
 // ---------------------------------------------------------------------------
@@ -957,6 +960,56 @@ async fn a_held_permission_hook_is_answered_over_rest() {
     env.answer(second.id.0, AnswerAction::Deny, Some("not now"))
         .await;
     env.screen_has(&exec, "PERM deny: not now").await;
+    assert_eq!(env.rt.as_ref().unwrap().waiters().waiting(), 0);
+    env.shutdown().await;
+}
+
+/// What the phone does: the permission arrives as a push, and the
+/// notification's Allow answers it with an `Idempotency-Key`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_permission_is_pushed_and_allow_from_the_notification_lets_the_agent_go_on() {
+    use cmux_proto::api::{NotifyKind, PushSubscribeReq};
+    let env = start_fake(
+        &[("executor", permission_script(&["cargo test -p x"]))],
+        Duration::from_secs(600),
+    )
+    .await;
+    let mock = mock_http::MockHttp::start().await;
+    let browser = mock_http::Browser::new();
+    let sub = PushSubscribeReq {
+        endpoint: format!("{}/push/phone", mock.base),
+        keys: browser.keys(),
+        kinds: vec![NotifyKind::Permission],
+    };
+    let r = env.post(route::PUSH_SUBSCRIBE, &sub).await;
+    assert_eq!(r.status, 204, "{}", r.text());
+    let plan = env.create_plan().await;
+    let exec = format!("{plan}/executor");
+    let hit = mock.wait_for(1).await;
+    let p = browser.open(&hit.body);
+    assert_eq!(p.kind, NotifyKind::Permission);
+    assert_eq!(p.summary, "executor: Bash cargo test -p x");
+    let item = p.item.unwrap();
+    let held = env
+        .wait("a permission item", |v| Env::pending_permissions(v).pop())
+        .await;
+    assert_eq!(held.id.0, item);
+
+    let allow = AnswerReq {
+        action: AnswerAction::Allow,
+        text: None,
+    };
+    let key = [("Idempotency-Key", "notification-1")];
+    // A retried tap acts once.
+    for _ in 0..2 {
+        let r = env
+            .unix
+            .json("POST", &route::item_answer(item), &key, &allow)
+            .await
+            .unwrap();
+        assert_eq!(r.status, 204, "{}", r.text());
+    }
+    env.screen_has(&exec, "PERM allow").await;
     assert_eq!(env.rt.as_ref().unwrap().waiters().waiting(), 0);
     env.shutdown().await;
 }

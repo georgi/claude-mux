@@ -436,6 +436,8 @@ pub enum Effect {
     },
     /// Push and needs-you for a new human item.
     Notify { item: ItemId },
+    /// Push for a plan the executor marked done.
+    NotifyPlanDone { plan: PlanId },
     /// Save this plan.
     Persist { plan: PlanId },
     /// Remove the plan's directory: its state, journal and `plan.md`.

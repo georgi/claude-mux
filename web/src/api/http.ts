@@ -9,11 +9,13 @@ import type {
   DevicesResp,
   ErrorBody,
   PairCompleteResp,
+  PushSubscribeReq,
   RepoInfo,
   ReposResp,
   SettingsResp,
   StatusResp,
   TranscriptResp,
+  VapidResp,
 } from "./types";
 
 export class HttpError extends Error {
@@ -115,6 +117,9 @@ export interface Api {
   revokeDevice(id: string): Promise<void>;
   status(): Promise<StatusResp>;
   settings(): Promise<SettingsResp>;
+  vapid(): Promise<VapidResp>;
+  pushSubscribe(req: PushSubscribeReq): Promise<void>;
+  pushUnsubscribe(endpoint: string): Promise<void>;
 }
 
 export const api: Api = {
@@ -144,4 +149,11 @@ export const api: Api = {
   },
   status: () => json(call("GET", "/v1/status")),
   settings: () => json(call("GET", "/v1/settings")),
+  vapid: () => json(call("GET", "/v1/push/vapid")),
+  async pushSubscribe(req) {
+    await once("POST", "/v1/push/subscribe", req);
+  },
+  async pushUnsubscribe(endpoint) {
+    await once("POST", "/v1/push/unsubscribe", { endpoint });
+  },
 };
