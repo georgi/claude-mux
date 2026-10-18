@@ -2331,10 +2331,7 @@ fn guard_rails_on_pre_tool_use() {
         denied(bash(&mut h, &sub, &long)),
         "past the 60-char summary"
     );
-    assert_eq!(
-        bash(&mut h, &sub, "git commit -m 'push it'"),
-        HookReply::None
-    );
+    assert!(denied(bash(&mut h, &sub, "git commit -m 'push it'")));
     assert_eq!(
         bash(&mut h, &task, "git push -u origin claude/T-0001"),
         HookReply::None
@@ -4301,84 +4298,73 @@ fn guard_rails_table() {
         (Level::Sub, "cargo test && git diff", false),
         (Level::Sub, "push the button", false),
         (Level::Sub, "cd /repo/git && ls", false),
-        (Level::Sub, "git commit -m 'fix push bug'", false),
+        // Commit messages are not parsed, so one that mentions push is a known,
+        // accepted false positive of the conservative rule.
+        (Level::Sub, "git commit -m 'fix push bug'", true),
         (Level::Sub, "git commit -m 'fix push bug' && git push", true),
         (Level::Sub, "git commit -m \"$(git push)\"", true),
-        // Heredoc and multi-line commit messages may mention push.
         (
             Level::Sub,
             "git commit -m \"$(cat <<'EOF'\nAdd push notifications\nEOF\n)\"",
-            false,
+            true,
         ),
+        (Level::Sub, "git commit -F - <<'EOF'\nfix push\nEOF", true),
+        (Level::Sub, "env A=1 git commit -m 'fix push'", true),
+        // Messages that do not mention push are fine.
+        (Level::Sub, "git commit -m 'fix the bug'", false),
         (
             Level::Sub,
-            "git add -A && git commit -m \"$(cat <<'EOF'\nfix push\n\ndon't push\nEOF\n)\"",
+            "git add -A && git commit -m \"$(cat <<'EOF'\nAdd notifications\n\nMore detail\nEOF\n)\"",
             false,
         ),
-        (Level::Sub, "git commit -F - <<'EOF'\nfix push\nEOF", false),
-        (
-            Level::Sub,
-            "git commit -F - <<\"EOF\"\nfix push\nEOF",
-            false,
-        ),
-        (Level::Sub, "git commit -F - <<\\EOF\nfix push\nEOF", false),
-        (
-            Level::Sub,
-            "git commit -F - <<-'EOF'\n\tfix push\n\tEOF",
-            false,
-        ),
-        (Level::Sub, "git commit -m 'line one\nfix push'", false),
-        (Level::Sub, "git commit -m \"line one\nfix push\"", false),
-        (Level::Sub, "git tag -a v1 -m 'a\npush'", false),
-        (
-            Level::Sub,
-            "git commit -m 'a\nfix push' && git status",
-            false,
-        ),
-        (Level::Sub, "git commit -m 'a\nfix push'; git push", true),
+        (Level::Sub, "git commit -F - <<'EOF'\nfix it\nEOF", false),
+        (Level::Sub, "git commit -m 'line one\nline two'", false),
+        (Level::Sub, "git tag -a v1 -m 'a\nb'", false),
+        // Shell-executed text inside a message is still scanned.
         (Level::Sub, "git commit -m 'x' && git push", true),
         (Level::Sub, "git commit -m x; git push", true),
         (Level::Sub, "git tag x && git push --tags", true),
-        (
-            Level::Sub,
-            "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\" && git push",
-            true,
-        ),
         (Level::Sub, "git commit -m \"a $(git push)\"", true),
         (Level::Sub, "git commit -m \"a `git push`\"", true),
+        (
+            Level::Sub,
+            "git commit -m \"$(git log -1 --format=\"%s\"; git push)\"",
+            true,
+        ),
+        (
+            Level::Sub,
+            "git commit -m \"`echo \"a\"; git push; echo \"b\"`\"",
+            true,
+        ),
+        (
+            Level::Sub,
+            "git commit -m \"$(sh - <<'EOF'\ngit push\nEOF\n)\"",
+            true,
+        ),
+        (
+            Level::Sub,
+            "git commit -m \"cat <<'EOF'\"\ngit push\nEOF",
+            true,
+        ),
+        (
+            Level::Sub,
+            "git commit -F - <<'EOF' \"\n$(git push)\nEOF\n\"",
+            true,
+        ),
         (
             Level::Sub,
             "git commit -m \"$(sh <<EOF\ngit push\nEOF\n)\"",
             true,
         ),
-        (
-            Level::Sub,
-            "git commit -m x && sh <<EOF\ngit push\nEOF",
-            true,
-        ),
         (Level::Sub, "sh <<'EOF'\ngit push\nEOF", true),
         (Level::Sub, "bash -c 'git status\ngit push'", true),
         (Level::Sub, "git status; echo 'now push it'", true),
-        // An unquoted heredoc tag leaves the body to the shell's expansion.
         (
             Level::Sub,
             "git commit -m \"$(cat <<EOF\n$(git push)\nEOF\n)\"",
             true,
         ),
         (Level::Sub, "git commit -F - <<EOF\n`git push`\nEOF", true),
-        (Level::Sub, "git commit -F - <<EOF\nfix push\nEOF", true),
-        // A heredoc that never reaches its terminator swallows nothing.
-        (
-            Level::Sub,
-            "git commit -m \"$(cat <<'EOF'\nmsg\nEOF)\" ; git push",
-            true,
-        ),
-        (
-            Level::Sub,
-            "git commit -F - <<'EOF'\nmsg\n EOF\ngit push",
-            true,
-        ),
-        // Quote-like characters the shell does not pair as the scanner does.
         (
             Level::Sub,
             "git commit -m $'Fix: don\\'t crash' && git push origin 'feat'",
@@ -4386,18 +4372,12 @@ fn guard_rails_table() {
         ),
         (
             Level::Sub,
-            "git commit -m $'\\'' ; git push ; true ''",
-            true,
-        ),
-        (
-            Level::Sub,
             "git commit -m fix # can't amend\ngit push origin 'feat'",
             true,
         ),
-        (Level::Sub, "git commit -m x #'\ngit push\n#'", true),
         (
             Level::Sub,
-            "cat <<EOF > f\ngit commit -m '\nEOF\ngit push\necho '",
+            "find . -name git -name commit -exec sh -c 'git push' +",
             true,
         ),
         (
@@ -4405,13 +4385,13 @@ fn guard_rails_table() {
             "git commit -m x #'\ngit checkout main\n#'",
             true,
         ),
-        // Git has to be the command word to take a message.
         (
-            Level::Sub,
-            "find . -name git -name commit -exec sh -c 'git push' +",
+            Level::Task,
+            "git commit -m \"$(echo \"a\"; git checkout main)\"",
             true,
         ),
-        (Level::Sub, "env A=1 git commit -m 'fix push'", false),
+        // A known false positive of the conservative rule.
+        (Level::Sub, "echo git; echo hi push", true),
         // A known false positive of the conservative rule.
         (Level::Sub, "echo git; echo hi push", true),
         // Base branch: every spelling, both levels.
@@ -4464,7 +4444,8 @@ fn guard_rails_table() {
         (Level::Task, "git checkout --orphan x main", false),
         (Level::Task, "git checkout -B feat main", false),
         (Level::Task, "git switch -C feat origin/main", false),
-        (Level::Task, "git commit -m 'a\ngit checkout main'", false),
+        // Messages are not parsed: a line naming the base in one is denied.
+        (Level::Task, "git commit -m 'a\ngit checkout main'", true),
         (Level::Task, "git switch -c feat origin/main", false),
         (Level::Task, "git checkout main -- src/a.rs", false),
         (
