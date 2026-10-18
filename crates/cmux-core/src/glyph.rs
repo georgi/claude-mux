@@ -55,8 +55,8 @@ pub fn pending_count(agent: &AgentId, inbox: &[InboxItem]) -> usize {
 ///    else `Success`, or `Failed` for a failed report. A blocked report shows
 ///    as `Failed` once seen. A clean exit with no report is `Unseen` until
 ///    seen, then `Idle`.
-/// 5. `Working`.
-/// 6. `Parked`: not working, with at least one running child.
+/// 5. `Working`, also while the process is still `Starting`.
+/// 6. `Parked`: not working, with at least one live (starting or running) child.
 /// 7. `Idle`.
 pub fn glyph(
     agent: &Agent,
@@ -88,6 +88,10 @@ pub fn glyph(
         }
         _ => {}
     }
+    // Starting: the process is on its way up, which is work, not an exit.
+    if agent.life == Life::Starting {
+        return Glyph::Working;
+    }
     let working = running && agent.activity == Activity::Working;
     let finished = !running || agent.report.is_some();
     if finished && !working {
@@ -102,7 +106,7 @@ pub fn glyph(
     }
     if working {
         Glyph::Working
-    } else if children.iter().any(|c| c.life == Life::Running) {
+    } else if children.iter().any(|c| c.is_live()) {
         Glyph::Parked
     } else {
         Glyph::Idle
@@ -263,6 +267,21 @@ mod tests {
             Activity::Working,
         );
         assert_eq!(glyph(&w, &[], &[&live], true, false), Glyph::Working);
+    }
+
+    #[test]
+    fn a_starting_agent_shows_as_working_and_a_starting_child_parks_its_parent() {
+        let mut a = task_agent(Activity::Unknown);
+        a.life = Life::Starting;
+        assert_eq!(glyph(&a, &[], &[], false, false), Glyph::Working);
+        assert_eq!(glyph(&a, &[], &[], true, false), Glyph::Working);
+        let mut child = agent(
+            AgentPath::sub(TaskId::new(3), "x").unwrap(),
+            Activity::Unknown,
+        );
+        child.life = Life::Starting;
+        let parent = task_agent(Activity::Idle);
+        assert_eq!(glyph(&parent, &[], &[&child], true, false), Glyph::Parked);
     }
 
     #[test]

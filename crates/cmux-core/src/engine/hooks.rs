@@ -146,7 +146,9 @@ impl Ctx<'_> {
                 self.st
                     .held_permissions
                     .insert(item, (request_id, match_input));
-                self.agent_mut(pi, ai).activity = Activity::NeedsPermission;
+                if self.agent(pi, ai).activity != Activity::NeedsPermission {
+                    self.agent_mut(pi, ai).activity = Activity::NeedsPermission;
+                }
                 HookReply::Held { item }
             }
             Hook::SessionEnd => {

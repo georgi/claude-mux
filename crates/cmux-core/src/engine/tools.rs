@@ -252,7 +252,9 @@ impl Ctx<'_> {
             ToolCall::SetTaskPr { url } => {
                 let pr = parse_pr(&url)?;
                 let ti = self.task_idx(pi, own.expect("task agent"))?;
-                self.task_mut(pi, ti).pr = Some(pr.clone());
+                if self.plan(pi).tasks[ti].pr.as_ref() != Some(&pr) {
+                    self.task_mut(pi, ti).pr = Some(pr.clone());
+                }
                 text(format!("PR #{} recorded", pr.number))
             }
             ToolCall::ReportResult {
@@ -419,7 +421,9 @@ impl Ctx<'_> {
                     i.is_pending() && i.kind == ItemKind::PlanReview && i.from.as_ref() == Some(me)
                 });
                 if !waiting {
-                    self.plan_mut(pi).state = PlanState::Proposed;
+                    if self.plan(pi).state != PlanState::Proposed {
+                        self.plan_mut(pi).state = PlanState::Proposed;
+                    }
                     let n = self
                         .st
                         .inbox
@@ -479,7 +483,9 @@ impl Ctx<'_> {
             (Some(u), _) => Some(parse_pr(u)?),
             _ => None,
         };
-        if let Some(pr) = pr {
+        if let Some(pr) = pr
+            && self.plan(pi).tasks[ti].pr.as_ref() != Some(&pr)
+        {
             self.task_mut(pi, ti).pr = Some(pr);
         }
         self.agent_mut(pi, ai).report = Some(Report {

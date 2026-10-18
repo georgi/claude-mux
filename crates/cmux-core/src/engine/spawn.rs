@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use super::*;
 use crate::ids::AgentPath;
 use crate::model::{
-    Level, Plan, PlanState, PrRef, QueuedSpawn, TaskState, TermKind, Terminal, TransitionSource,
-    check_task_transition, pr_to_task_state,
+    Activity, Level, Plan, PlanState, PrRef, QueuedSpawn, TaskState, TermKind, Terminal,
+    TransitionSource, check_task_transition, pr_to_task_state,
 };
 use crate::prompts::{Template, render, task_list_line};
 
@@ -161,16 +161,23 @@ impl Ctx<'_> {
         agent.life = Life::Starting;
         self.touch(Change::Agent(id.clone()));
         let plan = &mut self.st.plans[pi];
-        match plan.agents.iter().position(|a| a.id == id) {
+        let (i, old_term) = match plan.agents.iter().position(|a| a.id == id) {
             Some(i) => {
+                let old = plan.agents[i].term;
                 plan.agents[i] = agent;
-                i
+                (i, old)
             }
             None => {
                 plan.agents.push(agent);
-                plan.agents.len() - 1
+                (plan.agents.len() - 1, None)
             }
+        };
+        if let Some(t) = old_term
+            && self.st.terminals.remove(&t).is_some()
+        {
+            self.touch(Change::Removed(ObjectRef::Terminal(t)));
         }
+        i
     }
 
     // ---- plans ----
@@ -194,9 +201,13 @@ impl Ctx<'_> {
         let (y, m, d) = civil_date(self.now);
         let mut id = PlanId::new(y, m, d, &title);
         let mut n = 1;
+        let slug = crate::ids::slugify(&title);
         while self.st.plans.iter().any(|p| p.id == id) {
             n += 1;
-            id = PlanId::new(y, m, d, &format!("{title} {n}"));
+            // The suffix goes after the 40-char cut, or a long title never changes.
+            let suffix = format!("-{n}");
+            let keep: String = slug.chars().take(40 - suffix.len()).collect();
+            id = PlanId::new(y, m, d, &format!("{}{suffix}", keep.trim_end_matches('-')));
         }
         let cwd = repos[0].path.clone();
         self.st.plans.push(Plan::new(id.clone(), title, repos));
@@ -485,8 +496,12 @@ impl Ctx<'_> {
             );
         }
         self.check_global_slot()?;
+        // An implicit report is void once the agent runs again, so such an agent
+        // holds a slot again even though it had landed.
+        let implicit = a.report.as_ref().is_some_and(|r| r.implicit);
+        let holds_slot = !a.landed || implicit;
         if a.level == Level::Task
-            && !a.landed
+            && holds_slot
             && self.task_slots_used(pi) >= plan.limits.tasks_per_plan
         {
             return err(
@@ -497,14 +512,29 @@ impl Ctx<'_> {
                 ),
             );
         }
+        if let (Level::Sub, true, Some(task)) = (a.level, holds_slot, a.task)
+            && self.subs_used(pi, task) >= plan.limits.subagents_per_task
+        {
+            return err(
+                ErrorKind::Limit,
+                format!(
+                    "limit reached: {} sub-agents are live for {task}; wait for one to report",
+                    plan.limits.subagents_per_task
+                ),
+            );
+        }
         // An implicit "exited without report" is void once the agent runs again.
-        let implicit = a.report.as_ref().is_some_and(|r| r.implicit);
         let task = a.task;
         let old_term = a.term;
         {
             let a = self.agent_mut(pi, ai);
             a.life = Life::Starting;
             a.term = None;
+            // A fresh process: the old one's token, activity and idle clock are void.
+            a.token_hash = [0; 32];
+            a.activity = Activity::Unknown;
+            a.idle_since = None;
+            a.consecutive_stop_blocks = 0;
             if implicit {
                 a.report = None;
                 a.landed = false;

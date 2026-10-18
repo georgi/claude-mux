@@ -145,6 +145,20 @@ impl Ctx<'_> {
         HookReply::None
     }
 
+    /// `base`, or `base#n` when earlier incarnations of the same agent (a resumed
+    /// session, a sub-agent that reuses a name) already used it. `landed` keeps one
+    /// incarnation from landing twice, so the key must not swallow the next one.
+    fn unused_key(&self, base: String) -> String {
+        let used = |d: &str| d == base || d.strip_prefix(&base).is_some_and(|r| r.starts_with('#'));
+        let n = self
+            .st
+            .inbox
+            .iter()
+            .filter(|i| i.dedupe.as_deref().is_some_and(used))
+            .count();
+        if n == 0 { base } else { format!("{base}#{n}") }
+    }
+
     /// Turn landing: a stored report becomes a parent item and a task move.
     pub fn land(&mut self, pi: usize, ai: usize) {
         let a = self.agent(pi, ai);
@@ -173,7 +187,7 @@ impl Ctx<'_> {
                     report.status,
                     report.summary
                 ),
-                dedupe: Some(format!("report:{id}:{}", report.attempt)),
+                dedupe: Some(self.unused_key(format!("report:{id}:{}", report.attempt))),
             });
         }
         if let (Level::Task, Some(t)) = (level, task_id)
@@ -216,6 +230,9 @@ impl Ctx<'_> {
                 attempt,
                 implicit: true,
             });
+        }
+        if level != Level::Executor {
+            // An explicit report whose `Stop` never came lands now.
             self.land(pi, ai);
         }
         if level == Level::Executor || (level == Level::Task && !has_report) {
@@ -224,7 +241,8 @@ impl Ctx<'_> {
                 kind: ItemKind::ExitedWithoutReport,
                 from: Some(id.clone()),
                 body: format!("{} {why}", id.path()),
-                dedupe: (level == Level::Task).then(|| format!("exit:{id}:{attempt}")),
+                dedupe: (level == Level::Task)
+                    .then(|| self.unused_key(format!("exit:{id}:{attempt}"))),
             });
         }
         self.drain_queue();
@@ -319,7 +337,9 @@ impl Ctx<'_> {
             let typing = a
                 .last_human_input_at
                 .is_some_and(|at| now.saturating_sub(at) < HUMAN_TYPING_GRACE_MS);
+            // Enter at a permission prompt would approve it.
             if a.life == Life::Running
+                && a.activity != Activity::NeedsPermission
                 && !typing
                 && let Some((text, ids)) = self.pending_digest(&id)
             {

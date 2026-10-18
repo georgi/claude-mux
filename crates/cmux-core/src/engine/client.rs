@@ -137,6 +137,11 @@ impl Ctx<'_> {
     }
 
     fn cancel_plan(&mut self, pi: usize) {
+        // First close the plan and its queue: freeing a slot below must not
+        // start a queued spawn.
+        let p = self.plan_mut(pi);
+        p.state = PlanState::Cancelled;
+        p.spawn_queue.clear();
         for ai in 0..self.plan(pi).agents.len() {
             self.stop_agent(pi, ai);
         }
@@ -146,9 +151,6 @@ impl Ctx<'_> {
                 self.task_mut(pi, ti).state = TaskState::Cancelled;
             }
         }
-        let p = self.plan_mut(pi);
-        p.state = PlanState::Cancelled;
-        p.spawn_queue.clear();
     }
 
     // ---- task edits (shared with the tools) ----
@@ -307,7 +309,7 @@ impl Ctx<'_> {
         let ti = self.task_idx(pi, task)?;
         check_task_transition(&self.plan(pi).tasks[ti], to, source).map_err(transition)?;
         self.task_mut(pi, ti).state = to;
-        if to.is_terminal() {
+        if self.plan(pi).spawn_queue.iter().any(|q| q.task == task) && to.is_terminal() {
             self.plan_mut(pi).spawn_queue.retain(|q| q.task != task);
         }
         if to == TaskState::Cancelled {
@@ -409,8 +411,12 @@ impl Ctx<'_> {
                 if label == "allow_always" {
                     let held = self.st.held_permissions.get(&id).map(|(_, m)| m.clone());
                     let rule = rule_for(tool, held.as_deref().unwrap_or(input_summary));
+                    // Without the held full input (after a restart) a Bash rule
+                    // would come from the 60-char summary: build none.
+                    let truncated =
+                        held.is_none() && tool == "Bash" && input_summary.ends_with('…');
                     let task = agent.and_then(|(pi, ai)| Some((pi, self.agent(pi, ai).task?)));
-                    if let Some((pi, t)) = task {
+                    if let (false, Some((pi, t))) = (truncated, task) {
                         let ti = self.task_idx(pi, t)?;
                         if !self.plan(pi).tasks[ti].allow_rules.contains(&rule) {
                             self.task_mut(pi, ti).allow_rules.push(rule);
@@ -462,6 +468,14 @@ impl Ctx<'_> {
                 }
             }
             (_, ItemAction::Dismiss) => {
+                if let Some((request_id, _)) = self.st.held_permissions.remove(&id) {
+                    // No decision: Claude shows its own prompt.
+                    self.fx.push(Effect::AnswerPermission {
+                        item: id,
+                        request_id,
+                        decision: None,
+                    });
+                }
                 self.set_status(id, Delivery::Dismissed);
                 if item.kind == ItemKind::Question
                     && let Some(asker) = &item.from

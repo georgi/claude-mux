@@ -6,7 +6,7 @@ use crate::model::AllowRule;
 /// Longest input summary kept, in chars, counting the trailing `…`.
 const SUMMARY_CHARS: usize = 60;
 
-/// Bash commands whose second word is part of the rule, e.g. `cargo test*`.
+/// Bash commands whose second word is part of the rule, e.g. `cargo test *`.
 const BASH_SUBCOMMAND_TOOLS: &[&str] = &[
     "cargo", "npm", "pnpm", "yarn", "git", "go", "make", "python", "python3", "uv", "gh",
 ];
@@ -28,9 +28,16 @@ pub fn find_match<'a>(
     if tool == "Bash" && has_shell_control(input_summary) {
         return None;
     }
+    // Bash input gets a trailing space so a rule `cargo test *` matches
+    // `cargo test` and `cargo test -p x`, but not `cargo testfoo`.
+    let input = if tool == "Bash" {
+        format!("{input_summary} ")
+    } else {
+        input_summary.to_string()
+    };
     rules
         .iter()
-        .find(|rule| rule.tool == tool && glob_match(&rule.pattern, input_summary))
+        .find(|rule| rule.tool == tool && glob_match(&rule.pattern, &input))
 }
 
 fn has_shell_control(command: &str) -> bool {
@@ -40,9 +47,9 @@ fn has_shell_control(command: &str) -> bool {
 /// The rule "Allow always" adds for this tool call. `input_summary` must be the
 /// full, untruncated command for `Bash`.
 ///
-/// Bash rules are a prefix of the command plus `*`: its first word, plus its
+/// Bash rules are a prefix of the command plus ` *` (a word boundary): its first word, plus its
 /// second word when the first is in `BASH_SUBCOMMAND_TOOLS`. A command with any
-/// `SHELL_CONTROL` character gets pattern `""`, which matches only an empty
+/// `SHELL_CONTROL` character gets pattern `""`, which never matches a Bash
 /// input, so it fails closed and the user is asked again.
 pub fn rule_for(tool: &str, input_summary: &str) -> AllowRule {
     let pattern = if tool != "Bash" {
@@ -108,8 +115,8 @@ fn bash_pattern(command: &str) -> String {
         ends.push(command.len());
     }
     let Some(&first_end) = ends.first() else {
-        // Empty or blank command: match only that exact text.
-        return command.to_string();
+        // Empty or blank command: a rule that never matches.
+        return String::new();
     };
     let first_start = command.len() - command.trim_start().len();
     let first_word = &command[first_start..first_end];
@@ -119,11 +126,11 @@ fn bash_pattern(command: &str) -> String {
     };
     let prefix = &command[..end];
     if prefix.contains('*') {
-        // A glob cannot express a literal `*`. An empty pattern matches only an
-        // empty summary, so this fails closed and the user is asked again.
+        // A glob cannot express a literal `*`. An empty pattern never matches
+        // Bash input, so this fails closed and the user is asked again.
         return String::new();
     }
-    format!("{prefix}*")
+    format!("{prefix} *")
 }
 
 /// The `input_summary` a permission request is matched and shown with: the
@@ -351,6 +358,18 @@ mod tests {
     }
 
     #[test]
+    fn bash_rules_stop_at_a_word_boundary() {
+        let r = rule_for("Bash", "cargo test -p api");
+        let rules = [r];
+        assert!(find_match(&rules, "Bash", "cargo test").is_some());
+        assert!(find_match(&rules, "Bash", "cargo test --lib").is_some());
+        assert!(find_match(&rules, "Bash", "cargo testfoo").is_none());
+        let ls = [rule_for("Bash", "ls -la")];
+        assert!(find_match(&ls, "Bash", "ls").is_some());
+        assert!(find_match(&ls, "Bash", "lsof -i").is_none());
+    }
+
+    #[test]
     fn glob_empty_pattern() {
         assert!(glob("", ""));
         assert!(!glob("", "a"));
@@ -508,7 +527,7 @@ mod tests {
     fn rule_for_cargo_test_matches_original_and_bare_command() {
         let r = rule_for("Bash", "cargo test -p api");
         assert_eq!(r.tool, "Bash");
-        assert_eq!(r.pattern, "cargo test*");
+        assert_eq!(r.pattern, "cargo test *");
         assert!(find_match(std::slice::from_ref(&r), "Bash", "cargo test -p api").is_some());
         assert!(find_match(std::slice::from_ref(&r), "Bash", "cargo test").is_some());
         assert!(find_match(std::slice::from_ref(&r), "Bash", "cargo build").is_none());
@@ -518,17 +537,20 @@ mod tests {
     fn rule_for_git_and_other_subcommand_tools() {
         assert_eq!(
             rule_for("Bash", "git status --short").pattern,
-            "git status*"
+            "git status *"
         );
-        assert_eq!(rule_for("Bash", "git").pattern, "git*");
-        assert_eq!(rule_for("Bash", "python3 -m pytest").pattern, "python3 -m*");
-        assert_eq!(rule_for("Bash", "gh pr view 12").pattern, "gh pr*");
+        assert_eq!(rule_for("Bash", "git").pattern, "git *");
+        assert_eq!(
+            rule_for("Bash", "python3 -m pytest").pattern,
+            "python3 -m *"
+        );
+        assert_eq!(rule_for("Bash", "gh pr view 12").pattern, "gh pr *");
     }
 
     #[test]
     fn rule_for_plain_command_uses_first_word_only() {
         let r = rule_for("Bash", "ls -la /tmp");
-        assert_eq!(r.pattern, "ls*");
+        assert_eq!(r.pattern, "ls *");
         assert!(find_match(std::slice::from_ref(&r), "Bash", "ls -la /tmp").is_some());
     }
 
@@ -536,18 +558,18 @@ mod tests {
     fn rule_for_keeps_original_spacing() {
         let cmd = "  cargo   test   -p api";
         let r = rule_for("Bash", cmd);
-        assert_eq!(r.pattern, "  cargo   test*");
+        assert_eq!(r.pattern, "  cargo   test *");
         assert!(find_match(std::slice::from_ref(&r), "Bash", cmd).is_some());
     }
 
     #[test]
-    fn rule_for_empty_and_blank_bash_match_only_themselves() {
+    fn rule_for_empty_and_blank_bash_match_nothing() {
         let r = rule_for("Bash", "");
         assert_eq!(r.pattern, "");
-        assert!(find_match(std::slice::from_ref(&r), "Bash", "").is_some());
+        assert!(find_match(std::slice::from_ref(&r), "Bash", "").is_none());
         assert!(find_match(std::slice::from_ref(&r), "Bash", "ls").is_none());
         let r = rule_for("Bash", "   ");
-        assert!(find_match(std::slice::from_ref(&r), "Bash", "   ").is_some());
+        assert!(find_match(std::slice::from_ref(&r), "Bash", "ls").is_none());
     }
 
     #[test]
