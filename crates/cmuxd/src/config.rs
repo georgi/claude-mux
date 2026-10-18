@@ -58,7 +58,8 @@ impl Default for AgentsConfig {
     }
 }
 
-/// `claude` options for one level; absent means Claude's own default.
+/// `claude` options for one level. An absent `permission_mode` means `default`
+/// (not the Claude account's own default); an absent `model` means Claude's own.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LevelConfig {

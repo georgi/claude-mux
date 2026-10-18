@@ -175,6 +175,8 @@ fn executor_snapshot() {
             &format!("--add-dir={dir}/digests"),
             "--append-system-prompt",
             "You are an agent.\nBe brief.",
+            "--permission-mode",
+            "default",
             "[cmux] Start.",
         ]
     );

@@ -90,7 +90,7 @@ const HOOK_TIMEOUT_SECS: u64 = 5;
 /// Per-level options for `claude`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LevelOpts {
-    /// `--permission-mode`
+    /// `--permission-mode`; unset means `default`, whatever the account prefers.
     pub permission_mode: Option<String>,
     /// `--model`
     pub model: Option<String>,
@@ -300,10 +300,10 @@ pub fn plan_spawn(
     argv.push(format!("--add-dir={}", dir.join("digests").display()));
     argv.push("--append-system-prompt".into());
     argv.push(req.system_prompt.into());
-    if let Some(mode) = &opts.permission_mode {
-        argv.push("--permission-mode".into());
-        argv.push(mode.clone());
-    }
+    // Always pass a mode: without the flag the account's own default applies,
+    // which on some accounts is `auto`.
+    argv.push("--permission-mode".into());
+    argv.push(opts.permission_mode.as_deref().unwrap_or("default").into());
     if let Some(model) = &opts.model {
         argv.push("--model".into());
         argv.push(model.clone());
