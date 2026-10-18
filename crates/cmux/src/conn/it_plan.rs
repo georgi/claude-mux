@@ -325,24 +325,24 @@ fn plan_with_dependent_tasks_survives_detach_and_reattach() {
         agent(&mirror.lock().unwrap().sv, "executor").and_then(|a| a.term)
     });
     let rterm = RemoteTerm::new(conn.handle(), exec_term, 40, 120);
-    // Everything the client has: scrollback, then the screen.
+    // Everything the client has: scrollback, then the screen, one row per
+    // line so no row is read twice. Rows always end in a newline: vt100 drops
+    // wrap flags whenever the width changes, so joining wrapped rows would
+    // make the same bytes read differently before and after a resize.
     let screen = |rt: &RemoteTerm| {
         let mut p = rt.parser.lock().unwrap();
-        let (rows, _) = p.screen().size();
+        let (rows, cols) = p.screen().size();
         p.screen_mut().set_scrollback(usize::MAX);
-        let mut pages = Vec::new();
-        loop {
-            let off = p.screen().scrollback();
-            pages.push(p.screen().contents());
-            if off == 0 {
-                break;
-            }
-            p.screen_mut()
-                .set_scrollback(off.saturating_sub(rows as usize));
+        let history = p.screen().scrollback();
+        let mut lines = Vec::new();
+        for off in (1..=history).rev() {
+            p.screen_mut().set_scrollback(off);
+            lines.extend(p.screen().rows(0, cols).next());
         }
         p.screen_mut().set_scrollback(0);
-        pages.reverse();
-        pages.join("\n")
+        lines.extend(p.screen().rows(0, cols));
+        debug_assert_eq!(lines.len(), history + rows as usize);
+        lines.join("\n")
     };
     let count = |hay: &str, needle: &str| hay.matches(needle).count();
 
