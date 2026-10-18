@@ -14,7 +14,7 @@
 //! The runner never blocks the actor: worktrees go through the
 //! [`WorktreePool`], files and PTYs are made on the blocking pool, and every
 //! outcome comes back as a `Command::Runner`. Terminals are registered in the
-//! hub under the engine's [`TermId`] written in decimal (`"3"`).
+//! hub under `term_key(TermId)` and removed from it once the process exits.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -32,7 +32,7 @@ use crate::claude::spawn::{
 };
 use crate::config::Config;
 use crate::git::worktree::{WorktreePool, WorktreeRequest};
-use crate::term::hub::{Hub, TermConfig};
+use crate::term::hub::{Hub, TermConfig, term_key};
 use crate::term::pty::PtySpec;
 
 /// Initial size of an agent's terminal (columns by rows).
@@ -202,14 +202,13 @@ impl EffectRunner for AgentRunner {
                 true
             }
             Effect::KillAgent { agent } => {
-                if let Some(t) = term_of(state, agent).and_then(|t| self.rt.hub.get(&t.to_string()))
-                {
+                if let Some(t) = term_of(state, agent).and_then(|t| self.rt.hub.get_term(t)) {
                     t.kill();
                 }
                 true
             }
             Effect::PasteDigest { agent, items, text } => {
-                if let Some(term) = term_of(state, agent).map(|t| t.to_string()) {
+                if let Some(term) = term_of(state, agent) {
                     let digest_dir = agent_dir(&self.rt.spawn.data_dir, agent);
                     tokio::spawn(paste_digest(
                         self.rt.clone(),
@@ -222,8 +221,7 @@ impl EffectRunner for AgentRunner {
                 true
             }
             Effect::WritePty { agent, bytes } => {
-                if let Some(t) = term_of(state, agent).and_then(|t| self.rt.hub.get(&t.to_string()))
-                {
+                if let Some(t) = term_of(state, agent).and_then(|t| self.rt.hub.get_term(t)) {
                     t.write(bytes);
                 }
                 true
@@ -279,7 +277,7 @@ async fn start_agent(
     cfg: TermConfig,
 ) {
     let (session_id, token_hash) = (spec.session_id.clone(), spec.token_hash);
-    let id = term.to_string();
+    let id = term_key(term);
     let hub = rt.hub.clone();
     let made = tokio::task::spawn_blocking({
         let id = id.clone();
@@ -312,6 +310,8 @@ async fn start_agent(
     };
     let code = info.and_then(|i| i.signal.is_none().then_some(i.code as i32));
     handle.send(Command::Runner(RunnerEvent::Exited { agent, code }));
+    // The stream has seen the exit by now; the engine owns the record.
+    rt.hub.remove(&id);
 }
 
 /// The one line pasted into the PTY for a digest. A long or multi-line digest
@@ -346,7 +346,7 @@ pub fn paste_bytes(line: &str) -> Vec<u8> {
 
 async fn paste_digest(
     rt: Arc<AgentRuntime>,
-    term: String,
+    term: TermId,
     dir: PathBuf,
     items: Vec<ItemId>,
     text: String,
@@ -364,7 +364,7 @@ async fn paste_digest(
             return;
         }
     }
-    if let Some(t) = rt.hub.get(&term) {
+    if let Some(t) = rt.hub.get_term(term) {
         t.write(&paste_bytes(&line));
     }
 }
@@ -390,7 +390,10 @@ mod tests {
 
     #[test]
     fn paste_is_one_bracketed_write_with_a_return() {
-        assert_eq!(paste_bytes("hi\x1b[201~\nthere"), b"\x1b[200~hi [201~ there\x1b[201~\r");
+        assert_eq!(
+            paste_bytes("hi\x1b[201~\nthere"),
+            b"\x1b[200~hi [201~ there\x1b[201~\r"
+        );
     }
 
     #[test]

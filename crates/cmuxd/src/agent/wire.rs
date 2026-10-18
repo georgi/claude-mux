@@ -221,15 +221,16 @@ pub fn agent_id(s: &str, plan: &PlanId) -> Res<AgentId> {
         .ok()
         .or_else(|| lenient.and_then(|l| l.parse().ok()))
         .map(|path| AgentId::new(plan.clone(), path))
-        .ok_or_else(|| {
-            format!("{s:?} is not an agent; expected executor, T-NNNN or T-NNNN/<name>")
-        })
+        .ok_or_else(|| format!("{s:?} is not an agent; expected executor, T-NNNN or T-NNNN/<name>"))
 }
 
 /// The tool name and arguments the model gave, as a core [`ToolCall`]. `plan`
 /// is the caller's plan, which agent names are resolved in.
 pub fn parse_tool(name: &str, args: &Value, plan: &PlanId) -> Res<ToolCall> {
-    let a = Args { tool: name, v: args };
+    let a = Args {
+        tool: name,
+        v: args,
+    };
     let agent =
         |key: &str| -> Res<AgentId> { agent_id(&a.str(key)?, plan).map_err(|e| arg_err(name, e)) };
     Ok(match name {

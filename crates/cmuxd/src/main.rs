@@ -3,14 +3,12 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use cmux_proto::api::Scope;
 use cmuxd::ServerBuilder;
 use cmuxd::api::Extra;
 use cmuxd::config::{Config, Overrides};
-use cmuxd::term::hub::Hub;
 
 #[derive(Parser)]
 #[command(name = "cmuxd", version, about = "The cmux server")]
@@ -113,10 +111,10 @@ fn runtime() -> Result<tokio::runtime::Runtime, String> {
 }
 
 async fn serve(config: Config) -> Result<(), String> {
-    // Step 5 puts the hub in the server; until then the agent runtime owns it.
-    let agents = cmuxd::agent::AgentRuntime::from_config(&config, Arc::new(Hub::new()));
+    let builder = ServerBuilder::new(config.clone());
+    let agents = cmuxd::agent::AgentRuntime::from_config(&config, builder.hub());
     let routes = agents.clone();
-    let server = ServerBuilder::new(config)
+    let server = builder
         .runner(agents.runner())
         .extra_routes(move || Extra {
             unix_only: routes.routes(),

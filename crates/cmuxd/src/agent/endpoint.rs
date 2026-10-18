@@ -21,9 +21,7 @@ use axum::routing::post;
 use axum::{Extension, Json, Router};
 use cmux_core::engine::{Command, ErrorKind, Hook, HookReply, PermissionDecision, Reply};
 use cmux_core::ids::{AgentId, ItemId, TermId};
-use cmux_proto::api::{
-    AgentHookReq, AgentHookResp, AgentToolReq, AgentToolResp, ErrorCode, route,
-};
+use cmux_proto::api::{AgentHookReq, AgentHookResp, AgentToolReq, AgentToolResp, ErrorCode, route};
 use serde_json::json;
 use tokio::sync::oneshot;
 
@@ -188,7 +186,12 @@ async fn tool(
     Json(req): Json<AgentToolReq>,
 ) -> ApiResult<Json<AgentToolResp>> {
     let started = Instant::now();
-    let fail = |text: String| Ok(Json(AgentToolResp { text, is_error: true }));
+    let fail = |text: String| {
+        Ok(Json(AgentToolResp {
+            text,
+            is_error: true,
+        }))
+    };
     let call = match parse_tool(&req.name, &req.args, req.agent.plan()) {
         Ok(c) => c,
         Err(e) => return fail(e),
@@ -233,7 +236,7 @@ fn peek(rt: &AgentRuntime, agent: &AgentId, term: Option<TermId>, lines: usize) 
     let Some(term) = term else {
         return format!("error: {agent} has no terminal yet; it is still starting");
     };
-    let Some(t) = rt.hub().get(&term.to_string()) else {
+    let Some(t) = rt.hub().get_term(term) else {
         return format!("error: the terminal of {agent} is gone");
     };
     let screen = t.screen_text();

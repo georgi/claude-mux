@@ -60,12 +60,7 @@ pub fn timeout_for(event: &str) -> Duration {
 }
 
 /// Posts one hook and returns the JSON to print, if any. Every failure is `None`.
-pub async fn post(
-    env: &HookEnv,
-    event: &str,
-    payload: Value,
-    timeout: Duration,
-) -> Option<Value> {
+pub async fn post(env: &HookEnv, event: &str, payload: Value, timeout: Duration) -> Option<Value> {
     let req = AgentHookReq {
         agent: env.agent.clone(),
         token: env.token.clone(),
@@ -128,7 +123,7 @@ mod tests {
     async fn no_socket_means_no_output() {
         let env = HookEnv {
             sock: "/nonexistent/cmux.sock".into(),
-            agent: "2026-10-18-demo/executor".parse().unwrap(),
+            agent: "P-20261018-demo/executor".parse().unwrap(),
             token: "t".into(),
         };
         let out = post(&env, "Stop", serde_json::json!({}), HOOK_TIMEOUT).await;

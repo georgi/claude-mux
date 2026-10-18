@@ -17,7 +17,8 @@
 //!    and ended with `Stop`. `/exit` runs `SessionEnd` and exits.
 //!
 //! The script is `$FAKE_CLAUDE_SCRIPTS/<agent path>.json` (`/` becomes `_`):
-//! `{"first": [steps], "later": [steps]}`. Steps:
+//! `{"first": [steps], "later": [steps]}`. Any step may carry `"when": text`
+//! and then runs only if the turn's prompt contains that text. Steps:
 //!
 //! - `{"tool": name, "args": {..}}`: an MCP `tools/call`; prints `TOOL <name>: <text>`
 //! - `{"permission": {"tool": "Bash", "input": {"command": ".."}}}`: runs
@@ -229,6 +230,8 @@ struct Session {
     mcp: Mcp,
     lines: Receiver<Option<String>>,
     script: Value,
+    /// The prompt of the current turn, for `when`.
+    prompt: String,
 }
 
 fn strip_paste(line: &str) -> String {
@@ -237,6 +240,11 @@ fn strip_paste(line: &str) -> String {
 
 impl Session {
     fn step(&mut self, step: &Value) {
+        if let Some(w) = step["when"].as_str()
+            && !self.prompt.contains(w)
+        {
+            return;
+        }
         if let Some(name) = step["tool"].as_str() {
             let text = self.mcp.call(name, &step["args"]);
             say(format!("TOOL {name}: {text}"));
@@ -292,7 +300,10 @@ impl Session {
                 let d = &v["hookSpecificOutput"]["decision"];
                 match d["behavior"].as_str() {
                     Some("allow") => say("PERM allow"),
-                    Some("deny") => say(format!("PERM deny: {}", d["message"].as_str().unwrap_or(""))),
+                    Some("deny") => say(format!(
+                        "PERM deny: {}",
+                        d["message"].as_str().unwrap_or("")
+                    )),
                     _ => say("PERM none"),
                 }
                 return;
@@ -331,6 +342,14 @@ impl Session {
     }
 
     fn submit(&mut self, prompt: &str) {
+        self.prompt = prompt.to_string();
+        // A digest too long to paste names a file to read, as Claude would.
+        if let Some((_, path)) = prompt.rsplit_once("read ")
+            && let Ok(text) = std::fs::read_to_string(path.trim())
+        {
+            self.prompt.push('\n');
+            self.prompt.push_str(&text);
+        }
         let out = self
             .hooks
             .run("UserPromptSubmit", json!({"prompt": prompt}));
@@ -382,34 +401,33 @@ fn main() {
         mcp,
         lines,
         script,
+        prompt: String::new(),
     };
-    s.hooks
-        .run("SessionStart", json!({"source": "startup", "model": "fake"}));
+    s.hooks.run(
+        "SessionStart",
+        json!({"source": "startup", "model": "fake"}),
+    );
     say(format!("KICKOFF: {}", args.kickoff));
     s.submit(&args.kickoff.clone());
     s.steps("first");
     s.stop("kickoff done");
 
     // Idle: every line is a prompt.
-    loop {
-        match s.lines.recv() {
-            Ok(Some(line)) => {
-                let line = strip_paste(&line);
-                let line = line.trim().to_string();
-                if line.is_empty() {
-                    continue;
-                }
-                say(format!("ECHO {line}"));
-                if line == "/exit" {
-                    s.hooks.run("SessionEnd", json!({"reason": "prompt_input_exit"}));
-                    break;
-                }
-                s.submit(&line);
-                s.steps("later");
-                s.stop(&line);
-            }
-            _ => break,
+    while let Ok(Some(line)) = s.lines.recv() {
+        let line = strip_paste(&line);
+        let line = line.trim().to_string();
+        if line.is_empty() {
+            continue;
         }
+        say(format!("ECHO {line}"));
+        if line == "/exit" {
+            s.hooks
+                .run("SessionEnd", json!({"reason": "prompt_input_exit"}));
+            break;
+        }
+        s.submit(&line);
+        s.steps("later");
+        s.stop(&line);
     }
     let _ = s.mcp.child.kill();
 }

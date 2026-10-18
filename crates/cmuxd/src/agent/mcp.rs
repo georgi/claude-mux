@@ -52,7 +52,11 @@ const TOOLS: &[ToolDef] = &[
         name: "update_plan",
         about: "Change the plan: set its state (for example proposed once the task list is ready, or done when every task is merged or cancelled) or its title.",
         args: &[
-            ("state", "string?", "draft, proposed, accepted, done or cancelled"),
+            (
+                "state",
+                "string?",
+                "draft, proposed, accepted, done or cancelled",
+            ),
             ("title", "string?", "New title"),
         ],
         levels: &[Executor],
@@ -74,8 +78,16 @@ const TOOLS: &[ToolDef] = &[
         about: "Add a task to the plan.",
         args: &[
             ("title", "string", "Short title"),
-            ("body", "string?", "What to do, with enough context to start cold"),
-            ("repo", "integer?", "Index of the plan's repo, from 0 (default 0)"),
+            (
+                "body",
+                "string?",
+                "What to do, with enough context to start cold",
+            ),
+            (
+                "repo",
+                "integer?",
+                "Index of the plan's repo, from 0 (default 0)",
+            ),
             ("deps", "strings?", "Task ids this task waits for"),
             ("criteria", "strings?", "Acceptance criteria"),
         ],
@@ -89,7 +101,11 @@ const TOOLS: &[ToolDef] = &[
             ("title", "string?", "New title"),
             ("body", "string?", "New body"),
             ("repo", "integer?", "New repo index"),
-            ("deps", "strings?", "New dependency list (replaces the old one)"),
+            (
+                "deps",
+                "strings?",
+                "New dependency list (replaces the old one)",
+            ),
         ],
         levels: &[Executor],
     },
@@ -98,7 +114,11 @@ const TOOLS: &[ToolDef] = &[
         about: "Move a task to another state. Task agents may move their own task only to testing or blocked.",
         args: &[
             ("task", "string", "Task id such as T-0003"),
-            ("to", "string", "todo, in_progress, testing, failing, passing, merged, blocked or cancelled"),
+            (
+                "to",
+                "string",
+                "todo, in_progress, testing, failing, passing, merged, blocked or cancelled",
+            ),
         ],
         levels: &[Executor, Task],
     },
@@ -116,7 +136,11 @@ const TOOLS: &[ToolDef] = &[
         about: "Check or uncheck a criterion. Check one only with evidence.",
         args: &[
             ("task", "string", "Task id such as T-0003"),
-            ("criterion", "integer", "Number of the criterion, counting from 1 as get_task lists them"),
+            (
+                "criterion",
+                "integer",
+                "Number of the criterion, counting from 1 as get_task lists them",
+            ),
             ("checked", "boolean?", "false to uncheck (default true)"),
         ],
         levels: &[Executor, Task],
@@ -135,7 +159,11 @@ const TOOLS: &[ToolDef] = &[
         about: "Start the agent for a task whose dependencies are done. Refused over a limit; use force only when the user asked for it.",
         args: &[
             ("task", "string", "Task id such as T-0003"),
-            ("instructions", "string?", "Extra instructions for the task agent"),
+            (
+                "instructions",
+                "string?",
+                "Extra instructions for the task agent",
+            ),
             ("force", "boolean?", "Spawn even if the task is not ready"),
         ],
         levels: &[Executor],
@@ -144,8 +172,16 @@ const TOOLS: &[ToolDef] = &[
         name: "spawn_subagent",
         about: "Start a sub-agent in your worktree for separable work on files you are not touching.",
         args: &[
-            ("name", "string", "Short lowercase name, letters, digits and dashes"),
-            ("prompt", "string", "The job, with enough context to start cold"),
+            (
+                "name",
+                "string",
+                "Short lowercase name, letters, digits and dashes",
+            ),
+            (
+                "prompt",
+                "string",
+                "The job, with enough context to start cold",
+            ),
         ],
         levels: &[Task],
     },
@@ -153,7 +189,11 @@ const TOOLS: &[ToolDef] = &[
         name: "send",
         about: "Message one of your agents. It arrives when the agent is next idle, or at once with interrupt.",
         args: &[
-            ("agent", "string", "The agent, such as T-0003 or T-0003/lint"),
+            (
+                "agent",
+                "string",
+                "The agent, such as T-0003 or T-0003/lint",
+            ),
             ("text", "string", "The message"),
             ("interrupt", "boolean?", "Stop what it is doing first"),
         ],
@@ -162,7 +202,11 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "stop_agent",
         about: "Stop one of your agents.",
-        args: &[("agent", "string", "The agent, such as T-0003 or T-0003/lint")],
+        args: &[(
+            "agent",
+            "string",
+            "The agent, such as T-0003 or T-0003/lint",
+        )],
         levels: &[Executor, Task],
     },
     ToolDef {
@@ -175,7 +219,11 @@ const TOOLS: &[ToolDef] = &[
         name: "peek",
         about: "Read the last lines of one of your agents' terminal.",
         args: &[
-            ("agent", "string", "The agent, such as T-0003 or T-0003/lint"),
+            (
+                "agent",
+                "string",
+                "The agent, such as T-0003 or T-0003/lint",
+            ),
             ("lines", "integer?", "How many lines (default 40)"),
         ],
         levels: &[Executor, Task],
@@ -183,7 +231,11 @@ const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "set_task_pr",
         about: "Record the pull request you opened for your task.",
-        args: &[("url", "string", "https://github.com/<owner>/<repo>/pull/<number>")],
+        args: &[(
+            "url",
+            "string",
+            "https://github.com/<owner>/<repo>/pull/<number>",
+        )],
         levels: &[Task],
     },
     ToolDef {
@@ -347,7 +399,10 @@ fn call_tool(
 ) -> (String, bool) {
     let Some(levels) = tool_levels(name) else {
         let known = level.map(tool_names).unwrap_or_default().join(", ");
-        return (format!("error: unknown tool {name:?}; available: {known}"), true);
+        return (
+            format!("error: unknown tool {name:?}; available: {known}"),
+            true,
+        );
     };
     match level {
         Some(l) if levels.contains(&l) => caller.call(name, args),
@@ -379,7 +434,11 @@ pub fn serve(
         }
         let reply = match serde_json::from_str::<Value>(&line) {
             Ok(msg) => handle(level, &msg, caller),
-            Err(e) => Some(rpc_error(&Value::Null, -32700, &format!("parse error: {e}"))),
+            Err(e) => Some(rpc_error(
+                &Value::Null,
+                -32700,
+                &format!("parse error: {e}"),
+            )),
         };
         if let Some(r) = reply {
             writeln!(out, "{r}")?;
@@ -422,10 +481,9 @@ impl ToolCaller for SocketCaller {
             args: args.clone(),
         };
         let ep = Endpoint::Unix(env.sock.clone());
-        let sent = self.rt.block_on(tokio::time::timeout(
-            CALL_TIMEOUT,
-            ep.json("POST", route::AGENT_TOOL, &[], &req),
-        ));
+        let sent = self.rt.block_on(async {
+            tokio::time::timeout(CALL_TIMEOUT, ep.json("POST", route::AGENT_TOOL, &[], &req)).await
+        });
         let resp = match sent {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => {
@@ -500,10 +558,16 @@ mod tests {
         assert_eq!(r["result"]["serverInfo"]["name"], "cmux");
         assert!(r["result"]["capabilities"]["tools"].is_object());
         // An unknown revision gets the newest one we speak.
-        let r = rpc(None, json!({"id":"a","method":"initialize","params":{"protocolVersion":"1999"}}))
-            .unwrap();
+        let r = rpc(
+            None,
+            json!({"id":"a","method":"initialize","params":{"protocolVersion":"1999"}}),
+        )
+        .unwrap();
         assert_eq!(r["result"]["protocolVersion"], LATEST_PROTOCOL);
-        assert_eq!(rpc(None, json!({"id":2,"method":"ping"})).unwrap()["result"], json!({}));
+        assert_eq!(
+            rpc(None, json!({"id":2,"method":"ping"})).unwrap()["result"],
+            json!({})
+        );
         assert!(rpc(None, json!({"method":"notifications/initialized"})).is_none());
         assert!(rpc(None, json!({"id":3,"result":{}})).is_none());
         let r = rpc(None, json!({"id":4,"method":"resources/list"})).unwrap();
@@ -516,27 +580,63 @@ mod tests {
         assert_eq!(
             names(Executor),
             [
-                "get_plan", "update_plan", "list_tasks", "get_task", "create_task", "update_task",
-                "transition_task", "add_criterion", "check_criterion", "add_note", "spawn_task",
-                "send", "stop_agent", "list_agents", "peek", "answer_child", "ask_user"
+                "get_plan",
+                "update_plan",
+                "list_tasks",
+                "get_task",
+                "create_task",
+                "update_task",
+                "transition_task",
+                "add_criterion",
+                "check_criterion",
+                "add_note",
+                "spawn_task",
+                "send",
+                "stop_agent",
+                "list_agents",
+                "peek",
+                "answer_child",
+                "ask_user"
             ]
         );
         assert_eq!(
             names(Task),
             [
-                "get_plan", "list_tasks", "get_task", "transition_task", "add_criterion",
-                "check_criterion", "add_note", "spawn_subagent", "send", "stop_agent",
-                "list_agents", "peek", "set_task_pr", "report_result", "ask_parent",
-                "answer_child", "ask_user"
+                "get_plan",
+                "list_tasks",
+                "get_task",
+                "transition_task",
+                "add_criterion",
+                "check_criterion",
+                "add_note",
+                "spawn_subagent",
+                "send",
+                "stop_agent",
+                "list_agents",
+                "peek",
+                "set_task_pr",
+                "report_result",
+                "ask_parent",
+                "answer_child",
+                "ask_user"
             ]
         );
-        assert_eq!(names(Sub), ["get_task", "add_note", "report_result", "ask_parent"]);
+        assert_eq!(
+            names(Sub),
+            ["get_task", "add_note", "report_result", "ask_parent"]
+        );
         let r = rpc(Some(Sub), json!({"id":1,"method":"tools/list"})).unwrap();
         let tools = r["result"]["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 4);
         let report = tools.iter().find(|t| t["name"] == "report_result").unwrap();
-        assert_eq!(report["inputSchema"]["required"], json!(["status", "summary"]));
-        assert_eq!(report["inputSchema"]["properties"]["pr_url"]["type"], "string");
+        assert_eq!(
+            report["inputSchema"]["required"],
+            json!(["status", "summary"])
+        );
+        assert_eq!(
+            report["inputSchema"]["properties"]["pr_url"]["type"],
+            "string"
+        );
         // Without an identity there is nothing to offer.
         let r = rpc(None, json!({"id":1,"method":"tools/list"})).unwrap();
         assert_eq!(r["result"]["tools"], json!([]));
@@ -588,10 +688,12 @@ mod tests {
             "error: spawn_task is not available to sub-agent agents; it is available to: executor"
         );
         let r = call(Some(Executor), "rm_rf", &mut caller);
-        assert!(r["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .starts_with("error: unknown tool \"rm_rf\"; available: get_plan"));
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("error: unknown tool \"rm_rf\"; available: get_plan")
+        );
         let r = call(None, "get_plan", &mut caller);
         assert_eq!(r["result"]["isError"], true);
         assert_eq!(seen.len(), 1);
@@ -617,8 +719,8 @@ mod tests {
     fn level_comes_from_the_agent_id() {
         // Not through the environment (tests share it): the same parse.
         let lvl = |s: &str| s.parse::<cmux_core::ids::AgentId>().unwrap().path().level();
-        assert_eq!(lvl("2026-10-18-demo/executor"), Executor);
-        assert_eq!(lvl("2026-10-18-demo/T-0003"), Task);
-        assert_eq!(lvl("2026-10-18-demo/T-0003/lint"), Sub);
+        assert_eq!(lvl("P-20261018-demo/executor"), Executor);
+        assert_eq!(lvl("P-20261018-demo/T-0003"), Task);
+        assert_eq!(lvl("P-20261018-demo/T-0003/lint"), Sub);
     }
 }
