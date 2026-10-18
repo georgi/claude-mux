@@ -23,6 +23,119 @@ fn segments(cmd: &str) -> Vec<Vec<&str>> {
         .collect()
 }
 
+/// Drops the body (and terminator) of a heredoc that feeds a commit or tag
+/// message: `git commit -m "$(cat <<'EOF' ... EOF)"` or `git commit -F - <<EOF`.
+/// Other heredocs stay, since `sh <<EOF` runs its body.
+fn drop_message_heredocs(cmd: &str) -> String {
+    let mut out = String::with_capacity(cmd.len());
+    let mut skip_to: Option<String> = None;
+    for line in cmd.split_inclusive('\n') {
+        if let Some(tag) = &skip_to {
+            if line.trim() == tag {
+                skip_to = None;
+            }
+            continue;
+        }
+        out.push_str(line);
+        skip_to = message_heredoc_tag(line);
+    }
+    out
+}
+
+/// The terminator of the heredoc a line opens, when that heredoc is the
+/// message of the commit or tag in the same simple command: `cat <<TAG` or
+/// `- <<TAG` after `git commit|tag`, with nothing but closing quotes and
+/// parentheses after the tag.
+fn message_heredoc_tag(line: &str) -> Option<String> {
+    let at = line.find("<<")?;
+    let (before, after) = (&line[..at], line[at + 2..].trim_start_matches('-'));
+    if after.starts_with('<') {
+        return None;
+    }
+    let after = after.trim_start();
+    let tag: String = after
+        .trim_start_matches(['\'', '"'])
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    let rest = after
+        .trim_start_matches(['\'', '"'])
+        .strip_prefix(tag.as_str())?;
+    if tag.is_empty()
+        || !rest
+            .chars()
+            .all(|c| matches!(c, ' ' | '\t' | '\'' | '"' | ')' | '\r' | '\n'))
+    {
+        return None;
+    }
+    let cmd = before.rsplit([';', '&', '|']).next().unwrap_or(before);
+    let words: Vec<&str> = cmd
+        .split_whitespace()
+        .map(|w| w.trim_matches(SHELL_PUNCT))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let feeds_message = matches!(words.last(), Some(&"cat" | &"-"))
+        && matches!(git_sub(&words), Some(("commit" | "tag", _)));
+    feeds_message.then_some(tag)
+}
+
+/// Blanks the quoted strings of `git commit|tag`: a message may mention push
+/// and span lines. Single quotes are literal; double quotes only when they hold
+/// no `$(` or backtick, which run commands. Quotes of any other command stay,
+/// so `bash -c '...'` is still read.
+fn drop_message_quotes(cmd: &str) -> String {
+    let mut out = String::with_capacity(cmd.len());
+    let mut seg = 0;
+    let mut chars = cmd.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            ';' | '&' | '|' | '\n' | '(' | ')' | '`' | '{' | '}' => {
+                out.push(c);
+                seg = out.len();
+            }
+            '\\' => {
+                out.push(c);
+                if let Some((_, n)) = chars.next() {
+                    out.push(n);
+                }
+            }
+            '\'' | '"' => {
+                let mut end = cmd.len();
+                let mut closed = false;
+                let mut esc = false;
+                for (j, d) in cmd[i + 1..].char_indices() {
+                    if esc {
+                        esc = false;
+                    } else if d == '\\' && c == '"' {
+                        esc = true;
+                    } else if d == c {
+                        end = i + 1 + j;
+                        closed = true;
+                        break;
+                    }
+                }
+                let body = &cmd[i + 1..end];
+                let words: Vec<&str> = out[seg..]
+                    .split_whitespace()
+                    .map(|w| w.trim_matches(SHELL_PUNCT))
+                    .filter(|w| !w.is_empty())
+                    .collect();
+                let message = matches!(git_sub(&words), Some(("commit" | "tag", _)))
+                    && (c == '\'' || !(body.contains("$(") || body.contains('`')));
+                if !message {
+                    out.push_str(&cmd[i..if closed { end + 1 } else { end }]);
+                }
+                let next = if closed { end + 1 } else { end };
+                while chars.peek().is_some_and(|(k, _)| *k < next) {
+                    chars.next();
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// The last path component: `/usr/bin/git` is `git`.
 fn basename(w: &str) -> &str {
     w.rsplit('/').next().unwrap_or(w)
@@ -70,21 +183,47 @@ fn names_base(arg: &str, base: &str) -> bool {
     name == base || name.strip_prefix("origin/") == Some(base)
 }
 
-/// Whether `git checkout|switch <args>` moves to the base branch. Restoring
-/// files from it (`checkout main -- path`) and branching off it (`-b feat main`)
-/// leave the current branch alone.
-fn switches_to_base(sub: &str, args: &[&str], base: &str) -> bool {
-    let create: &[&str] = if sub == "checkout" {
+/// The branch a `git checkout|switch` creates, if it creates one: the word
+/// after `-b`/`-B` (checkout), `-c`/`-C`/`--create`/`--force-create` (switch) or
+/// `--orphan`, glued (`-bmain`, `--create=main`) or apart. `Some(None)` is a
+/// create flag with no name.
+fn created_branch<'a>(sub: &str, args: &[&'a str]) -> Option<Option<&'a str>> {
+    let short: &[&str] = if sub == "checkout" {
         &["-b", "-B"]
     } else {
-        &["-c", "-C", "--create", "--force-create"]
+        &["-c", "-C"]
     };
+    let long = ["--create", "--force-create", "--orphan"];
+    args.iter().enumerate().find_map(|(i, a)| {
+        if short.contains(a) || long.contains(a) {
+            return Some(args.get(i + 1).copied());
+        }
+        if let Some(v) = long
+            .iter()
+            .find_map(|l| a.strip_prefix(l).and_then(|r| r.strip_prefix('=')))
+        {
+            return Some(Some(v));
+        }
+        short
+            .iter()
+            .find_map(|f| a.strip_prefix(f).filter(|v| !v.is_empty()))
+            .map(Some)
+    })
+}
+
+/// Whether `git checkout|switch <args>` moves to the base branch. Restoring
+/// files from it (`checkout main -- path`) and branching off it (`-b feat main`)
+/// leave the current branch alone; creating a branch named like it
+/// (`-B main origin/main` resets it) does not.
+fn switches_to_base(sub: &str, args: &[&str], base: &str) -> bool {
+    if let Some(created) = created_branch(sub, args) {
+        return created.is_some_and(|n| names_base(n, base));
+    }
     let (refs, paths) = match args.iter().position(|a| *a == "--") {
         Some(at) => (&args[..at], &args[at + 1..]),
         None => (args, &[][..]),
     };
-    !args.iter().any(|a| create.contains(a))
-        && paths.is_empty()
+    paths.is_empty()
         && refs
             .iter()
             .any(|a| !a.starts_with('-') && names_base(a, base))
@@ -95,7 +234,8 @@ pub(super) fn guard(level: Level, base: Option<&str>, tool: &str, input: &str) -
     if tool != "Bash" {
         return None;
     }
-    let segs = segments(input);
+    let input = drop_message_quotes(&drop_message_heredocs(input));
+    let segs = segments(&input);
     if level == Level::Sub {
         // Conservative: git anywhere before push or send-pack, in any spelling
         // the shell would accept. Only the message of a commit or tag may
