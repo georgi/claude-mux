@@ -170,7 +170,7 @@ impl AgentRuntime {
 /// This executable's path for the hooks and the MCP server. Linux reports
 /// `/path/cmuxd (deleted)` once the binary was replaced under a running
 /// server (an upgrade); the new binary sits at the plain path.
-fn running_exe() -> PathBuf {
+pub(crate) fn running_exe() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cmuxd"));
     strip_deleted(exe)
 }
@@ -285,7 +285,10 @@ impl EffectRunner for AgentRunner {
                 true
             }
             // Push notifications belong to a later step.
-            Effect::Notify { .. } | Effect::Persist { .. } | Effect::PersistGlobals => false,
+            Effect::Notify { .. }
+            | Effect::Persist { .. }
+            | Effect::DeletePlan { .. }
+            | Effect::PersistGlobals => false,
         }
     }
 

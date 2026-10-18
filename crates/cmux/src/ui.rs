@@ -86,7 +86,7 @@ fn draw_remote_body(f: &mut Frame, app: &App, full: Rect, body: Rect) {
         draw_window(f, app, w, body);
     } else {
         let msg = if sv.plans.is_empty() && sv.terminals.is_empty() {
-            "nothing on this server yet - n new plan, prefix c new Claude, prefix t shell"
+            "nothing on this server yet - prefix c new Claude (ask it for a plan), prefix t shell"
         } else {
             "no windows yet - open a node of the tree"
         };

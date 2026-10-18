@@ -298,7 +298,7 @@ impl H {
                     base_branch: "main".into(),
                     remote_url: None,
                 }],
-                request: "build the thing".into(),
+                request: Some("build the thing".into()),
             })
             .unwrap();
         let pid: PlanId = text_of(&o).parse().unwrap();
@@ -405,7 +405,7 @@ fn planning_review_accept_and_send_back() {
                 base_branch: "main".into(),
                 remote_url: None,
             }],
-            request: "split the auth module".into(),
+            request: Some("split the auth module".into()),
         })
         .unwrap();
     let pid: PlanId = text_of(&o).parse().unwrap();
@@ -1656,7 +1656,7 @@ fn a_starting_agent_cannot_authenticate_with_a_zero_hash() {
                 base_branch: "main".into(),
                 remote_url: None,
             }],
-            request: "r".into(),
+            request: Some("r".into()),
         })
         .unwrap();
     let exec = AgentId::new(text_of(&o).parse().unwrap(), AgentPath::Executor);
@@ -2731,7 +2731,7 @@ fn global_process_limit_applies_to_spawns() {
             base_branch: "main".into(),
             remote_url: None,
         }],
-        request: "".into(),
+        request: Some("".into()),
     }));
     assert_eq!(e.kind, ErrorKind::Limit);
 }
@@ -3352,7 +3352,7 @@ fn two_plans_with_the_same_long_title_get_distinct_ids() {
                     base_branch: "main".into(),
                     remote_url: None,
                 }],
-                request: "x".into(),
+                request: Some("x".into()),
             })
             .unwrap();
         let id: PlanId = text_of(&o).parse().expect("a valid plan id");
@@ -3676,7 +3676,7 @@ fn spawn_effects_and_loose_terminals_never_share_a_term_id() {
                 base_branch: "main".into(),
                 remote_url: None,
             }],
-            request: "r".into(),
+            request: Some("r".into()),
         })
         .unwrap();
     let Some(Effect::SpawnAgent { term, .. }) = o
@@ -3724,4 +3724,103 @@ fn only_https_pull_request_urls_are_accepted() {
         assert!(e.to_string().contains("pull request URL"), "{url}: {e}");
     }
     assert!(h.task(&pid, 1).pr.is_none());
+}
+
+#[test]
+fn delete_plan_stops_its_agents_and_forgets_it() {
+    let mut h = H::new();
+    let (keep, _) = h.new_plan("keep");
+    let (pid, exec) = h.accepted_plan("doomed", 2);
+    let a = h.start(&pid, &exec, 1);
+    h.report(&a, ReportStatus::Success).unwrap();
+    let term = h.agent(&a).term.expect("the task agent has a terminal");
+    assert!(!h.items_to(&exec).is_empty(), "the executor holds the report");
+
+    let o = h
+        .client(ClientAction::DeletePlan { plan: pid.clone() })
+        .unwrap();
+    assert!(has_fx(&o, |e| matches!(e, Effect::KillAgent { agent, term: Some(_) } if *agent == a)));
+    assert!(has_fx(&o, |e| matches!(e, Effect::DeletePlan { plan } if *plan == pid)));
+    assert!(!has_fx(&o, |e| matches!(e, Effect::Persist { plan } if *plan == pid)));
+    assert!(
+        o.deltas
+            .iter()
+            .any(|d| d.change == Change::Removed(ObjectRef::Plan(pid.clone())))
+    );
+    assert_eq!(h.st.plans.len(), 1);
+    assert_eq!(h.st.plans[0].id, keep);
+    assert!(!h.st.terminals.contains_key(&term));
+    let ours = |x: &AgentId| x.plan() == &pid;
+    assert!(h.st.inbox.iter().all(|i| !i.from.as_ref().is_some_and(ours)
+        && !matches!(&i.to, Recipient::Agent(x) if ours(x))));
+    assert_eq!(
+        h.client(ClientAction::DeletePlan { plan: pid.clone() })
+            .unwrap_err()
+            .kind,
+        ErrorKind::NotFound
+    );
+}
+
+#[test]
+fn a_spawn_that_lands_after_its_plan_is_deleted_is_killed() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("late-spawn", 1);
+    h.client(ClientAction::DeletePlan { plan: pid.clone() })
+        .unwrap();
+    let o = h.runner(RunnerEvent::Spawned {
+        agent: exec.clone(),
+        term: TermId(77),
+        session_id: "s".into(),
+        token_hash: tok(&exec),
+    });
+    assert!(has_fx(&o, |e| matches!(
+        e,
+        Effect::KillAgent { agent, term: Some(TermId(77)) } if *agent == exec
+    )));
+}
+
+#[test]
+fn a_plan_written_by_the_client_starts_its_executor_on_accept() {
+    let mut h = H::new();
+    let o = h
+        .client(ClientAction::CreatePlan {
+            title: "from a session".into(),
+            repos: vec![Repo {
+                path: PathBuf::from("/repo"),
+                base_branch: "main".into(),
+                remote_url: None,
+            }],
+            request: None,
+        })
+        .unwrap();
+    assert!(!has_fx(&o, |e| matches!(e, Effect::SpawnAgent { .. })));
+    let pid: PlanId = text_of(&o).parse().unwrap();
+    assert!(h.plan(&pid).agents.is_empty());
+    assert_eq!(h.plan(&pid).state, PlanState::Draft);
+
+    let e = h
+        .client(ClientAction::AcceptPlan { plan: pid.clone() })
+        .unwrap_err();
+    assert!(e.to_string().contains("no tasks"), "{e}");
+
+    h.client(ClientAction::CreateTask {
+        plan: pid.clone(),
+        title: "one".into(),
+        body: "do it".into(),
+        repo: 0,
+        deps: vec![],
+        criteria: vec!["tests pass".into()],
+    })
+    .unwrap();
+    let o = h
+        .client(ClientAction::AcceptPlan { plan: pid.clone() })
+        .unwrap();
+    let exec = AgentId::new(pid.clone(), AgentPath::Executor);
+    assert!(has_fx(&o, |e| matches!(
+        e,
+        Effect::SpawnAgent { agent, resume: false, kickoff, .. }
+            if *agent == exec && kickoff.contains("T-0001")
+    )));
+    assert_eq!(h.plan(&pid).state, PlanState::Accepted);
+    assert_eq!(h.agent(&exec).life, Life::Starting);
 }

@@ -36,7 +36,9 @@ pub enum ClientAction {
     CreatePlan {
         title: String,
         repos: Vec<Repo>,
-        request: String,
+        /// The request for a planner agent. `None` starts no agent: the client
+        /// adds the tasks, and accepting the plan starts the executor.
+        request: Option<String>,
     },
     AcceptPlan {
         plan: PlanId,
@@ -48,6 +50,11 @@ pub enum ClientAction {
         plan: PlanId,
     },
     CancelPlan {
+        plan: PlanId,
+    },
+    /// Stops the plan's agents and forgets the plan, its terminals and its
+    /// inbox items. Worktrees and branches stay on disk.
+    DeletePlan {
         plan: PlanId,
     },
     CreateTask {
@@ -408,6 +415,8 @@ pub enum Effect {
     Notify { item: ItemId },
     /// Save this plan.
     Persist { plan: PlanId },
+    /// Remove the plan's directory: its state, journal and `plan.md`.
+    DeletePlan { plan: PlanId },
     /// Save only what belongs to no plan (rev, terminals, inbox): a change
     /// that touched no plan still bumped `rev`.
     PersistGlobals,

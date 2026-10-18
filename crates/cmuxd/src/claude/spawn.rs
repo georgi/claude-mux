@@ -412,6 +412,44 @@ fn mcp_json(cfg: &SpawnConfig, identity: &[(&str, String); 3]) -> Value {
     }}})
 }
 
+/// Session tools that run without a permission prompt. `accept_plan` starts
+/// agents, so Claude asks first.
+const SESSION_ALLOWED: &[&str] = &[
+    "list_plans",
+    "get_plan",
+    "create_plan",
+    "create_task",
+    "get_task",
+    "update_task",
+];
+
+/// `<data>/session/mcp.json`: the plan tools of `cmuxd mcp --session`, shared
+/// by every Claude terminal the server starts. It holds no secret.
+pub fn session_mcp_file(data_dir: &Path) -> PathBuf {
+    data_dir.join("session").join("mcp.json")
+}
+
+pub fn session_mcp_json(cmuxd_exe: &Path, sock: &Path) -> String {
+    pretty(&json!({ "mcpServers": { MCP_SERVER: {
+        "command": cmuxd_exe.display().to_string(),
+        "args": ["mcp", "--session"],
+        "env": { "CMUX_SOCK": sock.display().to_string() },
+    }}}))
+}
+
+/// The flags that give a Claude terminal the session tools. The `=` forms,
+/// because both flags are variadic (spike S4).
+pub fn session_args(mcp_file: &Path) -> Vec<String> {
+    let allowed: Vec<String> = SESSION_ALLOWED
+        .iter()
+        .map(|t| format!("mcp__{MCP_SERVER}__{t}"))
+        .collect();
+    vec![
+        format!("--mcp-config={}", mcp_file.display()),
+        format!("--allowedTools={}", allowed.join(",")),
+    ]
+}
+
 /// Writes each file (creating parent directories) through a temp file and a
 /// rename. Secret files are private on Unix.
 pub fn write_files(files: &[SpawnFile]) -> std::io::Result<()> {

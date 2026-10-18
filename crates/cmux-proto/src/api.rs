@@ -42,6 +42,7 @@ pub mod route {
     pub const AGENT_TOOL: &str = "/v1/agent/tool";
 
     // plan: POST accept|pause|resume|cancel; GET/PUT body; POST tasks
+    // DELETE PLANS/{plan}: stop its agents and forget it
     pub fn plan(plan: &str, action: &str) -> String {
         format!("/v1/plans/{plan}/{action}")
     }
@@ -202,8 +203,10 @@ pub struct Created {
 pub struct CreatePlanReq {
     pub title: String,
     pub repos: Vec<RepoSpec>,
-    /// The user's request, given to the executor.
-    pub request: String,
+    /// The user's request for a planner agent. Absent: no agent starts, the
+    /// caller adds the tasks, and accepting the plan starts the executor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -640,7 +643,7 @@ mod tests {
                 path: "/r".into(),
                 base_branch: None,
             }],
-            request: "do it".into(),
+            request: Some("do it".into()),
         });
         rt(PlanBody {
             text: "# plan".into(),

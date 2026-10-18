@@ -441,7 +441,7 @@ mod tests {
                         base_branch: "main".into(),
                         remote_url: None,
                     }],
-                    request: "build".into(),
+                    request: Some("build".into()),
                 },
             },
             1000,
@@ -593,7 +593,7 @@ mod tests {
                     base_branch: "main".into(),
                     remote_url: None,
                 }],
-                request: "x".into(),
+                request: Some("x".into()),
             },
         );
         let plan = st.plans[0].id.clone();

@@ -103,6 +103,7 @@ impl EffectRunner for PersistRunner {
                     self.0.save_plan(p.clone());
                 }
             }
+            Effect::DeletePlan { plan } => self.0.delete_plan(plan.clone()),
             Effect::PersistGlobals => {}
             _ => return false,
         }
@@ -509,7 +510,7 @@ mod tests {
                 base_branch: "main".into(),
                 remote_url: None,
             }],
-            request: "do".into(),
+            request: Some("do".into()),
         }
     }
 

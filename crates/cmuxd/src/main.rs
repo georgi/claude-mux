@@ -41,8 +41,12 @@ enum Cmd {
     },
     /// Claude Code hook entry point; always exits 0.
     Hook { event: Option<String> },
-    /// Stdio MCP server for an agent.
-    Mcp,
+    /// Stdio MCP server for an agent, or with `--session` for a plain Claude
+    /// session (plan tools).
+    Mcp {
+        #[arg(long)]
+        session: bool,
+    },
     /// Check the installation (not yet implemented).
     Doctor,
 }
@@ -81,8 +85,12 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Cmd::Mcp => {
-            cmuxd::agent::mcp::run()?;
+        Cmd::Mcp { session } => {
+            if session {
+                cmuxd::agent::session::run()?;
+            } else {
+                cmuxd::agent::mcp::run()?;
+            }
             Ok(ExitCode::SUCCESS)
         }
         Cmd::Doctor => {

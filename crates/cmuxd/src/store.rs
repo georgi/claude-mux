@@ -242,6 +242,15 @@ impl Store {
         write_json(&self.dir.join("inbox.json"), inbox)
     }
 
+    /// Removes the plan's directory. A missing directory is not an error.
+    pub fn delete_plan(&self, plan: &PlanId) -> Result<(), StoreError> {
+        let dir = self.plan_dir(plan);
+        match fs::remove_dir_all(&dir) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(StoreError::Io(dir, e)),
+            _ => Ok(()),
+        }
+    }
+
     /// Appends one line to the plan's journal (or the global one).
     pub fn append_journal(&self, plan: Option<&PlanId>, line: &str) -> Result<(), StoreError> {
         let dir = plan.map_or_else(|| self.dir.clone(), |p| self.plan_dir(p));
@@ -309,6 +318,7 @@ enum Msg {
     Plan(Box<Plan>),
     Globals(Box<(Globals, InboxFile)>),
     Journal(Option<PlanId>, String),
+    DeletePlan(PlanId),
     Flush(mpsc::Sender<()>),
     /// Flush, release the data directory and end the thread.
     Close(mpsc::Sender<()>),
@@ -348,6 +358,12 @@ impl StoreWriter {
     /// One journal line, appended as soon as the thread gets to it.
     pub fn journal(&self, plan: Option<PlanId>, line: String) {
         let _ = self.tx.send(Msg::Journal(plan, line));
+    }
+
+    /// Drops a queued snapshot of the plan and removes its directory, after
+    /// everything queued before it.
+    pub fn delete_plan(&self, plan: PlanId) {
+        let _ = self.tx.send(Msg::DeletePlan(plan));
     }
 
     /// Flushes, then ends the writer thread and releases its hold on the
@@ -411,6 +427,12 @@ fn writer_loop(store: Arc<Store>, rx: mpsc::Receiver<Msg>, debounce: Duration) {
             Ok(Msg::Journal(plan, line)) => {
                 if let Err(e) = store.append_journal(plan.as_ref(), &line) {
                     tracing::error!(target: "store", "journal failed: {e}");
+                }
+            }
+            Ok(Msg::DeletePlan(plan)) => {
+                p.plans.remove(&plan);
+                if let Err(e) = store.delete_plan(&plan) {
+                    tracing::error!(target: "store", "delete plan failed: {e}");
                 }
             }
             Ok(Msg::Flush(ack)) => {
@@ -495,6 +517,26 @@ mod tests {
             })
             .count();
         assert_eq!(strays, 0);
+    }
+
+    #[test]
+    fn delete_plan_drops_the_queued_snapshot_and_the_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(tmp.path()).unwrap());
+        let w = StoreWriter::start(store.clone());
+        let (keep, gone) = (plan("keep"), plan("gone"));
+        w.save_plan(keep.clone());
+        w.save_plan(gone.clone());
+        w.flush();
+        w.journal(Some(gone.id.clone()), r#"{"k":1}"#.into());
+        w.save_plan(gone.clone());
+        w.delete_plan(gone.id.clone());
+        w.flush();
+        assert!(!store.plan_dir(&gone.id).exists());
+        assert!(store.plan_dir(&keep.id).join("state.json").exists());
+        let back = store.load().unwrap();
+        assert_eq!(back.plans.len(), 1);
+        assert_eq!(back.plans[0].id, keep.id);
     }
 
     #[test]

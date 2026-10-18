@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use cmux_core::engine::{ClientAction, Reply, TaskPatch};
 use cmux_core::ids::{AgentId, ItemId, PlanId, TaskId};
@@ -33,6 +33,7 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/plans/{plan}/pause", post(pause))
         .route("/v1/plans/{plan}/resume", post(resume))
         .route("/v1/plans/{plan}/cancel", post(cancel))
+        .route("/v1/plans/{plan}", delete(delete_plan))
         .route("/v1/plans/{plan}/body", get(get_body).put(put_body))
         .route("/v1/plans/{plan}/tasks", post(create_task))
         .route("/v1/tasks/{plan}/{task}", get(get_task).patch(patch_task))
@@ -215,6 +216,7 @@ plan_action!(accept, AcceptPlan);
 plan_action!(pause, PausePlan);
 plan_action!(resume, ResumePlan);
 plan_action!(cancel, CancelPlan);
+plan_action!(delete_plan, DeletePlan);
 
 async fn require_plan(app: &AppState, plan: &PlanId) -> ApiResult<PathBuf> {
     let id = plan.clone();

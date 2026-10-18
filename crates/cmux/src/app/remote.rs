@@ -1015,11 +1015,6 @@ impl App {
                     Mode::Board
                 };
             }
-            Key::Char('N') => self.tree_intent(TreeIntent::NewPlan),
-            Key::Char('T') => match self.remote.as_ref().and_then(|r| r.plan.clone()) {
-                Some(p) => self.tree_intent(TreeIntent::NewTask(p)),
-                None => self.flash("no plan"),
-            },
             Key::Char('P') => self.next_plan(),
             Key::Char('B') => {
                 if let Some(r) = self.remote.as_mut() {
@@ -1114,31 +1109,13 @@ impl App {
             let Some(r) = self.remote.as_ref() else {
                 return;
             };
-            let repo = self.default_repo();
-            action_for(&r.mirror.sv, &repo, i)
+            action_for(&r.mirror.sv, i)
         };
         if matches!(action, Action::Back) {
             self.set_tree_focus(false);
         } else {
             self.do_action(action);
         }
-    }
-
-    /// Pre-fill for the new-plan form: the current plan's first repository,
-    /// else the focused pane's directory (a path on the server).
-    fn default_repo(&self) -> String {
-        let r = self.remote.as_ref();
-        r.and_then(|r| {
-            let plan = r.vs.current_plan(&r.mirror.sv)?;
-            let repo = r.mirror.sv.plan(plan)?.repos.first()?;
-            Some(repo.path.display().to_string())
-        })
-        .or_else(|| {
-            self.windows
-                .get(self.active)
-                .map(|w| w.pane().cwd.display().to_string())
-        })
-        .unwrap_or_default()
     }
 
     pub(crate) fn do_action(&mut self, action: Action) {
@@ -1542,7 +1519,6 @@ pub const REMOTE_HELP: &[(&str, &str)] = &[
     ("a  M-a  M-A", "needs-you overlay / next / previous item"),
     ("m", "message the focused agent"),
     ("v", "board view of the plan"),
-    ("N  T", "new plan / new task"),
     ("P  B", "next plan / hide or show the tree"),
     ("=", "take over this terminal's size"),
 ];

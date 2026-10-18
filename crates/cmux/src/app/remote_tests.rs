@@ -320,6 +320,13 @@ fn stop_and_cancel_ask_first() {
             json!({"state": "cancelled"}),
         )]
     );
+
+    rig.keys(b"X");
+    rig.keys(b"y");
+    assert_eq!(
+        rig.take_calls(),
+        [Call::Delete(format!("/v1/plans/{}", plan()))]
+    );
 }
 
 #[test]
@@ -348,45 +355,6 @@ fn messages_queue_or_steer() {
         rig.take_calls(),
         [post(path, json!({"text": "stop that", "steer": true}))]
     );
-}
-
-#[test]
-fn new_plan_and_task_forms_post_their_requests() {
-    let mut rig = Rig::new(120, 30);
-    rig.app.set_tree_focus(true);
-    rig.keys(b"n");
-    assert!(matches!(rig.app.mode, Mode::Form));
-    rig.keys(b"ship it\t");
-    rig.keys(b"\x15/srv/api\t");
-    rig.keys(b"do the thing\x1b\r");
-    assert_eq!(
-        rig.take_calls(),
-        [post(
-            "/v1/plans",
-            json!({
-                "title": "ship it",
-                "repos": [{"path": "/srv/api", "base_branch": null}],
-                "request": "do the thing",
-            })
-        )]
-    );
-
-    rig.select(Node::Plan(plan()));
-    rig.keys(b"t");
-    rig.keys(b"fix login\x1b\r");
-    let calls = rig.take_calls();
-    assert_eq!(calls.len(), 1, "{calls:?}");
-    let Call::Post(path, body) = &calls[0] else {
-        panic!("{calls:?}")
-    };
-    assert_eq!(path, &format!("/v1/plans/{}/tasks", plan()));
-    assert_eq!(body["title"], "fix login");
-
-    // Escape cancels a form without a call.
-    rig.keys(b"n");
-    rig.keys(b"\x1b");
-    assert!(rig.calls().is_empty());
-    assert!(matches!(rig.app.mode, Mode::Tree));
 }
 
 #[test]

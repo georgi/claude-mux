@@ -208,6 +208,8 @@ keybind = cmd+ctrl+j=text:\x02\x1b[1;3B
 keybind = cmd+ctrl+k=text:\x02\x1b[1;3A
 keybind = cmd+ctrl+l=text:\x02\x1b[1;3C
 keybind = cmd+shift+enter=text:\x02z
+# Plans (server mode): focus the plan tree, or go back to the pane
+keybind = cmd+b=text:\x02\t
 # Shell, lazygit, new session in another directory, session picker, tabs with an alert
 keybind = cmd+shift+t=text:\x02t
 keybind = cmd+g=text:\x02g
@@ -236,6 +238,7 @@ keybind = shift+enter=text:\n
 | `Cmd-Alt-h` `j` `k` `l`         | Go to the pane left / down / up / right   |
 | `Cmd-Ctrl-h` `j` `k` `l`        | Resize the pane by 5 cells                |
 | `Cmd-Shift-Enter`               | Zoom the pane                             |
+| `Cmd-b`                         | Focus the plan tree, or go back (server)  |
 | `Cmd-w` / `Cmd-Shift-w`         | Stop the pane's session / quit cmux       |
 
 The bindings send `Ctrl-b` (`\x02`). If you use another prefix, change `\x02` to the matching control byte, for example `\x01` for `Ctrl-a`. The bindings apply to every Ghostty window, also when cmux does not run. Put them in a separate file and load it with `config-file` if you want to switch them on and off.
@@ -308,10 +311,10 @@ Every key in [Keys](#keys) works on a server, with these differences:
 
 A plan is a workspace, a task is a tab and a sub-agent is a pane. The plan tree sits on the left. `prefix Tab` focuses it: `jk` moves, `Enter` opens, `Esc` goes back.
 
+To make a plan, open a Claude session with `prefix c` and ask for one, for example "plan a retry layer for the API client". The server gives each Claude session the cmux plan tools: `create_plan`, `create_task`, `update_task`, `get_plan`, `get_task`, `list_plans` and `accept_plan`. Claude writes the plan and its tasks as a draft, and no agent starts. Review the plan in the tree, then push `A` to accept it, or tell Claude to start it. Then the executor starts the tasks.
+
 | Key                  | Action                                                                                                  |
 |----------------------|---------------------------------------------------------------------------------------------------------|
-| `prefix N`           | New plan                                                                                                |
-| `prefix T`           | New task in the current plan                                                                            |
 | `A` (in the tree)    | Accept the plan and start it, or accept a task                                                          |
 | `prefix m`           | Message the focused agent. `Enter` queues it for the end of the turn, `Alt-Enter` steers now           |
 | `prefix v`           | Board view of the plan                                                                                  |
@@ -319,7 +322,7 @@ A plan is a workspace, a task is a tab and a sub-agent is a pane. The plan tree 
 | `prefix a`           | Needs-you overlay: `y` allow (or accept a plan), `Y` allow always, `n` deny (or send a plan back), `r` reply to a question, `d` dismiss, `Enter` jump to the agent |
 | `prefix M-a` / `M-A` | Next / previous item that needs you                                                                     |
 
-In the tree the other keys act on the selected node: `n` new plan, `t` new task, `S` pause or resume a plan, `s` message, `x` stop, `c` cancel a task, `o` open its PR, `g` lazygit and `D` diff in its worktree.
+In the tree the other keys act on the selected node: `S` pause or resume a plan, `s` message, `x` stop, `c` cancel a task, `X` delete the plan (it stops the plan's agents first), `o` open its PR, `g` lazygit and `D` diff in its worktree.
 
 ## Development
 

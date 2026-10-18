@@ -191,7 +191,7 @@ impl Ctx<'_> {
         &mut self,
         title: String,
         repos: Vec<crate::model::Repo>,
-        request: String,
+        request: Option<String>,
     ) -> Result<Reply, EngineError> {
         if title.trim().is_empty() {
             return err(ErrorKind::Invalid, "a plan needs a title");
@@ -202,7 +202,9 @@ impl Ctx<'_> {
                 "a plan needs at least one repository; repos[0] is where the executor runs",
             );
         }
-        self.check_global_slot()?;
+        if request.is_some() {
+            self.check_global_slot()?;
+        }
         let (y, m, d) = civil_date(self.now);
         let mut id = PlanId::new(y, m, d, &title);
         let mut n = 1;
@@ -217,6 +219,9 @@ impl Ctx<'_> {
         let cwd = repos[0].path.clone();
         self.st.plans.push(Plan::new(id.clone(), title, repos));
         self.touch(Change::Plan(id.clone()));
+        let Some(request) = request else {
+            return Ok(Reply::Text(id.to_string()));
+        };
         let pi = self.st.plans.len() - 1;
         let ai = self.register(pi, AgentId::new(id.clone(), AgentPath::Executor), cwd);
         let plan_file = self.plan_file(pi).display().to_string();
@@ -231,7 +236,7 @@ impl Ctx<'_> {
 
     // ---- limits ----
 
-    fn check_global_slot(&self) -> Result<(), EngineError> {
+    pub fn check_global_slot(&self) -> Result<(), EngineError> {
         let (n, max) = (self.live_processes(), self.st.global_limits.live_processes);
         if n >= max {
             return err(
@@ -582,6 +587,11 @@ impl Ctx<'_> {
     pub fn hand_executor_kickoff(&mut self, pi: usize, kickoff: String) {
         let id = AgentId::new(self.plan(pi).id.clone(), AgentPath::Executor);
         let Ok((_, ai)) = self.agent_idx(&id) else {
+            // A plan the client wrote itself has no executor yet.
+            let cwd = self.plan(pi).repos[0].path.clone();
+            let ai = self.register(pi, id, cwd);
+            let fx = self.spawn_fx(pi, ai, false, kickoff);
+            self.fx.push(fx);
             return;
         };
         if self.agent(pi, ai).is_live() || self.resume_agent(&id, Some(kickoff.clone())).is_err() {
@@ -658,7 +668,14 @@ impl Ctx<'_> {
                 session_id,
                 token_hash,
             } => {
-                let (pi, ai) = self.agent_idx(&agent)?;
+                // The plan was deleted while the process started.
+                let Ok((pi, ai)) = self.agent_idx(&agent) else {
+                    self.fx.push(Effect::KillAgent {
+                        agent,
+                        term: Some(term),
+                    });
+                    return Ok(());
+                };
                 if self.agent(pi, ai).life == Life::Stopped {
                     self.fx.push(Effect::KillAgent {
                         agent,
