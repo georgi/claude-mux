@@ -44,6 +44,7 @@ axum-server = ["dep:axum-server"]
 [dev-dependencies]
 tokio-tungstenite = "0.29.0"
 http-body-util = "0.1.5"
+insta = "1.49.0"
 libc = "0.2.191"
 tempfile = "3.27.0"
 tower = { version = "0.5.3", features = ["util"] }

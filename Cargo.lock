@@ -444,6 +444,7 @@ dependencies = [
  "cmux-proto",
  "futures-util",
  "http-body-util",
+ "insta",
  "libc",
  "portable-pty",
  "qrcode",

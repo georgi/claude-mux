@@ -9,6 +9,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint the workflows
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
+
   check:
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

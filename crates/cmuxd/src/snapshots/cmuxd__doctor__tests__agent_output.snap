@@ -1,0 +1,69 @@
+---
+source: crates/cmuxd/src/doctor.rs
+expression: out
+---
+agent P-20261018-doctor-test/T-0003
+  life:      running
+  activity:  needs_permission
+  report:    blocked (attempt 1): waiting for the API key…
+  session:   0b5c-session
+  cwd:       /work/T-0003
+  tokens:    1200 in, 340 out, 0 cache read, 0 cache write
+
+pending items for it: 1
+  I-1 message, human -> P-20261018-doctor-test/T-0003: please rebase on main
+pending items from it: 2
+  I-2 permission for Bash, P-20261018-doctor-test/T-0003 -> human: Bash: rm -rf target
+  I-3 question, P-20261018-doctor-test/T-0003 -> P-20261018-doctor-test/executor: Which base branch?
+
+last 50 diagnostics lines:
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":10,"tool":"add_note","ts":1010}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":11,"tool":"add_note","ts":1011}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":12,"tool":"add_note","ts":1012}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":13,"tool":"add_note","ts":1013}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":14,"tool":"add_note","ts":1014}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":15,"tool":"add_note","ts":1015}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":16,"tool":"add_note","ts":1016}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":17,"tool":"add_note","ts":1017}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":18,"tool":"add_note","ts":1018}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":19,"tool":"add_note","ts":1019}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":20,"tool":"add_note","ts":1020}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":21,"tool":"add_note","ts":1021}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":22,"tool":"add_note","ts":1022}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":23,"tool":"add_note","ts":1023}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":24,"tool":"add_note","ts":1024}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":25,"tool":"add_note","ts":1025}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":26,"tool":"add_note","ts":1026}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":27,"tool":"add_note","ts":1027}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":28,"tool":"add_note","ts":1028}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":29,"tool":"add_note","ts":1029}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":30,"tool":"add_note","ts":1030}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":31,"tool":"add_note","ts":1031}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":32,"tool":"add_note","ts":1032}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":33,"tool":"add_note","ts":1033}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":34,"tool":"add_note","ts":1034}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":35,"tool":"add_note","ts":1035}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":36,"tool":"add_note","ts":1036}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":37,"tool":"add_note","ts":1037}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":38,"tool":"add_note","ts":1038}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":39,"tool":"add_note","ts":1039}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":40,"tool":"add_note","ts":1040}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":41,"tool":"add_note","ts":1041}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":42,"tool":"add_note","ts":1042}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":43,"tool":"add_note","ts":1043}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":44,"tool":"add_note","ts":1044}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":45,"tool":"add_note","ts":1045}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":46,"tool":"add_note","ts":1046}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":47,"tool":"add_note","ts":1047}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":48,"tool":"add_note","ts":1048}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":49,"tool":"add_note","ts":1049}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":50,"tool":"add_note","ts":1050}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":51,"tool":"add_note","ts":1051}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":52,"tool":"add_note","ts":1052}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":53,"tool":"add_note","ts":1053}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":54,"tool":"add_note","ts":1054}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":55,"tool":"add_note","ts":1055}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":56,"tool":"add_note","ts":1056}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":57,"tool":"add_note","ts":1057}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":58,"tool":"add_note","ts":1058}
+  {"agent":"P-20261018-doctor-test/T-0003","event":"agent_tool","level":"info","ms":59,"tool":"add_note","ts":1059}
