@@ -37,9 +37,19 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// What to run for a request.
-fn spec_for(req: &CreateTerminalReq, cwd: PathBuf, rows: u16, cols: u16) -> ApiResult<PtySpec> {
+fn spec_for(
+    req: &CreateTerminalReq,
+    claude_bin: &str,
+    cwd: PathBuf,
+    rows: u16,
+    cols: u16,
+) -> ApiResult<PtySpec> {
     let mut spec = match &req.kind {
-        NewTerminalKind::Claude => PtySpec::new("claude", &[]),
+        NewTerminalKind::Claude { args } => {
+            let mut s = PtySpec::new(claude_bin, &[]);
+            s.args = args.clone();
+            s
+        }
         NewTerminalKind::Shell => {
             let shell = std::env::var("SHELL")
                 .ok()
@@ -97,7 +107,7 @@ async fn create(
         req.rows.unwrap_or(DEFAULT_ROWS).max(1),
         req.cols.unwrap_or(DEFAULT_COLS).max(1),
     );
-    let spec = spec_for(&req, cwd.clone(), rows, cols)?;
+    let spec = spec_for(&req, &app.config.agents.claude_bin, cwd.clone(), rows, cols)?;
     let reply = app
         .actor
         .client(

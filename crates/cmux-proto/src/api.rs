@@ -31,6 +31,8 @@ pub mod route {
     /// axum 0.8 capture syntax (`{id}`), so servers can register it as is.
     pub const ITEMS_ANSWER: &str = "/v1/items/{id}/answer";
     pub const TERMINALS: &str = "/v1/terminals";
+    /// `GET`: the server user's Claude sessions (`~/.claude/projects`).
+    pub const PROJECTS: &str = "/v1/projects";
     pub const PAIR_START: &str = "/v1/pair/start";
     pub const PAIR_COMPLETE: &str = "/v1/pair/complete";
     pub const DEVICES: &str = "/v1/devices";
@@ -331,8 +333,12 @@ impl AnswerReq {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NewTerminalKind {
-    /// A plain interactive Claude.
-    Claude,
+    /// A plain interactive Claude; `args` are extra arguments such as
+    /// `--resume ID`.
+    Claude {
+        #[serde(default)]
+        args: Vec<String>,
+    },
     /// The user's login shell.
     Shell,
     /// An argv, shown with `label` (or its first word).
@@ -361,7 +367,7 @@ impl NewTerminalKind {
     /// The model's kind for the terminal this request creates.
     pub fn term_kind(&self) -> TermKind {
         match self {
-            NewTerminalKind::Claude => TermKind::Claude,
+            NewTerminalKind::Claude { .. } => TermKind::Claude,
             NewTerminalKind::Shell => TermKind::Shell,
             NewTerminalKind::Command { argv, label } => TermKind::Command(
                 label
@@ -374,6 +380,28 @@ impl NewTerminalKind {
 }
 
 pub type CreateTerminalResp = TerminalView;
+
+/// One past Claude session of the server user, from its transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub id: String,
+    pub cwd: String,
+    pub title: String,
+    #[serde(default)]
+    pub first_prompt: Option<String>,
+    #[serde(default)]
+    pub last_prompt: Option<String>,
+    /// Last modification, seconds since the Unix epoch.
+    pub modified: u64,
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+/// `GET /projects`: newest session first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectsResp {
+    pub sessions: Vec<SessionSummary>,
+}
 
 /// `GET /terminals/:id/scrollback?lines=`: plain text lines of the history
 /// above the visible screen, oldest first.

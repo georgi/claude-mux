@@ -7,6 +7,7 @@ edition.workspace = true
 anyhow = "1.0.104"
 cmux-core = { path = "../cmux-core" }
 cmux-proto = { path = "../cmux-proto" }
+cmux-history = { path = "../cmux-history" }
 libc = "0.2.190"
 portable-pty = "0.9.0"
 ratatui = "0.30"

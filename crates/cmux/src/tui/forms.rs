@@ -303,6 +303,7 @@ impl NewTaskForm {
         }
     }
 
+    #[allow(dead_code)] // accessor
     pub fn plan(&self) -> &PlanId {
         &self.plan
     }
@@ -396,6 +397,7 @@ impl MessageForm {
         }
     }
 
+    #[allow(dead_code)] // accessor
     pub fn agent(&self) -> &AgentId {
         &self.agent
     }

@@ -130,6 +130,10 @@ pub struct Pane {
     pub last_output: Instant,
     pub branch: Option<String>,
     pub kind: Kind,
+    /// Remote panes: the agent behind the terminal, for its status glyph.
+    pub agent: Option<cmux_proto::view::AgentId>,
+    /// Remote panes: the name the server state gives the pane.
+    pub label: Option<String>,
 }
 
 /// Where a pane's bytes come from and go to.
@@ -141,7 +145,6 @@ enum Backend {
         child: Box<dyn Child + Send + Sync>,
     },
     /// A terminal of a cmuxd server, streamed over the protocol.
-    #[allow(dead_code)] // constructed by the client integration
     Remote(RemoteTerm),
 }
 
@@ -255,13 +258,14 @@ impl Pane {
             attention: false,
             last_output: Instant::now(),
             branch,
+            agent: None,
+            label: None,
         })
     }
 
     /// A pane showing a terminal of a cmuxd server. The parser and dirty flag
     /// are the ones the connection thread feeds; draw code reads them as it
     /// does for a local PTY.
-    #[allow(dead_code)] // used by the client integration
     pub fn remote(id: u64, term: RemoteTerm, kind: Kind, cwd: PathBuf) -> Pane {
         Pane {
             id,
@@ -278,11 +282,12 @@ impl Pane {
             attention: false,
             last_output: Instant::now(),
             branch: None,
+            agent: None,
+            label: None,
         }
     }
 
     /// The remote terminal behind this pane, if it is one.
-    #[allow(dead_code)] // used by the client integration
     pub fn remote_term(&self) -> Option<&RemoteTerm> {
         match &self.backend {
             Backend::Remote(t) => Some(t),
@@ -350,6 +355,9 @@ impl Pane {
     /// Display name: the terminal title the program sets, else the directory
     /// name (Claude) or the program label.
     pub fn name(&self) -> String {
+        if let Some(l) = self.label.as_deref().filter(|l| !l.is_empty()) {
+            return l.to_string();
+        }
         match &self.kind {
             Kind::Claude => {}
             Kind::Shell | Kind::Command(_) => {

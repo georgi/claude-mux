@@ -76,6 +76,12 @@ impl RemoteTerm {
         self.handle.focus(self.term);
     }
 
+    /// Tells the server this client's size and so makes it the size owner,
+    /// even when the size did not change (`prefix =`, or a first attach).
+    pub fn announce_size(&self) {
+        self.handle.resize(self.term, self.size.0, self.size.1);
+    }
+
     /// (rows, cols) as last requested by this client.
     pub fn size(&self) -> (u16, u16) {
         self.size
@@ -87,6 +93,7 @@ impl RemoteTerm {
         self.exited
     }
 
+    #[allow(dead_code)] // agent life is read from the state instead
     pub fn set_exited(&mut self, exited: bool) {
         self.exited = exited;
     }

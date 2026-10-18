@@ -10,6 +10,7 @@ base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 cmux-core = { path = "../cmux-core" }
 cmux-proto = { path = "../cmux-proto" }
+cmux-history = { path = "../cmux-history" }
 futures-util = { version = "0.3.31", default-features = false, features = ["sink", "std"] }
 libc = "0.2.191"
 portable-pty = "0.9.0"

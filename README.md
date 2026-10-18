@@ -115,7 +115,7 @@ cmux uses the tmux default key table. A tab is a tmux window, and a tab can hold
 | `<` / `>`      |                      | Move the tab                                     |
 | `:`            | `command-prompt`     | Run a command                                    |
 | `i`            | `display-message`    | Show pid and session id                          |
-| `d`            |                      | Quit (cmux has no server, so no detach)          |
+| `d`            | `detach-client`      | Quit (with a server: detach, agents keep running) |
 | `?`            | `list-keys`          | Help                                             |
 
 ### Session picker
@@ -237,6 +237,32 @@ keybind = shift+enter=text:\n
 | `Cmd-w` / `Cmd-Shift-w`         | Stop the pane's session / quit cmux       |
 
 The bindings send `Ctrl-b` (`\x02`). If you use another prefix, change `\x02` to the matching control byte, for example `\x01` for `Ctrl-a`. The bindings apply to every Ghostty window, also when cmux does not run. Put them in a separate file and load it with `config-file` if you want to switch them on and off.
+
+## Server mode (cmuxd)
+
+`cmuxd serve` runs plans, agents and terminals on a Linux box and keeps them running when no client is attached. `cmux` attaches to it:
+
+```sh
+cmuxd serve                      # on the box (local socket, no token)
+cmux                             # attaches to the local socket if cmuxd listens there
+cmux login https://box.example   # pair a laptop (one-time code), then:
+cmux -s box                      # attach to a named server; `--local` forces plain claude-mux
+```
+
+Every key above works against the server, with these differences: `prefix d` **detaches** (the server keeps every agent running; run `cmux` again to re-attach), `c`/`t`/`g`/`%`/`"` start Claude, a shell or lazygit on the server, `x`/`&` stop the agent or close the terminal there, and `s` lists the server's `~/.claude/projects`. A plan is a workspace, a task a tab and a sub-agent a pane. The left column is the plan tree (a 3-column strip below 100 columns; `prefix Tab` shows it in full):
+
+| Key | Action |
+|---|---|
+| `prefix Tab` | Focus the tree / back to the pane |
+| `prefix e` / `u` | Go to the plan's executor / up one level |
+| `prefix a`, `M-a`, `M-A` | Needs-you overlay (`y` allow, `Y` always, `n` deny, `r` reply, `d` dismiss), next / previous item |
+| `prefix m` | Message the focused agent (`Enter` queues, `Alt-Enter` steers) |
+| `prefix v` | Board view of the plan |
+| `prefix N` / `T` | New plan / new task |
+| `prefix P` / `B` | Next plan / hide or show the tree |
+| `prefix =` | Take over the terminal's size from another client (`⇲ 120×40` marks a pane another client sized) |
+
+In the tree: `jk`/arrows move, `Enter` opens, `Space` previews, `n` new plan, `t` new task, `A` accept (plan or task), `S` pause or resume the plan, `s` message, `x` stop, `R` resume, `c` cancel, `o` open the PR, `g` lazygit and `D` diff in the task's worktree, `v` board, `i` needs you, `Esc` back. The mouse works on the tree too: click a row to show its window, double-click to focus the pane.
 
 ## How it works
 

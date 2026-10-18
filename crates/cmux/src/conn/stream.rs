@@ -70,6 +70,7 @@ impl ConnStatus {
         self as u8
     }
 
+    #[allow(dead_code)] // connection API used by tests and later steps
     fn from_u8(v: u8) -> ConnStatus {
         match v {
             0 => ConnStatus::Connected,
@@ -289,10 +290,12 @@ impl Session {
     }
 
     /// The offset after the last byte applied to `term`.
+    #[allow(dead_code)] // connection API used by tests and later steps
     pub fn next_seq(&self, term: TermId) -> Option<u64> {
         self.terms.get(&term).copied().flatten()
     }
 
+    #[allow(dead_code)] // connection API used by tests and later steps
     pub fn wanted(&self) -> Vec<TermId> {
         self.terms.keys().copied().collect()
     }
@@ -889,10 +892,12 @@ impl ConnHandle {
         (h, rx)
     }
 
+    #[allow(dead_code)] // connection API used by tests and later steps
     pub fn status(&self) -> ConnStatus {
         ConnStatus::from_u8(self.status.load(Ordering::Acquire))
     }
 
+    #[allow(dead_code)] // connection API used by tests and later steps
     pub fn terms(&self) -> &TermTable {
         &self.terms
     }
@@ -928,6 +933,7 @@ impl ConnHandle {
 
     /// Drops the socket and reconnects at once (no backoff wait is skipped:
     /// the first retry delay is 250 ms).
+    #[allow(dead_code)] // connection API used by tests and later steps
     pub fn reconnect(&self) {
         let _ = self.cmds.send(Cmd::Reconnect);
     }
@@ -966,6 +972,7 @@ impl Connection {
         self.handle.clone()
     }
 
+    #[allow(dead_code)] // connection API used by tests and later steps
     pub fn status(&self) -> ConnStatus {
         self.handle.status()
     }

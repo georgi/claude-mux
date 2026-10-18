@@ -633,7 +633,28 @@ impl Conn {
     }
 
     async fn term(&self, id: TermId) -> Option<Arc<Terminal>> {
-        self.app.hub.get_term(id)
+        if let Some(t) = self.app.hub.get_term(id) {
+            return Some(t);
+        }
+        // The engine registers a terminal (and tells clients) before its PTY
+        // exists: a client that reacts to the state delta at once would
+        // otherwise be told "no terminal". Give the PTY a moment.
+        let known = self
+            .app
+            .actor
+            .query(move |s| s.terminals.contains_key(&id))
+            .await
+            .ok()?;
+        if !known {
+            return None;
+        }
+        for _ in 0..200 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            if let Some(t) = self.app.hub.get_term(id) {
+                return Some(t);
+            }
+        }
+        None
     }
 
     async fn no_term(&self, id: TermId) -> bool {

@@ -8,10 +8,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, PromptKind};
 use crate::history::{self, tilde};
 use crate::keys::prefix_name;
 use crate::pane::{Kind, Pane, Status};
+use crate::tui::draw::{board, form, inbox, tree};
+use crate::tui::remote::ActiveForm;
+use crate::tui::{marks, theme};
 use crate::window::Window;
 
 const ACCENT: Color = Color::Rgb(217, 119, 87); // Claude orange
@@ -26,10 +29,14 @@ pub fn draw(f: &mut Frame, app: &App) {
         return;
     }
     let top = Rect { height: 1, ..area };
-    let body = Rect {
+    let screen_body = Rect {
         y: 1,
         height: area.height - 2,
         ..area
+    };
+    let body = match &app.remote {
+        Some(r) => r.pane_area(screen_body),
+        None => screen_body,
     };
     let bottom = Rect {
         y: area.height - 1,
@@ -40,7 +47,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_tabs(f, app, top);
     draw_status(f, app, bottom);
 
-    if let Some(w) = app.windows.get(app.active) {
+    if app.remote.is_some() {
+        draw_remote_body(f, app, screen_body, body);
+    } else if let Some(w) = app.windows.get(app.active) {
         draw_window(f, app, w, body);
     }
 
@@ -48,10 +57,62 @@ pub fn draw(f: &mut Frame, app: &App) {
         Mode::Picker => draw_picker(f, app, body),
         Mode::Help => draw_help(f, app, body),
         Mode::Windows { query, selected } => draw_windows(f, app, body, query, *selected),
+        Mode::Prompt(p) if p.kind == PromptKind::ConfirmRemote => {}
         Mode::Prompt(p) => {
             let x = bottom.x + p.kind.label().width() as u16 + 3 + p.input.width() as u16;
             if x < bottom.width {
                 f.set_cursor_position(Position { x, y: bottom.y });
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Remote mode: the tree, then the window or the board, then the overlays.
+fn draw_remote_body(f: &mut Frame, app: &App, full: Rect, body: Rect) {
+    let Some(r) = &app.remote else { return };
+    let sv = &r.mirror.sv;
+    let tree_focused = matches!(app.mode, Mode::Tree);
+    if let Some(rect) = r.tree_rect(full) {
+        let mode = tree::tree_mode(full.width);
+        tree::render_tree(f.buffer_mut(), rect, sv, &r.vs, mode);
+    }
+    if matches!(app.mode, Mode::Board) {
+        f.render_widget(Clear, body);
+        if let Some(plan) = r.plan.as_ref().or_else(|| r.vs.current_plan(sv)) {
+            board::render_board(f.buffer_mut(), body, sv, &r.vs, plan);
+        }
+    } else if let Some(w) = app.windows.get(app.active) {
+        draw_window(f, app, w, body);
+    } else {
+        let msg = if sv.plans.is_empty() && sv.terminals.is_empty() {
+            "nothing on this server yet - n new plan, prefix c new Claude, prefix t shell"
+        } else {
+            "no windows yet - open a node of the tree"
+        };
+        f.render_widget(
+            Paragraph::new(Line::styled(msg, Style::default().fg(DIM))),
+            Rect {
+                x: body.x + 1,
+                y: body.y + 1,
+                width: body.width.saturating_sub(2),
+                height: 1.min(body.height),
+            },
+        );
+    }
+    // A strip or hidden tree with focus is drawn full, over the body.
+    if tree_focused && let Some(rect) = r.overlay_rect(full) {
+        f.render_widget(Clear, rect);
+        tree::render_tree(f.buffer_mut(), rect, sv, &r.vs, tree::TreeMode::Full);
+    }
+    match &app.mode {
+        Mode::Inbox => inbox::render_inbox(f.buffer_mut(), full, sv, &r.vs),
+        Mode::Form => {
+            if let Some(form_state) = &r.form
+                && let Some(pos) =
+                    form::render_form(f.buffer_mut(), full, form_state as &ActiveForm)
+            {
+                f.set_cursor_position(pos);
             }
         }
         _ => {}
@@ -146,7 +207,17 @@ fn draw_pane_header(
         status_glyph(app, pane).patch_style(Style::default().bg(style.bg.unwrap_or(BAR_BG))),
         Span::styled(format!(" {name} "), style),
     ];
-    let used = 4 + name.width();
+    let mut used = 4 + name.width();
+    if let Some(r) = &app.remote
+        && let (Some(t), Some(me)) = (pane.remote_term(), r.mirror.client_id.as_ref())
+        && let Some(mark) = marks::size_mark(&r.mirror.sv, t.term, me)
+    {
+        used += mark.width() + 1;
+        spans.push(Span::styled(
+            format!("{mark} "),
+            Style::default().bg(BAR_BG).fg(theme::AMBER),
+        ));
+    }
     if scrolled > 0 {
         spans.push(Span::styled(
             format!(" +{scrolled} "),
@@ -235,7 +306,17 @@ fn truncate(s: &str, max: usize) -> String {
     out
 }
 
+fn glyph_span(app: &App, g: cmux_core::glyph::Glyph) -> Span<'static> {
+    Span::styled(
+        theme::glyph_char(g, app.tick as usize).to_string(),
+        Style::default().fg(theme::glyph_color(g)),
+    )
+}
+
 fn status_glyph(app: &App, t: &Pane) -> Span<'static> {
+    if let Some(g) = app.remote.as_ref().and_then(|r| r.pane_glyph(t)) {
+        return glyph_span(app, g);
+    }
     let spin = SPINNER[(app.tick as usize) % SPINNER.len()];
     if t.attention {
         return Span::styled(
@@ -265,6 +346,9 @@ fn status_glyph(app: &App, t: &Pane) -> Span<'static> {
 /// The glyph of a window: an alert in any pane, else any working Claude
 /// pane, else the focused pane's glyph.
 fn window_glyph(app: &App, w: &Window) -> Span<'static> {
+    if let Some(g) = app.remote.as_ref().and_then(|r| r.window_glyph(w)) {
+        return glyph_span(app, g);
+    }
     let pick = w
         .panes
         .iter()
@@ -294,9 +378,27 @@ fn tab_label(w: &Window, max: usize) -> String {
 
 const BRAND: &str = " cmux ";
 
+/// The first cell of the tab bar: `cmux`, or the server's name with the
+/// connection dot (`●` connected, `◐` reconnecting, `○` offline) and the
+/// workspace.
+pub fn brand(app: &App) -> String {
+    match &app.remote {
+        None => BRAND.to_string(),
+        Some(r) => {
+            let plan = r
+                .plan
+                .as_ref()
+                .and_then(|p| r.mirror.sv.plan(p))
+                .map(|p| format!(" {} ▸", p.title))
+                .unwrap_or_default();
+            format!(" {} {}{plan} ", r.name, r.mirror.status.dot())
+        }
+    }
+}
+
 /// Max name width per tab so that all tabs fit: each tab costs " 1 ● " + name + " ".
 fn tab_name_width(app: &App, width: u16) -> usize {
-    let room = (width as usize).saturating_sub(BRAND.len() + 1);
+    let room = (width as usize).saturating_sub(brand(app).width() + 1);
     (room / app.windows.len().max(1))
         .saturating_sub(6)
         .clamp(4, 28)
@@ -305,7 +407,7 @@ fn tab_name_width(app: &App, width: u16) -> usize {
 /// The tab under column `col` of the tab bar. Mirrors the layout in `draw_tabs`.
 pub fn tab_at(app: &App, col: u16) -> Option<usize> {
     let per_tab = tab_name_width(app, app.cols);
-    let mut x = BRAND.width() + 1;
+    let mut x = brand(app).width() + 1;
     for (i, win) in app.windows.iter().enumerate() {
         let w = format!(" {} ", i + 1).width() + 1 + tab_label(win, per_tab).width();
         if (x..x + w).contains(&(col as usize)) {
@@ -318,11 +420,11 @@ pub fn tab_at(app: &App, col: u16) -> Option<usize> {
 
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     let bar = Style::default().bg(BAR_BG).fg(BAR_FG);
-    let brand = BRAND;
+    let brand = brand(app);
     let per_tab = tab_name_width(app, area.width);
 
     let mut spans = vec![Span::styled(
-        brand,
+        brand.clone(),
         Style::default()
             .bg(ACCENT)
             .fg(Color::Black)
@@ -371,9 +473,19 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
     let mut left: Vec<Span> = Vec::new();
     match &app.mode {
+        Mode::Prompt(p) if p.kind == PromptKind::ConfirmRemote => {
+            left.push(badge(&p.input, ACCENT));
+        }
         Mode::Prompt(p) => {
             left.push(badge(p.kind.label(), ACCENT));
             left.push(Span::styled(format!(" {}", p.input), bar.fg(Color::White)));
+        }
+        Mode::Prefix if app.remote.is_some() => {
+            left.push(badge(&pfx, ACCENT));
+            left.push(Span::styled(
+                " d detach · Tab tree · c new · % \" split · a needs you · v board · N plan · = size · ? keys",
+                bar.fg(DIM),
+            ));
         }
         Mode::Prefix => {
             left.push(badge(&pfx, ACCENT));
@@ -381,6 +493,32 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
                 " c new · % \" split · ←→↑↓ pane · n/p tab · z zoom · s sessions · x kill · ? keys",
                 bar.fg(DIM),
             ));
+        }
+        Mode::Tree => {
+            left.push(badge("TREE", theme::PURPLE));
+            left.push(Span::styled(
+                " jk move · ↵ open · n plan · t task · A accept · S pause · s msg · x stop · i inbox · esc back",
+                bar.fg(DIM),
+            ));
+        }
+        Mode::Inbox => {
+            left.push(badge("NEEDS YOU", theme::PURPLE));
+        }
+        Mode::Board => {
+            left.push(badge("BOARD", theme::BLUE));
+            left.push(Span::styled(
+                " arrows move · ↵ open · A accept · s msg · x stop · v back",
+                bar.fg(DIM),
+            ));
+        }
+        Mode::Form => {
+            let title = app
+                .remote
+                .as_ref()
+                .and_then(|r| r.form.as_ref())
+                .map(|f| crate::tui::forms::FormView::title(f).to_string())
+                .unwrap_or_default();
+            left.push(badge(&title, ACCENT));
         }
         Mode::Scroll => {
             let off = app
@@ -426,10 +564,27 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let busy = app.panes().filter(|t| app.is_busy(t)).count();
-    let right = match &app.message {
-        Some((m, _)) => Span::styled(format!("  {m} "), bar.fg(ACCENT)),
-        None if busy > 0 => Span::styled(format!("  {busy} working · {pfx} ? help "), bar.fg(DIM)),
-        None => Span::styled(format!("  {pfx} ? help "), bar.fg(DIM)),
+    let right = match (&app.message, &app.remote) {
+        (Some((m, _)), _) => Span::styled(format!("  {m} "), bar.fg(ACCENT)),
+        (None, Some(r)) => {
+            let (working, needs, clients) = r.counts();
+            let mut s = format!("  {} {} ", r.mirror.status.dot(), r.name);
+            if working > 0 {
+                s.push_str(&format!("· {working} working "));
+            }
+            if needs > 0 {
+                s.push_str(&format!("· {needs} need you "));
+            }
+            if clients > 1 {
+                s.push_str(&format!("· {clients} clients "));
+            }
+            s.push_str(&format!("· {pfx} ? help "));
+            Span::styled(s, bar.fg(DIM))
+        }
+        (None, None) if busy > 0 => {
+            Span::styled(format!("  {busy} working · {pfx} ? help "), bar.fg(DIM))
+        }
+        (None, None) => Span::styled(format!("  {pfx} ? help "), bar.fg(DIM)),
     };
     let rw = if matches!(app.mode, Mode::Prompt(_)) {
         0
@@ -623,7 +778,7 @@ fn draw_picker(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let pfx = prefix_name(app.opts.prefix);
-    let rows: &[(&str, &str)] = &[
+    let base: &[(&str, &str)] = &[
         ("c", "new-window: new Claude session here"),
         ("C", "new Claude session in another directory"),
         ("t", "new shell window"),
@@ -655,6 +810,14 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         ("d", "quit cmux (no server, so no detach)"),
         ("?", "list-keys"),
     ];
+    let mut rows: Vec<(&str, &str)> = base.to_vec();
+    if app.remote.is_some() {
+        rows.retain(|(k, _)| *k != "d" && *k != "< >" && *k != "!");
+        let at = rows.len() - 1;
+        for (j, row) in crate::app::remote::REMOTE_HELP.iter().enumerate() {
+            rows.insert(at + j, *row);
+        }
+    }
     let w = 76u16.min(area.width);
     let h = (rows.len() as u16 + 6).min(area.height);
     let r = Rect {
@@ -685,7 +848,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
                 format!("  {k:<16}"),
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
-            Span::raw(*d),
+            Span::raw(d),
         ]));
     }
     lines.push(Line::raw(""));
