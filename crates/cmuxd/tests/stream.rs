@@ -813,3 +813,41 @@ async fn revoking_a_device_closes_its_open_stream() {
     }
     h.server.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configured_permission_wait_reaches_the_engine() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = Config {
+        data_dir: Some(tmp.path().join("data")),
+        socket: Some(tmp.path().join("api.sock")),
+        listen: None,
+        ..Config::default()
+    };
+    cfg.agents.permission_wait_secs = 77;
+    let s = ServerBuilder::new(cfg).tick(None).start().await.unwrap();
+    let wait = s
+        .app
+        .actor
+        .query(|s| s.timeouts.permission_wait)
+        .await
+        .unwrap();
+    assert_eq!(wait, 77_000);
+    s.shutdown().await;
+}
+
+#[cfg(feature = "tls")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bad_tls_certificate_stops_the_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = Config {
+        data_dir: Some(tmp.path().join("data")),
+        socket: Some(tmp.path().join("api.sock")),
+        listen: Some("127.0.0.1:0".into()),
+        tls: Some(cmuxd::config::TlsConfig {
+            cert: tmp.path().join("missing.pem"),
+            key: tmp.path().join("missing.key"),
+        }),
+        ..Config::default()
+    };
+    assert!(ServerBuilder::new(cfg).tick(None).start().await.is_err());
+}

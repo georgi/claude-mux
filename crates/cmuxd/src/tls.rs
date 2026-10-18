@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 use crate::config::Config;
 use crate::server::ServerError;
 
-pub fn serve(
+pub async fn serve(
     config: &Config,
     listener: TcpListener,
     router: Router,
@@ -24,17 +24,18 @@ pub fn serve(
     let std_listener = listener
         .into_std()
         .map_err(|e| ServerError::Io("tls listener".into(), e))?;
+    // A bad certificate stops the start-up instead of leaving no listener.
+    let cfg = axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert, &tls.key)
+        .await
+        .map_err(|e| {
+            ServerError::Io(
+                format!("cannot load certificate {}", tls.cert.display()),
+                e,
+            )
+        })?;
     let handle = axum_server::Handle::new();
     let h2 = handle.clone();
     Ok(tokio::spawn(async move {
-        let cfg =
-            match axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert, &tls.key).await {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(target: "tls", "cannot load certificate: {e}");
-                    return;
-                }
-            };
         tokio::spawn(async move {
             let _ = stop.wait_for(|s| *s).await;
             h2.graceful_shutdown(Some(std::time::Duration::from_secs(3)));

@@ -27,6 +27,8 @@ use crate::term::pty::PtySpec;
 
 const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_COLS: u16 = 80;
+/// Same cap as the stream's resize.
+const MAX_DIM: u16 = 1000;
 const DEFAULT_SCROLLBACK_LINES: usize = 200;
 
 pub fn routes() -> Router<AppState> {
@@ -107,6 +109,9 @@ async fn create(
         req.rows.unwrap_or(DEFAULT_ROWS).max(1),
         req.cols.unwrap_or(DEFAULT_COLS).max(1),
     );
+    if rows > MAX_DIM || cols > MAX_DIM {
+        return Err(ApiError::invalid("error: rows and cols must be 1..=1000"));
+    }
     let spec = spec_for(&req, &app.config.agents.claude_bin, cwd.clone(), rows, cols)?;
     let reply = app
         .actor

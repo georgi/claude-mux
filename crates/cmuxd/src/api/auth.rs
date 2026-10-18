@@ -217,6 +217,10 @@ pub async fn pair_complete(
     State(app): State<AppState>,
     Json(req): Json<PairCompleteReq>,
 ) -> ApiResult<Json<PairCompleteResp>> {
+    // Before the code is spent: a typo in the name must not burn the pairing.
+    if req.device_name.trim().is_empty() {
+        return Err(ApiError::invalid("error: device_name must not be empty"));
+    }
     let scope = match app.pairing.complete(&req.code) {
         Ok(s) => s,
         Err(PairError::RateLimited { retry_after_secs }) => {
@@ -237,9 +241,6 @@ pub async fn pair_complete(
             ));
         }
     };
-    if req.device_name.trim().is_empty() {
-        return Err(ApiError::invalid("error: device_name must not be empty"));
-    }
     let (device_id, token) = app.devices.create(&req.device_name, scope)?;
     app.diag.log(
         "info",

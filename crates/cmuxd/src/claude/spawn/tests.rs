@@ -476,3 +476,15 @@ fn write_files_tightens_a_wide_existing_secret_file() {
     }
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "secret");
 }
+
+#[test]
+fn the_hook_process_learns_the_permission_wait_from_its_environment() {
+    let mut c = cfg();
+    c.permission_wait = Duration::from_secs(90);
+    let s = spec(AgentPath::Executor, Level::Executor, "/r", false, &c);
+    assert!(
+        s.env
+            .iter()
+            .any(|(k, v)| k == "CMUX_PERMISSION_WAIT_SECS" && v == "90")
+    );
+}

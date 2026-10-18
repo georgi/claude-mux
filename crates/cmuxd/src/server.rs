@@ -152,6 +152,8 @@ impl ServerBuilder {
         let store = Arc::new(Store::open(&data_dir)?);
         let mut state = store.load()?;
         state.data_dir = data_dir.clone();
+        // The config is the source of truth for the wait, not the saved copy.
+        state.timeouts.permission_wait = config.agents.permission_wait_secs.max(1) * 1000;
         let diag = Diag::open(&data_dir).map_err(|e| ServerError::Io("diagnostics".into(), e))?;
         if global_tracing {
             use tracing_subscriber::layer::SubscriberExt;
@@ -199,7 +201,7 @@ impl ServerBuilder {
                 .map_err(|e| ServerError::Io("local_addr".into(), e))?;
             bound = Some(local);
             let router = api::router_with(app.clone(), Transport::Tcp, extra());
-            tasks.push(serve_tcp(&config, listener, router, stop_rx.clone())?);
+            tasks.push(serve_tcp(&config, listener, router, stop_rx.clone()).await?);
         }
         if let Ok(mut b) = app.base_url.write() {
             *b = config.base_url(bound);
@@ -297,7 +299,7 @@ async fn serve_unix(listener: UnixListener, router: Router, stop: watch::Receive
         .await;
 }
 
-fn serve_tcp(
+async fn serve_tcp(
     config: &Config,
     listener: TcpListener,
     router: Router,
@@ -305,7 +307,7 @@ fn serve_tcp(
 ) -> Result<JoinHandle<()>, ServerError> {
     if config.tls.is_some() {
         #[cfg(feature = "tls")]
-        return crate::tls::serve(config, listener, router, stop);
+        return crate::tls::serve(config, listener, router, stop).await;
         #[cfg(not(feature = "tls"))]
         return Err(ServerError::NoTls);
     }

@@ -270,6 +270,10 @@ pub fn plan_spawn(
         .map(|(k, v)| (k.to_string(), v.clone()))
         .collect();
     env.push(("TERM".into(), "xterm-256color".into()));
+    env.push((
+        "CMUX_PERMISSION_WAIT_SECS".into(),
+        cfg.permission_wait.as_secs().max(1).to_string(),
+    ));
 
     let files = vec![
         SpawnFile {

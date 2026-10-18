@@ -657,3 +657,44 @@ async fn projects_lists_the_servers_claude_sessions() {
     assert_eq!(r.status, 401);
     h.server.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_blank_device_name_does_not_spend_the_pairing_code() {
+    let h = harness().await;
+    let start: PairStartResp = send(
+        &h.unix,
+        "POST",
+        route::PAIR_START,
+        &[],
+        &PairStartReq::default(),
+    )
+    .await
+    .json()
+    .unwrap();
+    let blank = PairCompleteReq {
+        code: start.code.clone(),
+        device_name: " ".into(),
+    };
+    let r = send(&h.tcp, "POST", route::PAIR_COMPLETE, &[], &blank).await;
+    assert_eq!(r.status, 400);
+    let named = PairCompleteReq {
+        code: start.code,
+        device_name: "phone".into(),
+    };
+    let r = send(&h.tcp, "POST", route::PAIR_COMPLETE, &[], &named).await;
+    assert_eq!(r.status, 200);
+}
+
+#[tokio::test]
+async fn huge_terminal_sizes_are_refused() {
+    let h = harness().await;
+    let r = send(
+        &h.unix,
+        "POST",
+        route::TERMINALS,
+        &[],
+        &serde_json::json!({"kind": "shell", "rows": 60000, "cols": 60000}),
+    )
+    .await;
+    assert_eq!(r.status, 400, "{}", r.text());
+}
