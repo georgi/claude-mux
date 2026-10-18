@@ -455,6 +455,14 @@ impl Terminal {
         }
     }
 
+    /// Bytes from the server itself (a pasted digest, a steer `Esc`). Unlike
+    /// [`input`](Self::input) nobody becomes the size owner.
+    pub fn write(&self, bytes: &[u8]) {
+        if let Some(pty) = self.shared.pty.get() {
+            pty.write(bytes);
+        }
+    }
+
     /// `client` focused this terminal and becomes the size owner. Returns
     /// whether the owner or the size changed.
     pub fn focus(&self, client: &str) -> bool {

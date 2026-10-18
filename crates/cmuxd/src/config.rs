@@ -25,6 +25,40 @@ pub struct Config {
     pub public_url: Option<String>,
     pub tls: Option<TlsConfig>,
     pub pairing: PairingConfig,
+    pub agents: AgentsConfig,
+}
+
+/// `[agents]`: how `claude` is started (architecture 7.1).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AgentsConfig {
+    /// The `claude` binary (default `claude`, found on `PATH`).
+    pub claude_bin: String,
+    /// How long a `PermissionRequest` hook is held open for a remote answer.
+    pub permission_wait_secs: u64,
+    pub executor: LevelConfig,
+    pub task: LevelConfig,
+    pub sub: LevelConfig,
+}
+
+impl Default for AgentsConfig {
+    fn default() -> Self {
+        AgentsConfig {
+            claude_bin: "claude".into(),
+            permission_wait_secs: 600,
+            executor: LevelConfig::default(),
+            task: LevelConfig::default(),
+            sub: LevelConfig::default(),
+        }
+    }
+}
+
+/// `claude` options for one level; absent means Claude's own default.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LevelConfig {
+    pub permission_mode: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -238,6 +272,18 @@ mod tests {
         });
         assert_eq!(c.data_dir(), PathBuf::from("/x"));
         assert_eq!(c.tcp_addr().unwrap(), None);
+    }
+
+    #[test]
+    fn agents_section() {
+        let c: Config = toml::from_str(
+            "[agents]\nclaude_bin = \"/x/claude\"\n[agents.task]\nmodel = \"haiku\"",
+        )
+        .unwrap();
+        assert_eq!(c.agents.claude_bin, "/x/claude");
+        assert_eq!(c.agents.permission_wait_secs, 600);
+        assert_eq!(c.agents.task.model.as_deref(), Some("haiku"));
+        assert!(c.agents.sub.model.is_none());
     }
 
     #[test]
