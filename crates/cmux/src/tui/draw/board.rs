@@ -217,7 +217,8 @@ fn draw_card(
     );
     let mut detail = task.state.label().to_string();
     if let Some(pr) = &task.pr {
-        detail.push_str(&format!(" #{}", pr.number));
+        detail.push(' ');
+        detail.push_str(&crate::tui::marks::pr_mark(pr));
     }
     if task.criteria_total > 0 {
         detail.push_str(&format!(" {}/{}", task.criteria_done, task.criteria_total));

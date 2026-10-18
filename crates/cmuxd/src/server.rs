@@ -26,6 +26,7 @@ use crate::api::{self, AppState, Extra, Transport};
 use crate::config::{self, Config, ConfigError};
 use crate::devices::Devices;
 use crate::diag::{Diag, DiagLayer};
+use crate::git::github::{self, Gh, GhCli};
 use crate::store::{Store, StoreError, StoreWriter};
 use crate::term::hub::Hub;
 
@@ -78,6 +79,7 @@ pub struct ServerBuilder {
     hub: Arc<Hub>,
     extra: Option<Box<dyn Fn() -> Extra + Send>>,
     global_tracing: bool,
+    gh: Option<Arc<dyn Gh>>,
 }
 
 impl ServerBuilder {
@@ -90,6 +92,7 @@ impl ServerBuilder {
             hub: Arc::new(Hub::new()),
             extra: None,
             global_tracing: false,
+            gh: None,
         }
     }
 
@@ -105,7 +108,8 @@ impl ServerBuilder {
         self
     }
 
-    /// `None` stops the 1 s ticker (tests that drive time by hand).
+    /// `None` stops the 1 s ticker and the GitHub poller (tests that drive
+    /// time by hand; [`gh`](Self::gh) turns the poller back on).
     pub fn tick(mut self, every: Option<Duration>) -> Self {
         self.tick = every;
         self
@@ -127,6 +131,12 @@ impl ServerBuilder {
         self
     }
 
+    /// The `gh` the PR poller uses instead of `[github] gh_bin` (tests).
+    pub fn gh(mut self, gh: Arc<dyn Gh>) -> Self {
+        self.gh = Some(gh);
+        self
+    }
+
     /// Send `tracing` events to the diagnostics log (once per process).
     pub fn global_tracing(mut self, on: bool) -> Self {
         self.global_tracing = on;
@@ -142,6 +152,7 @@ impl ServerBuilder {
             hub,
             extra,
             global_tracing,
+            gh,
         } = self;
         // Fail on bad configuration before touching the disk.
         let tcp_addr = config.tcp_addr()?;
@@ -218,6 +229,27 @@ impl ServerBuilder {
             bound = Some(local);
             let router = api::router_with(app.clone(), Transport::Tcp, extra());
             tasks.push(serve_tcp(&config, listener, router, stop_rx.clone()).await?);
+        }
+        // The poller is a timer: a server without the ticker has none, unless
+        // the builder was given a `gh` on purpose.
+        let gh = gh.or_else(|| {
+            tick.map(|_| -> Arc<dyn Gh> {
+                Arc::new(GhCli {
+                    bin: config.github.gh_bin.clone(),
+                })
+            })
+        });
+        match gh {
+            Some(gh) if config.github.enabled => tasks.push(github::spawn(
+                app.actor.clone(),
+                gh,
+                config.github.cadence(),
+                Duration::from_secs(1),
+                app.github.clone(),
+                stop_rx.clone(),
+            )),
+            Some(_) => app.github.off("disabled in config"),
+            None => app.github.off("no ticker"),
         }
         if let Ok(mut b) = app.base_url.write() {
             *b = config.base_url(bound);

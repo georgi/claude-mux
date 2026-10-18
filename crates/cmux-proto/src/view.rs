@@ -25,8 +25,9 @@ use serde::{Deserialize, Serialize};
 
 pub use cmux_core::ids::{AgentId, ClientId, ItemId, PlanId, TaskId, TermId};
 pub use cmux_core::model::{
-    Activity, Criterion, Delivery, DeliveryPath, ItemKind, Level, Life, Limits, Note, PlanState,
-    PrRef, Recipient, Repo, Report, ReportStatus, TaskState, TermKind, Timestamp, TokenUsage,
+    Activity, CiMark, Criterion, Delivery, DeliveryPath, ItemKind, Level, Life, Limits, Note,
+    PlanState, PrRef, Recipient, Repo, Report, ReportStatus, TaskState, TermKind, Timestamp,
+    TokenUsage,
 };
 
 /// Everything a client needs to draw the tree, board and inbox.

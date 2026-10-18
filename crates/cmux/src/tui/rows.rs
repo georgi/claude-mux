@@ -157,7 +157,7 @@ fn task_row(sv: &StateView, vs: &ViewState, task: &TaskView, has_subs: bool, ope
         .map(ToString::to_string)
         .collect();
     let mut right = if let Some(pr) = &task.pr {
-        format!("#{}", pr.number)
+        super::marks::pr_mark(pr)
     } else if task.state == TaskState::Todo && sv.is_queued(&task.plan, task.id) {
         "queued".to_string()
     } else if task.state == TaskState::Todo && !unmet.is_empty() {

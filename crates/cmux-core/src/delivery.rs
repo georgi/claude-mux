@@ -116,6 +116,7 @@ fn kind_label(kind: &ItemKind) -> &'static str {
         ItemKind::PlanReview => "plan review",
         ItemKind::Stalled => "stalled",
         ItemKind::ExitedWithoutReport => "exited without report",
+        ItemKind::CiFailing => "CI failing",
     }
 }
 

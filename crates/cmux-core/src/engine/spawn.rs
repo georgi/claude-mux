@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use super::*;
 use crate::ids::{AgentPath, TermId};
 use crate::model::{
-    Activity, Level, Plan, PlanState, PrRef, QueuedSpawn, TaskState, TermKind, Terminal,
-    TransitionSource, check_task_transition, pr_to_task_state,
+    Activity, CI_FAILURE_CAP, CiConclusion, CiMark, Level, Plan, PlanState, QueuedSpawn, TaskState,
+    TermKind, Terminal, TransitionSource, check_task_transition, pr_to_task_state,
 };
 use crate::prompts::{Template, render, task_list_line};
 
@@ -862,22 +862,37 @@ impl Ctx<'_> {
             RunnerEvent::Pr { plan, task, state } => {
                 let pi = self.plan_idx(&plan)?;
                 let ti = self.task_idx(pi, task)?;
+                let capped = self.record_ci(pi, ti, state.ci);
                 let to = pr_to_task_state(&state);
                 let t = &self.plan(pi).tasks[ti];
-                if t.state == to || check_task_transition(t, to, TransitionSource::GitHub).is_err()
-                {
+                let moved =
+                    t.state != to && check_task_transition(t, to, TransitionSource::GitHub).is_ok();
+                let (from, agent) = (t.state, t.agent.clone());
+                let pr = t.pr.clone();
+                let number = pr
+                    .as_ref()
+                    .map_or(String::new(), |p| format!(" #{}", p.number));
+                if let Some(failures) = capped {
+                    let url = pr.as_ref().map_or("", |p| p.url.as_str());
+                    self.post(NewItem {
+                        to: Recipient::Human,
+                        kind: ItemKind::CiFailing,
+                        from: agent.clone(),
+                        body: format!("{task} PR{number}: CI failed {failures} times\n{url}"),
+                        dedupe: Some(format!("ci:{plan}:{task}:{failures}")),
+                    });
+                }
+                if !moved {
                     return Ok(());
                 }
-                let (from, agent) = (t.state, t.agent.clone());
-                let number =
-                    t.pr.as_ref()
-                        .map_or(String::new(), |p: &PrRef| format!(" #{}", p.number));
                 self.task_mut(pi, ti).state = to;
                 let body = format!(
                     "{task} PR{number}: {from} -> {to} (GitHub: merged={}, closed={}, CI {:?})",
                     state.merged, state.closed, state.ci
                 );
                 let executor = AgentId::new(plan, AgentPath::Executor);
+                // Past the red-CI cap the human has it, not the task agent.
+                let agent = agent.filter(|_| capped.is_none());
                 for target in agent.into_iter().chain([executor]) {
                     self.post(NewItem {
                         to: Recipient::Agent(target.clone()),
@@ -891,5 +906,30 @@ impl Ctx<'_> {
             }
         }
         Ok(())
+    }
+}
+
+impl Ctx<'_> {
+    /// Records the PR's CI mark and counts each move into red; green resets
+    /// the count. Returns the count when this red run is at or past
+    /// [`CI_FAILURE_CAP`].
+    fn record_ci(&mut self, pi: usize, ti: usize, ci: CiConclusion) -> Option<u8> {
+        let mark = CiMark::from_conclusion(ci);
+        let pr = self.plan(pi).tasks[ti].pr.as_ref()?;
+        let mut next = pr.clone();
+        next.ci = mark;
+        match mark {
+            Some(CiMark::Failing) if pr.ci != Some(CiMark::Failing) => {
+                next.ci_failures = pr.ci_failures.saturating_add(1);
+            }
+            Some(CiMark::Passing) => next.ci_failures = 0,
+            _ => {}
+        }
+        let capped = (next.ci_failures >= CI_FAILURE_CAP && next.ci_failures != pr.ci_failures)
+            .then_some(next.ci_failures);
+        if next != *pr {
+            self.task_mut(pi, ti).pr = Some(next);
+        }
+        capped
     }
 }

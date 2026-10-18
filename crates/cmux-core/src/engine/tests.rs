@@ -2127,6 +2127,10 @@ fn pr_changes_map_to_task_state_and_notify_agent_and_executor() {
             head_sha: Some("abc".into()),
         },
     };
+    // The first result records the CI mark but moves nothing.
+    let inbox = h.st.inbox.len();
+    h.runner(pr(false, false, CiConclusion::Pending));
+    assert_eq!(h.st.inbox.len(), inbox, "no move: no item");
     assert!(
         h.runner(pr(false, false, CiConclusion::Pending))
             .deltas
@@ -2159,6 +2163,100 @@ fn pr_changes_map_to_task_state_and_notify_agent_and_executor() {
     assert_eq!(h.task(&pid, 1).state, TaskState::Passing);
     h.runner(pr(false, true, CiConclusion::Success));
     assert_eq!(h.task(&pid, 1).state, TaskState::Blocked);
+}
+
+#[test]
+fn third_red_ci_goes_to_the_human_and_green_resets_the_count() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("ci", 1);
+    let a = h.start(&pid, &exec, 1);
+    h.tool(
+        &a,
+        ToolCall::SetTaskPr {
+            url: "https://github.com/o/r/pull/41".into(),
+        },
+    )
+    .unwrap();
+    h.report(&a, ReportStatus::Success).unwrap();
+    h.stop(&a, false);
+    h.stop(&exec, false);
+    h.stop(&exec, false);
+    assert_eq!(h.task(&pid, 1).state, TaskState::Testing);
+    let pr = |ci| RunnerEvent::Pr {
+        plan: pid.clone(),
+        task: t(1),
+        state: PrGithubState {
+            merged: false,
+            closed: false,
+            ci,
+            head_sha: None,
+        },
+    };
+    let to_agent = |h: &H| {
+        h.items_to(&a)
+            .iter()
+            .filter(|i| i.body.contains("-> failing"))
+            .count()
+    };
+    let ci_failing = |h: &H| h.human(|k| *k == ItemKind::CiFailing).len();
+    // Two red runs, each followed by a new push: the task agent hears of both.
+    for n in 1..=2u8 {
+        h.runner(pr(CiConclusion::Failure));
+        assert_eq!(h.task(&pid, 1).pr.as_ref().unwrap().ci_failures, n);
+        assert_eq!(
+            h.task(&pid, 1).pr.as_ref().unwrap().ci,
+            Some(CiMark::Failing)
+        );
+        h.runner(pr(CiConclusion::Pending));
+        assert_eq!(
+            h.task(&pid, 1).pr.as_ref().unwrap().ci,
+            Some(CiMark::Pending)
+        );
+        assert_eq!(
+            h.task(&pid, 1).pr.as_ref().unwrap().ci_failures,
+            n,
+            "pending keeps it"
+        );
+    }
+    assert_eq!(to_agent(&h), 2);
+    assert_eq!(ci_failing(&h), 0);
+    // The third goes to the human, not to the task agent.
+    h.runner(pr(CiConclusion::Failure));
+    assert_eq!(h.task(&pid, 1).state, TaskState::Failing);
+    assert_eq!(h.task(&pid, 1).pr.as_ref().unwrap().ci_failures, 3);
+    assert_eq!(to_agent(&h), 2, "the task agent is not told a third time");
+    let items = h.human(|k| *k == ItemKind::CiFailing);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].from.as_ref(), Some(&a), "Message the task agent");
+    assert!(
+        items[0].body.contains("https://github.com/o/r/pull/41"),
+        "Open PR"
+    );
+    assert!(items[0].kind.needs_human());
+    assert!(
+        h.items_to(&exec)
+            .iter()
+            .filter(|i| i.body.contains("-> failing"))
+            .count()
+            == 3,
+        "the executor still hears of every move"
+    );
+    // The same red result again counts nothing.
+    h.runner(pr(CiConclusion::Failure));
+    assert_eq!(h.task(&pid, 1).pr.as_ref().unwrap().ci_failures, 3);
+    assert_eq!(ci_failing(&h), 1);
+    // Green resets the count; the next red goes to the task agent again.
+    h.runner(pr(CiConclusion::Success));
+    assert_eq!(h.task(&pid, 1).state, TaskState::Passing);
+    let p = h.task(&pid, 1).pr.clone().unwrap();
+    assert_eq!((p.ci, p.ci_failures), (Some(CiMark::Passing), 0));
+    h.runner(pr(CiConclusion::Failure));
+    assert_eq!(h.task(&pid, 1).pr.as_ref().unwrap().ci_failures, 1);
+    assert_eq!(to_agent(&h), 3);
+    assert_eq!(ci_failing(&h), 1);
+    // A PR without checks has no mark.
+    h.runner(pr(CiConclusion::None));
+    assert_eq!(h.task(&pid, 1).pr.as_ref().unwrap().ci, None);
 }
 
 #[test]

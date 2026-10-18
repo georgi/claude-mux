@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use cmux_core::model::{GlobalLimits, Limits, Timeouts};
 use serde::{Deserialize, Serialize};
 
+use crate::git::github::Cadence;
+
 pub const DEFAULT_TCP: &str = "127.0.0.1:7878";
 
 /// What `config.toml` may say. Every field is optional; an unknown key is an error.
@@ -31,6 +33,7 @@ pub struct Config {
     pub auto_resume: bool,
     pub limits: LimitsConfig,
     pub timeouts: TimeoutsConfig,
+    pub github: GithubConfig,
 }
 
 impl Default for Config {
@@ -48,6 +51,7 @@ impl Default for Config {
             auto_resume: true,
             limits: LimitsConfig::default(),
             timeouts: TimeoutsConfig::default(),
+            github: GithubConfig::default(),
         }
     }
 }
@@ -115,6 +119,42 @@ impl Default for TimeoutsConfig {
             permission_wait_secs: None,
             stall_secs: t.stall / 1000,
             idle_without_report_secs: t.idle_without_report / 1000,
+        }
+    }
+}
+
+/// `[github]`: the PR and CI poller (architecture section 10).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GithubConfig {
+    /// Poll `gh` for the PRs of tasks (default on).
+    pub enabled: bool,
+    /// The `gh` binary (default `gh`, found on `PATH`).
+    pub gh_bin: String,
+    /// Seconds between looks at an open PR.
+    pub open_secs: u64,
+    /// Seconds between looks while the task is in `testing` and its agent is idle.
+    pub testing_secs: u64,
+}
+
+impl Default for GithubConfig {
+    fn default() -> Self {
+        let c = Cadence::default();
+        GithubConfig {
+            enabled: true,
+            gh_bin: "gh".into(),
+            open_secs: c.open_ms / 1000,
+            testing_secs: c.testing_ms / 1000,
+        }
+    }
+}
+
+impl GithubConfig {
+    pub fn cadence(&self) -> Cadence {
+        Cadence {
+            open_ms: self.open_secs.max(1).saturating_mul(1000),
+            testing_ms: self.testing_secs.max(1).saturating_mul(1000),
+            ..Cadence::default()
         }
     }
 }
@@ -421,6 +461,12 @@ question_secs = 1800
 permission_wait_secs = 120
 stall_secs = 600
 idle_without_report_secs = 300
+
+[github]
+enabled = false
+gh_bin = "/opt/gh"
+open_secs = 120
+testing_secs = 30
 "#;
 
     #[test]
@@ -463,6 +509,18 @@ idle_without_report_secs = 300
         assert_eq!(c.limits.plan().subagents_per_task, 4);
         assert_eq!(c.limits.global().live_processes, 12);
         assert_eq!(c.limits.global().git_ops, 1);
+        assert_eq!(
+            c.github,
+            GithubConfig {
+                enabled: false,
+                gh_bin: "/opt/gh".into(),
+                open_secs: 120,
+                testing_secs: 30,
+            }
+        );
+        let cadence = c.github.cadence();
+        assert_eq!((cadence.open_ms, cadence.testing_ms), (120_000, 30_000));
+        assert_eq!(cadence.max_in_flight, 2);
     }
 
     #[test]
@@ -473,6 +531,8 @@ idle_without_report_secs = 300
         assert_eq!(c.engine_timeouts(), Timeouts::default());
         assert_eq!(c.limits.plan(), Limits::default());
         assert_eq!(c.limits.global(), GlobalLimits::default());
+        assert!(c.github.enabled, "on by default");
+        assert_eq!(c.github.cadence(), Cadence::default());
         assert_eq!(
             Timeouts::default().stall,
             15 * 60_000,
@@ -499,6 +559,7 @@ idle_without_report_secs = 300
             "[timeouts]\nstall = 600",
             "[timeouts]\nstall_mins = 10",
             "[agents]\nbogus = 1",
+            "[github]\nopen = 60",
             "[pairing]\nttl = 1",
             "[tls]\ncert = \"c\"\nkey = \"k\"\nca = \"x\"",
         ] {
@@ -528,6 +589,7 @@ idle_without_report_secs = 300
         assert_eq!(c.limits, LimitsConfig::default());
         assert_eq!(c.timeouts.stall_secs, TimeoutsConfig::default().stall_secs);
         assert!(c.auto_resume);
+        assert_eq!(c.github, GithubConfig::default());
     }
 
     #[test]

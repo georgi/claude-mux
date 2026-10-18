@@ -119,6 +119,7 @@ async fn status(State(app): State<AppState>) -> ApiResult<Json<StatusResp>> {
                     .and_then(rss_kb),
             })
             .collect(),
+        github: app.github.get(),
     }))
 }
 
