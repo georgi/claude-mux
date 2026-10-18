@@ -755,7 +755,7 @@ async fn orphaned_loose_terminals_are_dropped_at_start() {
     let cfg = |p: &Path| Config {
         data_dir: Some(p.join("data")),
         socket: Some(p.join("api.sock")),
-        listen: None,
+        listen: Some("off".into()),
         ..Config::default()
     };
     let s = ServerBuilder::new(cfg(tmp.path()))
@@ -821,7 +821,7 @@ async fn configured_permission_wait_reaches_the_engine() {
     let mut cfg = Config {
         data_dir: Some(tmp.path().join("data")),
         socket: Some(tmp.path().join("api.sock")),
-        listen: None,
+        listen: Some("off".into()),
         ..Config::default()
     };
     cfg.agents.permission_wait_secs = 77;

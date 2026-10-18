@@ -3734,14 +3734,26 @@ fn delete_plan_stops_its_agents_and_forgets_it() {
     let a = h.start(&pid, &exec, 1);
     h.report(&a, ReportStatus::Success).unwrap();
     let term = h.agent(&a).term.expect("the task agent has a terminal");
-    assert!(!h.items_to(&exec).is_empty(), "the executor holds the report");
+    assert!(
+        !h.items_to(&exec).is_empty(),
+        "the executor holds the report"
+    );
 
     let o = h
         .client(ClientAction::DeletePlan { plan: pid.clone() })
         .unwrap();
-    assert!(has_fx(&o, |e| matches!(e, Effect::KillAgent { agent, term: Some(_) } if *agent == a)));
-    assert!(has_fx(&o, |e| matches!(e, Effect::DeletePlan { plan } if *plan == pid)));
-    assert!(!has_fx(&o, |e| matches!(e, Effect::Persist { plan } if *plan == pid)));
+    assert!(has_fx(
+        &o,
+        |e| matches!(e, Effect::KillAgent { agent, term: Some(_) } if *agent == a)
+    ));
+    assert!(has_fx(
+        &o,
+        |e| matches!(e, Effect::DeletePlan { plan } if *plan == pid)
+    ));
+    assert!(!has_fx(
+        &o,
+        |e| matches!(e, Effect::Persist { plan } if *plan == pid)
+    ));
     assert!(
         o.deltas
             .iter()
@@ -3751,8 +3763,10 @@ fn delete_plan_stops_its_agents_and_forgets_it() {
     assert_eq!(h.st.plans[0].id, keep);
     assert!(!h.st.terminals.contains_key(&term));
     let ours = |x: &AgentId| x.plan() == &pid;
-    assert!(h.st.inbox.iter().all(|i| !i.from.as_ref().is_some_and(ours)
-        && !matches!(&i.to, Recipient::Agent(x) if ours(x))));
+    assert!(
+        h.st.inbox.iter().all(|i| !i.from.as_ref().is_some_and(ours)
+            && !matches!(&i.to, Recipient::Agent(x) if ours(x)))
+    );
     assert_eq!(
         h.client(ClientAction::DeletePlan { plan: pid.clone() })
             .unwrap_err()

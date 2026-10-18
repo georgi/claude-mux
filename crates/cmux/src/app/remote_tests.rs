@@ -67,6 +67,10 @@ struct Rig {
 
 impl Rig {
     fn new(cols: u16, rows: u16) -> Rig {
+        Rig::with_state(cols, rows, state_with_terms())
+    }
+
+    fn with_state(cols: u16, rows: u16, sv: StateView) -> Rig {
         let (tx, rx) = channel();
         let (handle, cmds) = ConnHandle::detached();
         let rest = Arc::new(Recording::default());
@@ -83,9 +87,7 @@ impl Rig {
         app.handle(Event::Stream(StreamEvent::Status(
             crate::conn::stream::ConnStatus::Connected,
         )));
-        app.handle(Event::Stream(StreamEvent::State(Box::new(
-            state_with_terms(),
-        ))));
+        app.handle(Event::Stream(StreamEvent::State(Box::new(sv))));
         Rig {
             app,
             rest,
@@ -953,4 +955,109 @@ fn a_failed_delete_after_a_loose_terminal_exits_stays_quiet() {
     rig.prefix(b"x");
     rig.keys(b"y");
     assert!(rig.app.message.is_some());
+}
+
+/// T-0002 with `n` sub-agents: `tests` runs, `docs` has exited after its
+/// report, and a third one, `lint`, runs.
+fn task_window_with_subs(n: usize) -> StateView {
+    let mut sv = state_with_terms();
+    let docs = AgentId::new(plan(), AgentPath::sub(t2(), "docs").unwrap());
+    let tests = AgentId::new(plan(), AgentPath::sub(t2(), "tests").unwrap());
+    sv.agents.iter_mut().find(|a| a.id == docs).unwrap().life =
+        cmux_proto::view::Life::Exited { code: Some(0) };
+    if n == 1 {
+        sv.agents.retain(|a| a.id != tests);
+        sv.terminals.retain(|t| t.agent.as_ref() != Some(&tests));
+        sv.plans[0].agents.retain(|a| a != &tests);
+    }
+    if n == 3 {
+        let mut lint = sv.agents.iter().find(|a| a.id == tests).unwrap().clone();
+        lint.path = AgentPath::sub(t2(), "lint").unwrap();
+        lint.id = AgentId::new(plan(), lint.path.clone());
+        lint.term = Some(TermId(40));
+        sv.terminals.push(TerminalView {
+            id: TermId(40),
+            kind: TermKind::Claude,
+            agent: Some(lint.id.clone()),
+            cwd: "/home/me/api".into(),
+            rows: 24,
+            cols: 80,
+            size_owner: None,
+            title: None,
+        });
+        sv.plans[0].agents.push(lint.id.clone());
+        sv.agents.push(lint);
+    }
+    sv
+}
+
+fn draw_task_window(n: usize) -> (Rig, String) {
+    let mut rig = Rig::with_state(100, 30, task_window_with_subs(n));
+    rig.app.select_window(2);
+    assert_eq!(rig.app.windows[2].panes.len(), n + 1);
+    let screen = rig.draw(100, 30);
+    (rig, screen)
+}
+
+/// The style of the first cell of `text` on the 100×30 screen.
+fn style_at(rig: &Rig, text: &str) -> ratatui::style::Style {
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    term.draw(|f| crate::ui::draw(f, &rig.app)).unwrap();
+    let screen = rig.draw(100, 30);
+    let (y, line) = screen
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains(text))
+        .unwrap_or_else(|| panic!("{text:?} not on the screen:\n{screen}"));
+    let x = line[..line.find(text).unwrap()].chars().count() as u16;
+    term.backend().buffer()[(x, y as u16)].style()
+}
+
+#[test]
+fn a_finished_sub_agent_is_dimmed_with_its_outcome() {
+    let (rig, screen) = draw_task_window(2);
+    assert!(screen.contains("✓ docs · reported success"), "{screen}");
+    let dimmed = style_at(&rig, "✓ docs");
+    assert_eq!(dimmed.fg, Some(ratatui::style::Color::Indexed(244)));
+    let running = style_at(&rig, "tests");
+    assert_ne!(running.fg, Some(ratatui::style::Color::Indexed(244)));
+}
+
+#[test]
+fn outcome_words_come_from_the_report() {
+    use cmux_proto::view::{Life, Report, ReportStatus};
+    let mut a = state_with_terms().agents[0].clone();
+    assert_eq!(outcome(&a), None);
+    a.life = Life::Exited { code: Some(1) };
+    assert_eq!(outcome(&a), Some(("○", "exited")));
+    let mut r = Report {
+        status: ReportStatus::Blocked,
+        summary: String::new(),
+        pr_url: None,
+        attempt: 1,
+        implicit: true,
+        supersedes_blocked: false,
+    };
+    // A report the server made up at exit is not the agent's word.
+    a.report = Some(r.clone());
+    assert_eq!(outcome(&a), Some(("○", "exited")));
+    r.implicit = false;
+    r.status = ReportStatus::Failed;
+    a.report = Some(r);
+    assert_eq!(outcome(&a), Some(("✗", "failed")));
+}
+
+#[test]
+fn task_window_with_one_sub_agent() {
+    insta::assert_snapshot!("task_window_1_sub_100x30", draw_task_window(1).1);
+}
+
+#[test]
+fn task_window_with_two_sub_agents() {
+    insta::assert_snapshot!("task_window_2_subs_100x30", draw_task_window(2).1);
+}
+
+#[test]
+fn task_window_with_three_sub_agents() {
+    insta::assert_snapshot!("task_window_3_subs_100x30", draw_task_window(3).1);
 }

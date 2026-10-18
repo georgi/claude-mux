@@ -90,7 +90,11 @@ const TOOLS: &[ToolDef] = &[
             ("task", "string", "Task id"),
             ("title", "string?", "New title"),
             ("body", "string?", "New body"),
-            ("deps", "strings?", "New dependency list (replaces the old one)"),
+            (
+                "deps",
+                "strings?",
+                "New dependency list (replaces the old one)",
+            ),
             ("repo", "integer?", "New repo index"),
         ],
         levels: &[],
@@ -136,8 +140,10 @@ fn call<T: DeserializeOwned>(
 ) -> Result<T, String> {
     let (status, bytes) = rest.send(method, path, body.as_ref())?;
     if !(200..300).contains(&status) {
-        let msg = serde_json::from_slice::<ErrorBody>(&bytes)
-            .map_or_else(|_| String::from_utf8_lossy(&bytes).into_owned(), |e| e.message);
+        let msg = serde_json::from_slice::<ErrorBody>(&bytes).map_or_else(
+            |_| String::from_utf8_lossy(&bytes).into_owned(),
+            |e| e.message,
+        );
         return Err(format!("cmuxd answered {status}: {msg}"));
     }
     // A 204 has no body.
@@ -196,7 +202,12 @@ fn state(rest: &mut impl Rest) -> Result<StateView, String> {
 }
 
 /// Runs one tool. `cwd` is the session's directory, the default repo.
-pub fn run_tool(name: &str, args: &Value, cwd: &Path, rest: &mut impl Rest) -> Result<String, String> {
+pub fn run_tool(
+    name: &str,
+    args: &Value,
+    cwd: &Path,
+    rest: &mut impl Rest,
+) -> Result<String, String> {
     match name {
         "list_plans" => {
             let sv = state(rest)?;
@@ -206,7 +217,15 @@ pub fn run_tool(name: &str, args: &Value, cwd: &Path, rest: &mut impl Rest) -> R
             let lines: Vec<String> = sv
                 .plans
                 .iter()
-                .map(|p| format!("{} [{}] {} - {} tasks", p.id, p.state, p.title, p.tasks.len()))
+                .map(|p| {
+                    format!(
+                        "{} [{}] {} - {} tasks",
+                        p.id,
+                        p.state,
+                        p.title,
+                        p.tasks.len()
+                    )
+                })
                 .collect();
             Ok(lines.join("\n"))
         }
@@ -307,7 +326,11 @@ pub fn run_tool(name: &str, args: &Value, cwd: &Path, rest: &mut impl Rest) -> R
                 "criteria:".into(),
             ];
             for c in &d.criteria {
-                out.push(format!("[{}] {}", if c.checked { "x" } else { " " }, c.text));
+                out.push(format!(
+                    "[{}] {}",
+                    if c.checked { "x" } else { " " },
+                    c.text
+                ));
             }
             for n in &d.notes {
                 out.push(format!("note: {}", n.text));
@@ -321,7 +344,12 @@ pub fn run_tool(name: &str, args: &Value, cwd: &Path, rest: &mut impl Rest) -> R
             if patch.is_empty() {
                 return Err("give at least one of title, body, deps or repo".into());
             }
-            call::<Value>(rest, "PATCH", &route::task(plan, task), Some(Value::Object(patch)))?;
+            call::<Value>(
+                rest,
+                "PATCH",
+                &route::task(plan, task),
+                Some(Value::Object(patch)),
+            )?;
             Ok(format!("updated {task}"))
         }
         "accept_plan" => {
@@ -333,7 +361,10 @@ pub fn run_tool(name: &str, args: &Value, cwd: &Path, rest: &mut impl Rest) -> R
         }
         other => {
             let known: Vec<&str> = TOOLS.iter().map(|t| t.name).collect();
-            Err(format!("unknown tool {other:?}; available: {}", known.join(", ")))
+            Err(format!(
+                "unknown tool {other:?}; available: {}",
+                known.join(", ")
+            ))
         }
     }
 }
@@ -422,7 +453,11 @@ pub fn run() -> Result<(), String> {
         }
         let reply = match serde_json::from_str::<Value>(&line) {
             Ok(msg) => handle(&msg, &cwd, &mut rest),
-            Err(e) => Some(rpc_error(&Value::Null, -32700, &format!("parse error: {e}"))),
+            Err(e) => Some(rpc_error(
+                &Value::Null,
+                -32700,
+                &format!("parse error: {e}"),
+            )),
         };
         if let Some(r) = reply {
             writeln!(out, "{r}").map_err(|e| e.to_string())?;
@@ -450,10 +485,13 @@ mod tests {
             path: &str,
             body: Option<&Value>,
         ) -> Result<(u16, Vec<u8>), String> {
-            self.calls
-                .push((method.into(), path.into(), body.cloned()));
+            self.calls.push((method.into(), path.into(), body.cloned()));
             let (status, v) = self.answers.remove(0);
-            let bytes = if v.is_null() { vec![] } else { v.to_string().into_bytes() };
+            let bytes = if v.is_null() {
+                vec![]
+            } else {
+                v.to_string().into_bytes()
+            };
             Ok((status, bytes))
         }
     }
@@ -509,7 +547,10 @@ mod tests {
     #[test]
     fn server_errors_reach_claude() {
         let mut rest = Fake {
-            answers: vec![(400, json!({"code": "invalid", "message": "error: no plan P-9"}))],
+            answers: vec![(
+                400,
+                json!({"code": "invalid", "message": "error: no plan P-9"}),
+            )],
             ..Fake::default()
         };
         let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -530,7 +571,15 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["list_plans", "get_plan", "create_plan", "create_task", "get_task", "update_task", "accept_plan"]
+            [
+                "list_plans",
+                "get_plan",
+                "create_plan",
+                "create_task",
+                "get_task",
+                "update_task",
+                "accept_plan"
+            ]
         );
     }
 }

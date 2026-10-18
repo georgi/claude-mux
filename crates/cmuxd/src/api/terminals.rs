@@ -14,10 +14,10 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use cmux_core::engine::{ClientAction, Reply};
 use cmux_core::ids::TermId;
+use cmux_proto::CLAUDE_DEFAULT_ARGS;
 use cmux_proto::api::{
     CreateTerminalReq, CreateTerminalResp, ErrorCode, NewTerminalKind, ScrollbackResp, route,
 };
-use cmux_proto::CLAUDE_DEFAULT_ARGS;
 use cmux_proto::view::TerminalView;
 use serde::Deserialize;
 

@@ -127,6 +127,10 @@ fn draw_window(f: &mut Frame, app: &App, w: &Window, area: Rect) {
         let p = pane.parser.lock().unwrap();
         let screen = p.screen();
         f.render_widget(Screen(screen), a.body);
+        if pane.finished {
+            f.buffer_mut()
+                .set_style(a.body, Style::default().fg(DIM).add_modifier(Modifier::DIM));
+        }
         if let Some(h) = a.header {
             draw_pane_header(f, app, pane, focused, screen.scrollback(), h);
         }
@@ -187,7 +191,10 @@ fn draw_pane_header(
     scrolled: usize,
     area: Rect,
 ) {
-    let style = if focused {
+    let outcome = app.remote.as_ref().and_then(|r| r.pane_outcome(pane));
+    let style = if pane.finished && !focused {
+        Style::default().bg(BAR_BG).fg(DIM)
+    } else if focused {
         Style::default()
             .bg(Color::Indexed(238))
             .fg(Color::White)
@@ -201,10 +208,17 @@ fn draw_pane_header(
         Style::default().bg(BAR_BG).fg(BAR_FG)
     };
     let w = area.width as usize;
-    let name = truncate(&pane.name(), w.saturating_sub(4).max(1));
+    let end = outcome.map_or(String::new(), |(_, words)| format!(" · {words}"));
+    let name = truncate(&format!("{}{end}", pane.name()), w.saturating_sub(4).max(1));
+    let glyph = match outcome {
+        Some((g, _)) => Span::styled(g, style.remove_modifier(Modifier::BOLD)),
+        None => {
+            status_glyph(app, pane).patch_style(Style::default().bg(style.bg.unwrap_or(BAR_BG)))
+        }
+    };
     let mut spans = vec![
         Span::styled(" ", style),
-        status_glyph(app, pane).patch_style(Style::default().bg(style.bg.unwrap_or(BAR_BG))),
+        glyph,
         Span::styled(format!(" {name} "), style),
     ];
     let mut used = 4 + name.width();

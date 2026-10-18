@@ -210,10 +210,29 @@ impl Env {
 
     async fn screen_has(&self, agent: &str, needle: &str) {
         let what = format!("{needle:?} on the screen of {agent}");
-        eventually(&what, async || {
+        self.wait_async(&what, async || {
             self.screen(agent).await.contains(needle).then_some(())
         })
         .await;
+    }
+
+    /// Like [`eventually`], but a timeout shows every agent's screen.
+    async fn wait_async<T>(&self, what: &str, mut f: impl AsyncFnMut() -> Option<T>) -> T {
+        let until = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(v) = f().await {
+                return v;
+            }
+            if Instant::now() >= until {
+                let v = self.view().await;
+                let mut screens = String::new();
+                for a in &v.agents {
+                    screens += &format!("--- {}\n{}\n", a.id, self.screen(&a.id.to_string()).await);
+                }
+                panic!("timed out waiting for {what}\n{:#?}\n{screens}", v.items);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 
     fn pending_permissions(v: &StateView) -> Vec<ItemView> {
@@ -1105,5 +1124,136 @@ async fn an_exited_agents_terminal_keeps_its_final_screen_in_the_hub() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let t = hub.get_term(term).expect("terminal removed after exit");
     assert!(t.screen_text().contains("TOOLS: "));
+    env.shutdown().await;
+}
+
+/// The executor starts T-0001, and T-0001 spawns the sub-agent `name`.
+fn sub_agent_scripts(name: &str, task_later: Value, sub: Value) -> Vec<(String, Value)> {
+    vec![
+        (
+            "executor".into(),
+            executor_script(json!([
+                {"when": "plan was accepted", "tool": "spawn_task", "args": {"task": "T-0001"}},
+            ])),
+        ),
+        (
+            "T-0001".into(),
+            json!({
+                "first": [
+                    {"tool": "spawn_subagent", "args": {"name": name, "prompt": "help out"}},
+                ],
+                "later": task_later,
+            }),
+        ),
+        (format!("T-0001/{name}"), sub),
+    ]
+}
+
+async fn start_with(scripts: &[(String, Value)]) -> Env {
+    let scripts: Vec<(&str, Value)> = scripts
+        .iter()
+        .map(|(n, s)| (n.as_str(), s.clone()))
+        .collect();
+    start_fake(&scripts, Duration::from_secs(600)).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agent_git_push_is_denied_through_the_hook() {
+    let env = start_with(&sub_agent_scripts(
+        "pusher",
+        json!([]),
+        permission_script(&["git push origin HEAD"]),
+    ))
+    .await;
+    let (plan, _) = accepted_plan(&env).await;
+    let sub = format!("{plan}/T-0001/pusher");
+    // `cmuxd hook` answered `PreToolUse` with the guard rail's deny.
+    env.screen_has(&sub, "PRE deny: error: sub-agents may not run git push")
+        .await;
+    // The deny needs no person: no permission item, no held hook.
+    assert!(Env::pending_permissions(&env.view().await).is_empty());
+    assert_eq!(env.rt.as_ref().unwrap().waiters().waiting(), 0);
+    env.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ask_parent_and_answer_child_round_trip() {
+    let flag = tempfile::tempdir().unwrap();
+    let flag_file = flag.path().join("ask");
+    let env = start_with(&sub_agent_scripts(
+        "db",
+        json!([
+            {"when": "Which database", "tool": "answer_child",
+             "args": {"agent": "T-0001/db", "answer": "use postgres"}},
+        ]),
+        json!({
+            // Ask only once the task agent idles, so the question is pasted.
+            "first": [
+                {"wait_file": flag_file.display().to_string()},
+                {"tool": "ask_parent", "args": {"question": "Which database?"}},
+            ],
+            "later": [
+                {"when": "use postgres", "tool": "report_result",
+                 "args": {"status": "success", "summary": "went with postgres"}},
+            ],
+        }),
+    ))
+    .await;
+    let (plan, _) = accepted_plan(&env).await;
+    let task = format!("{plan}/T-0001");
+    let sub = format!("{plan}/T-0001/db");
+    env.wait("the task agent to idle with its sub-agent", |v| {
+        let idle = v
+            .agents
+            .iter()
+            .any(|a| a.id.to_string() == task && a.activity == Activity::Idle);
+        let sub_up = v.agents.iter().any(|a| a.id.to_string() == sub);
+        (idle && sub_up).then_some(())
+    })
+    .await;
+    std::fs::write(&flag_file, "").unwrap();
+
+    // The question reaches the task agent (its digest names a file, which the
+    // fake reads; its `when` matches the question), and it calls answer_child.
+    env.screen_has(&task, "TOOL answer_child: answer sent to T-0001/db")
+        .await;
+    let question = env
+        .wait("the question to be answered", |v| {
+            v.items
+                .iter()
+                .find(|i| {
+                    i.kind == ItemKind::ChildQuestion
+                        && matches!(i.status, Delivery::Answered { .. })
+                })
+                .cloned()
+        })
+        .await;
+    assert_eq!(question.to, Recipient::Agent(task.parse().unwrap()));
+    assert!(matches!(&question.status,
+        Delivery::Answered { answer, .. } if answer == "use postgres"));
+
+    // The answer is pasted into the idle sub-agent (path B). The sub-agent
+    // reads it and reports, which its `when` allows only on the answer.
+    let answer = env
+        .wait("the answer to be delivered", |v| {
+            v.items
+                .iter()
+                .find(|i| {
+                    i.to == Recipient::Agent(sub.parse().unwrap())
+                        && i.body.contains("use postgres")
+                        && matches!(i.status, Delivery::Delivered { .. })
+                })
+                .cloned()
+        })
+        .await;
+    assert!(matches!(
+        answer.status,
+        Delivery::Delivered {
+            via: DeliveryPath::PtyPaste,
+            ..
+        }
+    ));
+    env.screen_has(&sub, "TOOL report_result: report recorded")
+        .await;
     env.shutdown().await;
 }
