@@ -1,6 +1,6 @@
 //! Small text marks that several widgets share.
 
-use cmux_proto::view::{AgentView, ClientId, ReportStatus, StateView, TermId};
+use cmux_proto::view::{Activity, AgentView, ClientId, Life, ReportStatus, StateView, TermId};
 
 /// `⇲ 120×40` when another client owns the terminal's size (UI design 3.4),
 /// to go in the pane header. `None` when `me` owns it or nobody does.
@@ -10,9 +10,24 @@ pub fn size_mark(sv: &StateView, term: TermId, me: &ClientId) -> Option<String> 
     (owner != me).then(|| format!("⇲ {}×{}", t.cols, t.rows))
 }
 
+/// Whether an agent is done for now: its process is over, or it reported and
+/// is not at work. The same rule as the `finished && !working` branch of
+/// `cmux_core::glyph::glyph`; a `blocked` agent that resumed is not done.
+pub fn agent_done(a: &AgentView) -> bool {
+    match a.life {
+        Life::Exited { .. } | Life::Stopped => true,
+        Life::Starting => false,
+        Life::Running => a.report.is_some() && a.activity != Activity::Working,
+    }
+}
+
 /// `reported success` (or `blocked`, `failed`) for an agent that handed in its
-/// report, to go in the pane header instead of the directory (UI design 3.3).
+/// report and is done, to go in the pane header instead of the directory (UI
+/// design 3.3). An agent that resumed work shows its directory again.
 pub fn report_mark(a: &AgentView) -> Option<String> {
+    if !agent_done(a) {
+        return None;
+    }
     let r = a.report.as_ref()?;
     let what = match r.status {
         ReportStatus::Success => "success",

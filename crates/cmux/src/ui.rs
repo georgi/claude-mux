@@ -242,11 +242,15 @@ fn draw_pane_header(
             (Some(_), None) => ("· ", tilde(&pane.cwd)),
             (None, None) => (" ", tilde(&pane.cwd)),
         };
-        let text = truncate(&what, (w - used).saturating_sub(2 + sep.len()).max(1));
-        spans.push(Span::styled(
-            format!("{sep}{text}"),
-            style.fg(DIM).remove_modifier(Modifier::BOLD),
-        ));
+        // Columns left after the separator and the bar's closing space.
+        let room = (w - used).saturating_sub(sep.width() + 1);
+        if room >= 4 {
+            let text = truncate(&what, room);
+            spans.push(Span::styled(
+                format!("{sep}{text}"),
+                style.fg(DIM).remove_modifier(Modifier::BOLD),
+            ));
+        }
     }
     f.render_widget(Paragraph::new(Line::from(spans)).style(style), area);
 }

@@ -19,7 +19,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use cmux_proto::view::{
-    AgentId, AgentView, Level, Life, PlanId, StateView, TaskId, TaskState, TermId, TermKind,
+    AgentId, AgentView, Level, PlanId, StateView, TaskId, TaskState, TermId, TermKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -70,7 +70,8 @@ pub struct PaneSpec {
     /// `None` while the agent is starting and has no terminal yet.
     pub term: Option<TermId>,
     pub level: Option<Level>,
-    /// The agent's process is over (exited or stopped); draw it dimmed.
+    /// The agent is done (see `marks::agent_done`): its process is over, or it
+    /// reported and is not working. Drawn dimmed; closing it is local.
     pub finished: bool,
 }
 
@@ -286,7 +287,7 @@ fn pane_of(a: &AgentView) -> PaneSpec {
         agent: Some(a.id.clone()),
         term: a.term,
         level: Some(a.level),
-        finished: matches!(a.life, Life::Exited { .. } | Life::Stopped),
+        finished: super::marks::agent_done(a),
     }
 }
 
@@ -382,7 +383,7 @@ impl ServerView {
 
 #[cfg(test)]
 mod tests {
-    use cmux_proto::view::ChangeView;
+    use cmux_proto::view::{Activity, ChangeView, Life, Report, ReportStatus};
 
     use super::*;
     use crate::tui::fixture;
@@ -440,12 +441,19 @@ mod tests {
 
     #[test]
     fn closed_finished_sub_agents_disappear_running_ones_stay() {
-        let sv = fixture::state();
+        let mut sv = fixture::state();
         let plan = fixture::plan_id();
         let docs = AgentId::new(plan.clone(), "T-0002/docs".parse().unwrap());
         let tests = AgentId::new(plan.clone(), "T-0002/tests".parse().unwrap());
+        // The fixture's docs sub-agent has a report; at work again it is no
+        // more finished than a sub-agent without one: still a pane.
+        let mut working = sv.agent(&docs).unwrap().clone();
+        working.activity = Activity::Working;
+        sv.apply(&cmux_proto::view::DeltaView {
+            rev: 7,
+            change: ChangeView::Agent(working),
+        });
         let mut view = ServerView::default();
-        // The fixture's docs sub-agent is idle with a report but Running: still a pane.
         view.closed.insert(docs.to_string());
         view.closed.insert(tests.to_string());
         let d = derive(&sv, &view);
@@ -468,6 +476,48 @@ mod tests {
         let t2 = &d3.workspace(&plan).unwrap().windows[2];
         assert_eq!(t2.panes.len(), 3);
         assert!(t2.panes[2].finished);
+    }
+
+    #[test]
+    fn a_reported_idle_sub_agent_is_finished_and_can_be_closed() {
+        let sv = fixture::state();
+        let plan = fixture::plan_id();
+        let docs = AgentId::new(plan.clone(), "T-0002/docs".parse().unwrap());
+        let mut a = sv.agent(&docs).unwrap().clone();
+        a.life = Life::Running;
+        a.activity = Activity::Idle;
+        a.report = Some(Report {
+            status: ReportStatus::Success,
+            summary: "done".into(),
+            pr_url: None,
+            attempt: 1,
+            implicit: false,
+            supersedes_blocked: false,
+        });
+        let mut sv2 = sv.clone();
+        sv2.apply(&cmux_proto::view::DeltaView {
+            rev: 8,
+            change: ChangeView::Agent(a.clone()),
+        });
+        let d = derive(&sv2, &ServerView::default());
+        let t2 = &d.workspace(&plan).unwrap().windows[2];
+        assert_eq!(t2.panes.len(), 3);
+        assert!(t2.panes[2].finished);
+        let mut view = ServerView::default();
+        view.closed.insert(docs.to_string());
+        let d = derive(&sv2, &view);
+        assert_eq!(d.workspace(&plan).unwrap().windows[2].panes.len(), 2);
+
+        // Back at work (a blocked report, resumed): not finished, not hidden.
+        a.activity = Activity::Working;
+        sv2.apply(&cmux_proto::view::DeltaView {
+            rev: 9,
+            change: ChangeView::Agent(a),
+        });
+        let d = derive(&sv2, &view);
+        let t2 = &d.workspace(&plan).unwrap().windows[2];
+        assert_eq!(t2.panes.len(), 3);
+        assert!(!t2.panes[2].finished);
     }
 
     #[test]
