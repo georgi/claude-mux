@@ -16,6 +16,7 @@
 //! outcome comes back as a `Command::Runner`. Terminals are registered in the
 //! hub under `term_key(TermId)` and removed from it once the process exits.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -38,6 +39,10 @@ use crate::term::pty::PtySpec;
 const COLS: u16 = 120;
 const ROWS: u16 = 40;
 
+/// Exited agent terminals kept in the hub (with their final screen) beyond
+/// the ones the engine still lists; the oldest go first.
+const EXITED_KEPT: usize = 32;
+
 /// A pasted digest longer than this goes through a file.
 const PASTE_MAX_CHARS: usize = 1000;
 
@@ -49,6 +54,9 @@ pub struct AgentRuntime {
     pub(crate) waiters: PermissionWaiters,
     /// Terminals this runtime started, killed at shutdown.
     started: Mutex<Vec<String>>,
+    /// Terminals made but not yet listed by the engine: their `Spawned` is
+    /// still queued in the actor, so they must not be taken for gone.
+    unlisted: Mutex<HashSet<String>>,
 }
 
 impl AgentRuntime {
@@ -59,6 +67,7 @@ impl AgentRuntime {
             pool: WorktreePool::default(),
             waiters: PermissionWaiters::default(),
             started: Mutex::new(Vec::new()),
+            unlisted: Mutex::new(HashSet::new()),
         })
     }
 
@@ -107,21 +116,40 @@ impl AgentRuntime {
     }
 
     /// Removes exited terminals the engine no longer lists (a resumed agent's
-    /// old one, a closed one) from the hub.
+    /// old one, a closed one) from the hub, and the oldest of the rest beyond
+    /// [`EXITED_KEPT`]. Terminals whose `Spawned` is still queued stay.
     fn forget_gone_terminals(&self, state: &State) {
+        let unlisted = self.unlisted.lock().unwrap_or_else(|e| e.into_inner());
+        let mut kept = Vec::new();
         for key in self.hub.ids() {
-            let listed = key
-                .strip_prefix('t')
-                .and_then(|n| n.parse::<u32>().ok())
-                .is_some_and(|n| state.terminals.contains_key(&TermId(n)));
+            let Some(n) = key.strip_prefix('t').and_then(|n| n.parse::<u32>().ok()) else {
+                continue;
+            };
             let exited = self
                 .hub
                 .get(&key)
                 .is_some_and(|t| t.exited().borrow().is_some());
-            if exited && !listed {
+            if !exited || unlisted.contains(&key) {
+                continue;
+            }
+            if state.terminals.contains_key(&TermId(n)) {
+                kept.push((n, key));
+            } else {
                 self.hub.remove(&key);
             }
         }
+        kept.sort();
+        let excess = kept.len().saturating_sub(EXITED_KEPT);
+        for (_, key) in &kept[..excess] {
+            self.hub.remove(key);
+        }
+    }
+
+    fn listed(&self, id: &str) {
+        self.unlisted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
     }
 
     fn note_started(&self, id: &str) {
@@ -298,6 +326,10 @@ async fn start_agent(
     let (session_id, token_hash) = (spec.session_id.clone(), spec.token_hash);
     let id = term_key(term);
     let hub = rt.hub.clone();
+    rt.unlisted
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id.clone());
     let made = tokio::task::spawn_blocking({
         let id = id.clone();
         move || {
@@ -311,6 +343,7 @@ async fn start_agent(
     let terminal = match made {
         Ok(t) => t,
         Err(error) => {
+            rt.listed(&id);
             handle.send(Command::Runner(RunnerEvent::SpawnFailed { agent, error }));
             return;
         }
@@ -322,6 +355,9 @@ async fn start_agent(
         session_id,
         token_hash,
     }));
+    // The actor handles messages in order: once this query runs, `Spawned` has.
+    let _ = handle.query(|_| ()).await;
+    rt.listed(&id);
     let mut exited = terminal.exited();
     let info = match exited.wait_for(|e| e.is_some()).await {
         Ok(v) => v.clone(),
@@ -329,8 +365,9 @@ async fn start_agent(
     };
     let code = info.and_then(|i| i.signal.is_none().then_some(i.code as i32));
     // The terminal stays in the hub with its final screen until the engine
-    // drops its record (see `forget_gone_terminals`).
+    // drops its record or too many pile up (see `forget_gone_terminals`).
     handle.send(Command::Runner(RunnerEvent::Exited { agent, code }));
+    let _ = handle.query(move |st| rt.forget_gone_terminals(st)).await;
 }
 
 /// The one line pasted into the PTY for a digest. A long or multi-line digest
@@ -425,5 +462,78 @@ mod tests {
             strip_deleted(PathBuf::from("/opt/cmux/cmuxd")),
             PathBuf::from("/opt/cmux/cmuxd")
         );
+    }
+}
+
+#[cfg(test)]
+mod forget_tests {
+    use super::*;
+    use crate::term::pty::PtySpec;
+    use cmux_core::model::{TermKind, Terminal};
+
+    fn listed(id: u32) -> Terminal {
+        Terminal {
+            id: TermId(id),
+            kind: TermKind::Claude,
+            agent: None,
+            cwd: PathBuf::new(),
+            size: (80, 24),
+            size_owner: None,
+            title: None,
+        }
+    }
+
+    fn exited_terminal(hub: &Hub, id: u32) {
+        let t = hub
+            .create(
+                &term_key(TermId(id)),
+                &PtySpec::new("true", &[]),
+                &TermConfig::small(),
+            )
+            .unwrap();
+        let mut rx = t.exited();
+        let end = std::time::Instant::now() + Duration::from_secs(10);
+        while rx.borrow_and_update().is_none() {
+            assert!(std::time::Instant::now() < end, "timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn runtime(hub: &Arc<Hub>) -> Arc<AgentRuntime> {
+        let cfg = SpawnConfig::new(
+            PathBuf::from("cmuxd"),
+            PathBuf::from("s"),
+            PathBuf::from("d"),
+        );
+        AgentRuntime::new(hub.clone(), cfg)
+    }
+
+    #[test]
+    fn a_terminal_whose_spawned_is_still_queued_is_not_forgotten() {
+        let hub = Arc::new(Hub::new());
+        let rt = runtime(&hub);
+        exited_terminal(&hub, 1);
+        rt.unlisted.lock().unwrap().insert(term_key(TermId(1)));
+        rt.forget_gone_terminals(&State::default());
+        assert_eq!(hub.ids(), ["t1"]);
+        // Once `Spawned` is applied and the engine does not list it, it goes.
+        rt.listed("t1");
+        rt.forget_gone_terminals(&State::default());
+        assert!(hub.ids().is_empty());
+    }
+
+    #[test]
+    fn only_the_newest_exited_terminals_stay() {
+        let hub = Arc::new(Hub::new());
+        let rt = runtime(&hub);
+        let mut state = State::default();
+        for id in 1..=(EXITED_KEPT as u32 + 3) {
+            exited_terminal(&hub, id);
+            state.terminals.insert(TermId(id), listed(id));
+        }
+        rt.forget_gone_terminals(&state);
+        let ids = hub.ids();
+        assert_eq!(ids.len(), EXITED_KEPT);
+        assert!(!ids.contains(&"t1".to_string()) && ids.contains(&"t4".to_string()));
     }
 }

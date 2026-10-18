@@ -248,6 +248,22 @@ impl State {
         )
     }
 
+    /// After the exit: drop the raw ring and the scrollback, keeping the final
+    /// screen (and the title) in a parser of its own.
+    fn release(&mut self) {
+        let (rows, cols) = self.parser.screen().size();
+        let callbacks = Callbacks {
+            replies: Vec::new(),
+            title: self.parser.callbacks().title.clone(),
+            bell: false,
+        };
+        let mut last = vt100::Parser::new_with_callbacks(rows, cols, 0, callbacks);
+        last.process(&self.snapshot());
+        self.parser = last;
+        self.ring = VecDeque::new();
+        self.scrollback_cap = 0;
+    }
+
     fn snapshot(&self) -> Vec<u8> {
         let screen = self.parser.screen();
         let mut data = Vec::new();
@@ -305,7 +321,12 @@ impl Shared {
             st.exit = Some(info.clone());
             st.broadcast(&TermEvent::Exit(info.clone()));
             st.closed = true;
+            st.release();
             self.wake.notify_all();
+        }
+        // The child is gone: free the PTY master and its writer thread.
+        if let Some(pty) = self.pty.get() {
+            pty.close();
         }
         self.exit_tx.send_replace(Some(info));
     }
@@ -404,6 +425,10 @@ impl Terminal {
         let _ = shared.pty.set(pty);
         // Queries the child sent before the PTY handle was stored.
         shared.send_replies();
+        // A child that exited before the handle was stored.
+        if shared.lock().exit.is_some() {
+            shared.pty.get().inspect(|p| p.close());
+        }
 
         let flusher = shared.clone();
         std::thread::Builder::new()
@@ -448,20 +473,18 @@ impl Terminal {
         }
     }
 
-    /// Input from `client`, who becomes the size owner.
-    pub fn input(&self, client: &str, bytes: &[u8]) {
+    /// Input from `client`, who becomes the size owner. False when the bytes
+    /// were dropped (see [`Pty::write`]).
+    pub fn input(&self, client: &str, bytes: &[u8]) -> bool {
         self.focus(client);
-        if let Some(pty) = self.shared.pty.get() {
-            pty.write(bytes);
-        }
+        self.write(bytes)
     }
 
     /// Bytes from the server itself (a pasted digest, a steer `Esc`). Unlike
-    /// [`input`](Self::input) nobody becomes the size owner.
-    pub fn write(&self, bytes: &[u8]) {
-        if let Some(pty) = self.shared.pty.get() {
-            pty.write(bytes);
-        }
+    /// [`input`](Self::input) nobody becomes the size owner. False when the
+    /// bytes were dropped (see [`Pty::write`]).
+    pub fn write(&self, bytes: &[u8]) -> bool {
+        self.shared.pty.get().is_some_and(|pty| pty.write(bytes))
     }
 
     /// `client` focused this terminal and becomes the size owner. Returns

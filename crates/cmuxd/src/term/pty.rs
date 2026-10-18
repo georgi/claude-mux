@@ -4,7 +4,8 @@
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -60,12 +61,19 @@ pub struct ExitInfo {
     pub signal: Option<String>,
 }
 
+/// Input bytes queued for the writer thread at most. A child that stopped
+/// reading would otherwise let a pasting client grow the queue without limit.
+pub const INPUT_QUEUE_BYTES: usize = 1 << 20;
+
 /// A running PTY child. Dropping it does not kill the child; call `kill`.
 pub struct Pty {
     /// Input for the writer thread, which alone touches the PTY master's
     /// writer: a child that stops reading blocks that thread, nobody else.
-    input: std::sync::mpsc::Sender<Vec<u8>>,
-    master: Mutex<Box<dyn MasterPty + Send>>,
+    /// `None` once [`close`](Pty::close)d, which ends the writer thread.
+    input: Mutex<Option<std::sync::mpsc::Sender<Vec<u8>>>>,
+    /// Bytes sent to the writer thread and not yet written.
+    queued: Arc<AtomicUsize>,
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     pid: Option<u32>,
 }
@@ -113,10 +121,13 @@ impl Pty {
         let mut reader = pair.master.try_clone_reader()?;
         let mut writer = pair.master.take_writer()?;
         let (input, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let queued = Arc::new(AtomicUsize::new(0));
+        let written = queued.clone();
         std::thread::Builder::new()
             .name(format!("pty-in-{}", pid.unwrap_or(0)))
             .spawn(move || {
                 while let Ok(bytes) = input_rx.recv() {
+                    written.fetch_sub(bytes.len(), Ordering::Relaxed);
                     if writer.write_all(&bytes).is_err() || writer.flush().is_err() {
                         // The child is gone; drop what is still queued.
                         break;
@@ -147,8 +158,9 @@ impl Pty {
             })?;
 
         Ok(Pty {
-            input,
-            master: Mutex::new(pair.master),
+            input: Mutex::new(Some(input)),
+            queued,
+            master: Mutex::new(Some(pair.master)),
             killer: Mutex::new(killer),
             pid,
         })
@@ -159,15 +171,39 @@ impl Pty {
     }
 
     /// Queue input for the child; never blocks. Order is kept across callers.
-    /// Errors (child gone) are ignored.
-    pub fn write(&self, bytes: &[u8]) {
-        let _ = self.input.send(bytes.to_vec());
+    /// Returns false when the bytes were dropped: the child is gone, or it
+    /// has stopped reading and [`INPUT_QUEUE_BYTES`] are already waiting (a
+    /// write into an empty queue is always accepted, however large).
+    pub fn write(&self, bytes: &[u8]) -> bool {
+        let guard = self.input.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(tx) = guard.as_ref() else {
+            return false;
+        };
+        let waiting = self.queued.load(Ordering::Relaxed);
+        if waiting > 0 && waiting + bytes.len() > INPUT_QUEUE_BYTES {
+            return false;
+        }
+        self.queued.fetch_add(bytes.len(), Ordering::Relaxed);
+        if tx.send(bytes.to_vec()).is_err() {
+            self.queued.fetch_sub(bytes.len(), Ordering::Relaxed);
+            return false;
+        }
+        true
     }
 
     pub fn resize(&self, rows: u16, cols: u16) {
-        if let Ok(m) = self.master.lock() {
+        if let Ok(m) = self.master.lock()
+            && let Some(m) = m.as_ref()
+        {
             let _ = m.resize(size(rows, cols));
         }
+    }
+
+    /// Release the master fd and end the writer thread once the child has
+    /// exited. Later writes and resizes do nothing.
+    pub fn close(&self) {
+        self.input.lock().unwrap_or_else(|e| e.into_inner()).take();
+        self.master.lock().unwrap_or_else(|e| e.into_inner()).take();
     }
 
     pub fn kill(&self) {

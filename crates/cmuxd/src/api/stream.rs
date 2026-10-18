@@ -346,6 +346,13 @@ async fn run(
     let mut presence_rx = app.presence.subscribe();
     let mut revoked_rx = app.devices.watch_revocations();
     let device = principal.device_id().map(str::to_string);
+    // A revocation between authenticating and subscribing was not signalled.
+    if device
+        .as_deref()
+        .is_some_and(|id| app.devices.name_of(id).is_none())
+    {
+        return;
+    }
     let _registered = Registered::new(
         app,
         PresenceEntry {
@@ -488,12 +495,22 @@ struct InputJob {
     term: Arc<Terminal>,
     client: String,
     data: Vec<u8>,
+    /// Where to report input the terminal could not take.
+    out: Out,
 }
 
 /// Writes to PTYs in order, off the async threads (a full PTY buffer blocks).
 fn input_loop(mut rx: mpsc::Receiver<InputJob>) {
     while let Some(job) = rx.blocking_recv() {
-        job.term.input(&job.client, &job.data);
+        if !job.term.input(&job.client, &job.data) {
+            // The child stopped reading (or is gone). Best effort: a full
+            // outgoing queue means the client is not reading either.
+            let msg = ServerMsg::Error {
+                code: ErrorCode::Limit,
+                message: "error: the terminal is not accepting input".into(),
+            };
+            let _ = job.out.try_send(text(&msg));
+        }
     }
 }
 
@@ -604,6 +621,7 @@ impl Conn {
             term: t,
             client: self.client.0.clone(),
             data,
+            out: self.out.clone(),
         };
         if self.input.send(job).await.is_err() {
             return false;

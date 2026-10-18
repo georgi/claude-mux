@@ -61,13 +61,19 @@ pub fn login(args: &[String]) -> Result<()> {
     if let Some(w) = cleartext_warning(&normalize_url(&url)?) {
         eprintln!("{w}");
     }
-    let entry = pair(&url, &code, name.as_deref(), &device_name())?;
+    // Load first: a broken config should not cost the one-time code.
     let path = client_toml();
     let mut cfg = ClientConfig::load(&path)?;
-    check_clash(&cfg, &entry, name.is_some())?;
+    let mut entry = pair(&url, &code, name.as_deref(), &device_name())?;
+    // The server's name is only known now and the code is spent, so a clash
+    // is resolved by renaming rather than by failing.
+    let taken = rename_clash(&cfg, &mut entry, name.is_some());
     let n = entry.name.clone();
     cfg.add(entry);
     cfg.save(&path)?;
+    if let Some(old) = taken {
+        eprintln!("note: {old:?} is already paired with another server; stored as {n:?}");
+    }
     println!("Paired with {n}. `cmux servers` lists the paired servers.");
     Ok(())
 }
@@ -103,24 +109,31 @@ pub fn pair(url: &str, code: &str, name: Option<&str>, device: &str) -> Result<S
     })
 }
 
-/// Refuses to silently replace another server's entry: a name taken by a
-/// different URL needs an explicit `--name`.
-fn check_clash(cfg: &ClientConfig, entry: &ServerEntry, explicit_name: bool) -> Result<()> {
-    match cfg.get(&entry.name) {
-        Some(old) if old.url != entry.url && !explicit_name => bail!(
-            "{:?} is already paired with {}; pick another name with --name",
-            entry.name,
-            old.url
-        ),
-        _ => Ok(()),
+/// Keeps a login from silently replacing another server's entry: a name the
+/// server chose that is taken by a different URL becomes `NAME-2`, `NAME-3`...
+/// (an explicit `--name` may replace). Returns the name that was taken.
+fn rename_clash(
+    cfg: &ClientConfig,
+    entry: &mut ServerEntry,
+    explicit_name: bool,
+) -> Option<String> {
+    let clashes = |name: &str| cfg.get(name).is_some_and(|old| old.url != entry.url);
+    if explicit_name || !clashes(&entry.name) {
+        return None;
     }
+    let old = entry.name.clone();
+    entry.name = (2..)
+        .map(|n| format!("{old}-{n}"))
+        .find(|c| c != LOCAL && !clashes(c) && cfg.get(c).is_none())
+        .expect("an unused name exists");
+    Some(old)
 }
 
 /// A warning for an `http://` URL that is not loopback: the token would cross
 /// the network in cleartext.
 fn cleartext_warning(url: &str) -> Option<String> {
     let host = host_of(url);
-    let loopback = host == "localhost" || host == "[" || host.starts_with("127.");
+    let loopback = host == "localhost" || host == "[::1]" || host.starts_with("127.");
     (url.starts_with("http://") && !loopback).then(|| {
         format!("warning: {url} is not https; the pairing code and token travel in cleartext")
     })
@@ -140,10 +153,14 @@ fn normalize_url(u: &str) -> Result<String> {
 }
 
 fn host_of(url: &str) -> String {
-    url.split("://")
-        .nth(1)
-        .unwrap_or(url)
-        .split(['/', ':'])
+    let rest = url.split("://").nth(1).unwrap_or(url);
+    // An IPv6 literal keeps its brackets and colons: `[::1]`.
+    if rest.starts_with('[')
+        && let Some(end) = rest.find(']')
+    {
+        return rest[..=end].to_string();
+    }
+    rest.split(['/', ':'])
         .next()
         .unwrap_or("server")
         .to_string()
@@ -300,6 +317,7 @@ mod tests {
         );
         assert!(normalize_url("ftp://x").is_err());
         assert_eq!(host_of("https://box.ts.net:8443"), "box.ts.net");
+        assert_eq!(host_of("http://[::1]:8080/x"), "[::1]");
     }
 
     #[test]
@@ -342,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn login_refuses_to_replace_another_server_without_name() {
+    fn login_does_not_replace_another_server_without_name() {
         let entry = |name: &str, url: &str| ServerEntry {
             name: name.into(),
             url: url.into(),
@@ -350,13 +368,19 @@ mod tests {
         };
         let mut cfg = ClientConfig::default();
         cfg.add(entry("vps", "https://a.example"));
-        // Same name, other URL: refused unless --name was given.
-        let other = entry("vps", "https://b.example");
-        assert!(check_clash(&cfg, &other, false).is_err());
-        assert!(check_clash(&cfg, &other, true).is_ok());
+        cfg.add(entry("vps-2", "https://c.example"));
+        // Same name, other URL: renamed unless --name was given.
+        let mut other = entry("vps", "https://b.example");
+        assert_eq!(rename_clash(&cfg, &mut other, false), Some("vps".into()));
+        assert_eq!(other.name, "vps-3");
+        let mut other = entry("vps", "https://b.example");
+        assert_eq!(rename_clash(&cfg, &mut other, true), None);
+        assert_eq!(other.name, "vps");
         // Re-pairing the same URL refreshes the token.
-        assert!(check_clash(&cfg, &entry("vps", "https://a.example"), false).is_ok());
-        assert!(check_clash(&cfg, &entry("new", "https://b.example"), false).is_ok());
+        let mut same = entry("vps", "https://a.example");
+        assert_eq!(rename_clash(&cfg, &mut same, false), None);
+        let mut new = entry("new", "https://b.example");
+        assert_eq!(rename_clash(&cfg, &mut new, false), None);
     }
 
     #[test]
@@ -366,5 +390,6 @@ mod tests {
         assert!(cleartext_warning("http://127.0.0.1:9").is_none());
         assert!(cleartext_warning("http://localhost:9").is_none());
         assert!(cleartext_warning("http://[::1]:9").is_none());
+        assert!(cleartext_warning("http://[2001:db8::1]:9").is_some());
     }
 }

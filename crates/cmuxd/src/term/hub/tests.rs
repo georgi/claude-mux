@@ -329,14 +329,14 @@ fn fifty_megabytes_of_output_stay_within_the_ring_and_parser() {
         ..TermConfig::default()
     };
     let total: u64 = 50 * 1024 * 1024;
-    let script = format!("yes 'the quick brown fox jumps over the lazy dog' | head -c {total}");
+    let script =
+        format!("yes 'the quick brown fox jumps over the lazy dog' | head -c {total}; sleep 30");
     let term = Terminal::spawn("t", &sh(&script), &cfg).unwrap();
     let mut sub = term.subscribe(None);
-    let mut exited = term.exited();
     // Drain like a client would, so the subscriber is not dropped as stalled.
     wait_for(|| {
         while sub.rx.try_recv().is_ok() {}
-        exited.borrow_and_update().clone()
+        (term.stats().seq >= total).then_some(())
     });
     let stats = term.stats();
     assert!(stats.seq >= total, "{} bytes produced", stats.seq);
@@ -349,6 +349,7 @@ fn fifty_megabytes_of_output_stay_within_the_ring_and_parser() {
         panic!("expected snapshot");
     };
     assert!(data.len() < 100_000);
+    term.kill();
 }
 
 #[test]
@@ -409,5 +410,36 @@ fn writing_to_a_child_that_never_reads_does_not_block_the_caller() {
         "{:?}",
         start.elapsed()
     );
+    term.kill();
+}
+
+#[test]
+fn an_exited_terminal_keeps_its_screen_but_not_its_ring_or_scrollback() {
+    let term = Terminal::spawn("t", &sh("seq 1 200; echo bye"), &TermConfig::default()).unwrap();
+    let mut exited = term.exited();
+    wait_for(|| exited.borrow_and_update().clone());
+    let stats = term.stats();
+    assert_eq!((stats.ring_len, stats.scrollback_len), (0, 0));
+    assert!(term.screen_text().contains("bye"));
+    // Writes after the exit are refused, and a late subscriber still gets the screen.
+    assert!(!term.write(b"x"));
+    let sub = term.subscribe(Some(0));
+    let Catchup::Snapshot { data, .. } = &sub.catchup else {
+        panic!("expected snapshot");
+    };
+    assert!(String::from_utf8_lossy(data).contains("bye"));
+}
+
+#[test]
+fn input_for_a_child_that_stopped_reading_is_refused_once_the_queue_is_full() {
+    let hub = Hub::new();
+    let id = hub.new_id();
+    let term = hub
+        .create(&id, &sh("sleep 30"), &TermConfig::small())
+        .unwrap();
+    // The first write is taken however large; the writer thread blocks on it.
+    assert!(term.write(&vec![b'x'; 4 * 1024 * 1024]));
+    wait_for(|| (!term.write(&vec![b'y'; 1024 * 1024])).then_some(()));
+    assert!(!term.input("a", &vec![b'z'; 1024 * 1024]));
     term.kill();
 }

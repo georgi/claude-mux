@@ -153,7 +153,11 @@ impl ServerBuilder {
         let mut state = store.load()?;
         state.data_dir = data_dir.clone();
         // The config is the source of truth for the wait, not the saved copy.
-        state.timeouts.permission_wait = config.agents.permission_wait_secs.max(1) * 1000;
+        state.timeouts.permission_wait = config
+            .agents
+            .permission_wait_secs
+            .max(1)
+            .saturating_mul(1000);
         let diag = Diag::open(&data_dir).map_err(|e| ServerError::Io("diagnostics".into(), e))?;
         if global_tracing {
             use tracing_subscriber::layer::SubscriberExt;
