@@ -287,6 +287,10 @@ pub struct Agent {
     /// The report has been landed (posted to the parent, task moved).
     #[serde(default)]
     pub landed: bool,
+    /// For a sub-agent: the attempt of its task it was spawned in. A sub-agent of
+    /// an older attempt is an orphan: it neither counts nor reports.
+    #[serde(default)]
+    pub attempt: u32,
 }
 
 impl Agent {
@@ -324,6 +328,7 @@ impl Agent {
             idle_since: None,
             landed: false,
             unconfirmed: Vec::new(),
+            attempt: 0,
         }
     }
 }

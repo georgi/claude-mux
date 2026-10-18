@@ -444,6 +444,12 @@ impl Ctx<'_> {
             }
             Some(PlanState::Done) => {
                 self.plan_mut(pi).state = PlanState::Done;
+                // Nothing is left to do for the plan's sub-agents.
+                for ai in 0..self.plan(pi).agents.len() {
+                    if self.agent(pi, ai).level == Level::Sub {
+                        self.stop_agent(pi, ai);
+                    }
+                }
                 text("the plan is done")
             }
             _ => text("plan updated"),

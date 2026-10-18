@@ -363,6 +363,8 @@ impl Ctx<'_> {
         };
         let tid = task.id;
         let id = AgentId::new(pid, AgentPath::Task(tid));
+        // Sub-agents of the previous attempt would answer to the new one.
+        self.stop_subs(pi, tid);
         self.register(pi, id.clone(), cwd);
         // The old attempt's "exited without report" is answered by this one.
         self.dismiss_stalled(&id);
@@ -435,6 +437,8 @@ impl Ctx<'_> {
         }
         self.check_global_slot()?;
         let ai = self.register(pi, id, cwd);
+        let attempt = self.task_attempt(pi, task);
+        self.agent_mut(pi, ai).attempt = attempt;
         let kickoff = self.render_tpl(Template::KickoffSubagent, &[("prompt", &prompt)]);
         let fx = self.spawn_fx(pi, ai, false, kickoff);
         self.fx.push(fx);
@@ -463,8 +467,19 @@ impl Ctx<'_> {
             term: self.agent(pi, ai).term,
         });
         self.expire_held_for(&id);
+        self.close_questions_of(&id);
         self.dismiss_stalled(&id);
         self.drain_queue();
+    }
+
+    /// Stops the live sub-agents of a task (all attempts).
+    pub fn stop_subs(&mut self, pi: usize, task: TaskId) {
+        for ai in 0..self.plan(pi).agents.len() {
+            let a = self.agent(pi, ai);
+            if a.path.sub_name().is_some() && a.task == Some(task) && a.is_live() {
+                self.stop_agent(pi, ai);
+            }
+        }
     }
 
     /// Stop and Resume answer "stalled / exited without report" items.
@@ -503,6 +518,12 @@ impl Ctx<'_> {
             return err(
                 ErrorKind::Invalid,
                 format!("{id} never started, so there is no session to resume"),
+            );
+        }
+        if a.level == Level::Sub && !self.current_attempt(pi, ai) {
+            return err(
+                ErrorKind::Invalid,
+                format!("{id} belongs to an earlier attempt of its task; spawn a new sub-agent"),
             );
         }
         self.check_global_slot()?;
@@ -697,10 +718,12 @@ impl Ctx<'_> {
                     );
                 }
             }
-            RunnerEvent::Exited { agent, code } => {
+            RunnerEvent::Exited { agent, term, code } => {
                 let (pi, ai) = self.agent_idx(&agent)?;
                 let a = self.agent(pi, ai);
                 match a.life {
+                    // The exit of an earlier process of the same agent id.
+                    _ if a.term.is_some_and(|t| t != term) => {}
                     // A late exit of a replaced process, or of one we stopped.
                     Life::Starting if a.term.is_none() => {}
                     Life::Stopped => {}
@@ -753,6 +776,9 @@ impl Ctx<'_> {
                     t.pr.as_ref()
                         .map_or(String::new(), |p: &PrRef| format!(" #{}", p.number));
                 self.task_mut(pi, ti).state = to;
+                if to == TaskState::Merged {
+                    self.stop_subs(pi, task);
+                }
                 let body = format!(
                     "{task} PR{number}: {from} -> {to} (GitHub: merged={}, closed={}, CI {:?})",
                     state.merged, state.closed, state.ci

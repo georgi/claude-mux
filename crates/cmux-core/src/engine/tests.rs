@@ -256,6 +256,11 @@ impl H {
     fn plan(&self, p: &PlanId) -> &Plan {
         self.st.plans.iter().find(|x| x.id == *p).unwrap()
     }
+    /// The terminal the agent's current process runs in.
+    fn term_of(&self, id: &AgentId) -> TermId {
+        self.agent(id).term.expect("the agent has a process")
+    }
+
     fn agent(&self, id: &AgentId) -> &Agent {
         self.plan(id.plan()).agent(id).unwrap()
     }
@@ -934,6 +939,7 @@ fn exit_without_a_report_is_an_implicit_blocked_report() {
     h.stop(&exec, false);
     let o = h.runner(RunnerEvent::Exited {
         agent: a.clone(),
+        term: h.term_of(&a),
         code: Some(1),
     });
     let ag = h.agent(&a);
@@ -958,6 +964,7 @@ fn exit_without_a_report_is_an_implicit_blocked_report() {
     assert!(
         h.runner(RunnerEvent::Exited {
             agent: a.clone(),
+            term: h.term_of(&a),
             code: Some(1)
         })
         .deltas
@@ -1000,6 +1007,7 @@ fn session_end_then_exit_code_and_a_clean_exit_after_a_report() {
     assert_eq!(h.task(&pid, 1).state, TaskState::Blocked);
     h.runner(RunnerEvent::Exited {
         agent: a.clone(),
+        term: h.term_of(&a),
         code: Some(0),
     });
     assert_eq!(h.agent(&a).life, Life::Exited { code: Some(0) });
@@ -1011,6 +1019,7 @@ fn session_end_then_exit_code_and_a_clean_exit_after_a_report() {
     h.stop(&b, false);
     h.runner(RunnerEvent::Exited {
         agent: b.clone(),
+        term: h.term_of(&b),
         code: Some(0),
     });
     assert_eq!(h.task(&pid, 2).state, TaskState::Passing);
@@ -1037,6 +1046,7 @@ fn stop_resume_and_late_events() {
     assert!(
         h.runner(RunnerEvent::Exited {
             agent: a.clone(),
+            term: h.term_of(&a),
             code: None
         })
         .deltas
@@ -1389,6 +1399,7 @@ fn permission_times_out_to_claudes_own_prompt() {
     let item = held(&h.hook(&a, perm("r10", "make", "make")).unwrap());
     let o = h.runner(RunnerEvent::Exited {
         agent: a.clone(),
+        term: h.term_of(&a),
         code: Some(0),
     });
     assert_eq!(h.status(item), Delivery::Expired);
@@ -2823,6 +2834,7 @@ fn deltas_are_gap_free_over_a_long_scenario() {
     h.stop(&b, false);
     h.runner(RunnerEvent::Exited {
         agent: b.clone(),
+        term: h.term_of(&b),
         code: Some(2),
     });
     h.tick(61 * MIN);
@@ -3089,6 +3101,7 @@ fn a_report_followed_by_exit_before_stop_still_lands() {
     // Claude is killed before its Stop hook runs.
     h.runner(RunnerEvent::Exited {
         agent: a.clone(),
+        term: h.term_of(&a),
         code: Some(0),
     });
     assert_eq!(
@@ -3112,6 +3125,7 @@ fn a_report_after_a_resumed_exit_is_not_swallowed_by_the_dedupe_key() {
     // Exit with no report: implicit blocked report, human item.
     h.runner(RunnerEvent::Exited {
         agent: a.clone(),
+        term: h.term_of(&a),
         code: Some(1),
     });
     assert_eq!(exec_children_reports(&h, &exec), 1);
@@ -3135,6 +3149,7 @@ fn two_exits_without_report_in_one_attempt_both_reach_the_human() {
     let a = h.start(&pid, &exec, 1);
     h.runner(RunnerEvent::Exited {
         agent: a.clone(),
+        term: h.term_of(&a),
         code: Some(1),
     });
     let first = h.human(|k| *k == ItemKind::ExitedWithoutReport)[0].id;
@@ -3146,6 +3161,7 @@ fn two_exits_without_report_in_one_attempt_both_reach_the_human() {
     h.prompt(&a);
     h.runner(RunnerEvent::Exited {
         agent: a.clone(),
+        term: h.term_of(&a),
         code: Some(1),
     });
     let open: Vec<_> = h
@@ -3188,6 +3204,7 @@ fn a_respawned_sub_agent_with_a_reused_name_reports_to_its_parent() {
         // Sub exits so the name is free again.
         h.runner(RunnerEvent::Exited {
             agent: sub.clone(),
+            term: h.term_of(&sub),
             code: Some(0),
         });
     }
@@ -3279,6 +3296,7 @@ fn respawning_a_task_drops_the_old_terminal() {
     let a = h.start(&pid, &exec, 1);
     h.runner(RunnerEvent::Exited {
         agent: a.clone(),
+        term: h.term_of(&a),
         code: Some(1),
     });
     assert_eq!(h.task(&pid, 1).state, TaskState::Blocked);
@@ -3368,6 +3386,7 @@ fn resuming_an_agent_that_exited_without_a_report_respects_the_slot_limits() {
     let a1 = h.start(&pid, &exec, 1);
     h.runner(RunnerEvent::Exited {
         agent: a1.clone(),
+        term: h.term_of(&a1),
         code: Some(1),
     });
     // Its slot is free, so two others fill the plan.
@@ -3393,6 +3412,7 @@ fn resuming_an_agent_that_exited_without_a_report_respects_the_slot_limits() {
     h.boot(&sub(s1));
     h.runner(RunnerEvent::Exited {
         agent: sub(s1),
+        term: h.term_of(&sub(s1)),
         code: Some(1),
     });
     spawn(&mut h, s2).unwrap();
@@ -3572,6 +3592,7 @@ fn a_new_attempt_closes_the_old_attempts_exited_item() {
     let a = h.start(&pid, &exec, 1);
     h.runner(RunnerEvent::Exited {
         agent: a.clone(),
+        term: h.term_of(&a),
         code: Some(1),
     });
     let item = h.human(|k| *k == ItemKind::ExitedWithoutReport)[0].id;
@@ -3724,4 +3745,554 @@ fn only_https_pull_request_urls_are_accepted() {
         assert!(e.to_string().contains("pull request URL"), "{url}: {e}");
     }
     assert!(h.task(&pid, 1).pr.is_none());
+}
+
+// ---- sub-agent lifecycle ----
+
+fn sub_id(pid: &PlanId, n: u32, name: &str) -> AgentId {
+    AgentId::new(pid.clone(), AgentPath::sub(t(n), name).unwrap())
+}
+
+/// The task agent spawns sub-agent `name` and its process comes up and works.
+fn start_sub(h: &mut H, pid: &PlanId, task: &AgentId, name: &str) -> AgentId {
+    h.tool(
+        task,
+        ToolCall::SpawnSubagent {
+            name: name.into(),
+            prompt: "p".into(),
+        },
+    )
+    .unwrap();
+    let sub = sub_id(pid, 1, name);
+    h.boot(&sub);
+    h.prompt(&sub);
+    sub
+}
+
+fn live_processes(h: &H, pid: &PlanId) -> usize {
+    h.plan(pid).agents.iter().filter(|a| a.is_live()).count()
+}
+
+#[test]
+fn a_sub_agent_that_reported_success_or_failure_is_stopped() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-stop", 1);
+    let task = h.start(&pid, &exec, 1);
+    for (name, status) in [("a", ReportStatus::Success), ("b", ReportStatus::Failed)] {
+        let sub = start_sub(&mut h, &pid, &task, name);
+        h.report(&sub, status).unwrap();
+        let o = h.stop(&sub, false);
+        assert_eq!(h.agent(&sub).life, Life::Stopped, "{name}");
+        assert!(has_fx(
+            &o,
+            |e| matches!(e, Effect::KillAgent { agent, .. } if *agent == sub)
+        ));
+        assert_eq!(h.agent(&sub).report.as_ref().unwrap().status, status);
+    }
+    assert_eq!(child_reports(&h, &task).len(), 2);
+}
+
+#[test]
+fn a_blocked_sub_agent_keeps_running() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-blocked", 1);
+    let task = h.start(&pid, &exec, 1);
+    let sub = start_sub(&mut h, &pid, &task, "a");
+    h.report(&sub, ReportStatus::Blocked).unwrap();
+    h.stop(&sub, false);
+    assert_eq!(h.agent(&sub).life, Life::Running);
+    assert_eq!(child_reports(&h, &task).len(), 1);
+}
+
+#[test]
+fn rounds_of_two_finished_sub_agents_do_not_exhaust_the_limits() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-rounds", 1);
+    let task = h.start(&pid, &exec, 1);
+    for round in 0..6 {
+        for n in ["a", "b"] {
+            let sub = start_sub(&mut h, &pid, &task, &format!("{n}{round}"));
+            h.report(&sub, ReportStatus::Success).unwrap();
+            h.stop(&sub, false);
+        }
+        // Two slots per round, none held by the finished ones.
+        assert_eq!(
+            live_processes(&h, &pid),
+            2,
+            "round {round}: executor + task"
+        );
+    }
+}
+
+#[test]
+fn an_idle_task_agent_whose_sub_agents_finished_gets_the_stall_item() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-stall", 1);
+    let task = h.start(&pid, &exec, 1);
+    let sub = start_sub(&mut h, &pid, &task, "a");
+    // While a sub-agent works, the task agent is parked: no stall item.
+    h.stop(&task, false);
+    h.tick(30 * MIN);
+    assert!(h.human(|k| *k == ItemKind::ExitedWithoutReport).is_empty());
+    h.report(&sub, ReportStatus::Success).unwrap();
+    h.stop(&sub, false);
+    // The report woke the task agent; it ends its turn again and idles.
+    h.prompt(&task);
+    h.stop(&task, false);
+    h.tick(11 * MIN);
+    let stalls = h.human(|k| *k == ItemKind::ExitedWithoutReport);
+    assert_eq!(stalls.len(), 1, "{stalls:?}");
+    assert_eq!(stalls[0].from.as_ref(), Some(&task));
+}
+
+#[test]
+fn a_landed_sub_agent_does_not_park_its_parent_even_when_blocked() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-park", 1);
+    let task = h.start(&pid, &exec, 1);
+    let sub = start_sub(&mut h, &pid, &task, "a");
+    h.report(&sub, ReportStatus::Blocked).unwrap();
+    h.stop(&sub, false);
+    // The first Stop is blocked by the pending report; the second idles.
+    h.stop(&task, false);
+    h.stop(&task, true);
+    h.tick(11 * MIN);
+    assert_eq!(h.human(|k| *k == ItemKind::ExitedWithoutReport).len(), 1);
+}
+
+#[test]
+fn a_crashed_task_agent_takes_its_live_sub_agents_along() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-orphan", 1);
+    let task = h.start(&pid, &exec, 1);
+    let sub = start_sub(&mut h, &pid, &task, "a");
+    h.runner(RunnerEvent::Exited {
+        agent: task.clone(),
+        term: h.term_of(&task),
+        code: Some(1),
+    });
+    assert_eq!(h.task(&pid, 1).state, TaskState::Blocked);
+    assert_eq!(h.agent(&sub).life, Life::Stopped, "the orphan is stopped");
+    // The executor retries; the new attempt gets its full allowance.
+    h.tool(
+        &exec,
+        ToolCall::SpawnTask {
+            task: t(1),
+            instructions: None,
+            force: false,
+        },
+    )
+    .unwrap();
+    let task2 = h.up(&pid, 1);
+    assert_eq!(h.task(&pid, 1).attempt, 2);
+    start_sub(&mut h, &pid, &task2, "b");
+    start_sub(&mut h, &pid, &task2, "c");
+    let e = err_of(h.tool(
+        &task2,
+        ToolCall::SpawnSubagent {
+            name: "d".into(),
+            prompt: "p".into(),
+        },
+    ));
+    assert_eq!(e.kind, ErrorKind::Limit);
+}
+
+#[test]
+fn a_new_attempt_stops_the_previous_attempts_sub_agents() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-attempt", 1);
+    let task = h.start(&pid, &exec, 1);
+    let sub = start_sub(&mut h, &pid, &task, "a");
+    // The task agent was stopped by a person, then the task blocked and respawned.
+    h.runner(RunnerEvent::Exited {
+        agent: task.clone(),
+        term: h.term_of(&task),
+        code: Some(1),
+    });
+    // Even if the sub-agent had been left running, the new attempt stops it.
+    h.st.plans[0].agents.iter_mut().for_each(|a| {
+        if a.id == sub {
+            a.life = Life::Running;
+        }
+    });
+    h.tool(
+        &exec,
+        ToolCall::SpawnTask {
+            task: t(1),
+            instructions: None,
+            force: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(h.agent(&sub).life, Life::Stopped);
+}
+
+#[test]
+fn an_orphans_report_does_not_land_as_the_new_attempts() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-orphan-report", 1);
+    let task = h.start(&pid, &exec, 1);
+    let sub = start_sub(&mut h, &pid, &task, "a");
+    assert_eq!(h.agent(&sub).attempt, 1);
+    h.runner(RunnerEvent::Exited {
+        agent: task.clone(),
+        term: h.term_of(&task),
+        code: Some(1),
+    });
+    h.tool(
+        &exec,
+        ToolCall::SpawnTask {
+            task: t(1),
+            instructions: None,
+            force: false,
+        },
+    )
+    .unwrap();
+    let task2 = h.up(&pid, 1);
+    // Force the orphan back to life, as a race between kill and report would.
+    h.st.plans[0]
+        .agents
+        .iter_mut()
+        .find(|a| a.id == sub)
+        .unwrap()
+        .life = Life::Running;
+    // An orphan holds no slot of the new attempt.
+    start_sub(&mut h, &pid, &task2, "b");
+    start_sub(&mut h, &pid, &task2, "c");
+    h.report(&sub, ReportStatus::Success).unwrap();
+    h.stop(&sub, false);
+    assert!(child_reports(&h, &task2).is_empty());
+    let e = err_of(h.client(ClientAction::ResumeAgent { agent: sub.clone() }));
+    assert!(e.to_string().contains("earlier attempt"), "{e}");
+}
+
+#[test]
+fn merging_a_task_stops_its_sub_agents_but_not_its_task_agent() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-merge", 1);
+    let task = h.start(&pid, &exec, 1);
+    let sub = start_sub(&mut h, &pid, &task, "a");
+    h.tool(
+        &exec,
+        ToolCall::CheckCriterion {
+            task: t(1),
+            criterion: 1,
+            checked: true,
+        },
+    )
+    .unwrap();
+    h.client(ClientAction::TransitionTask {
+        plan: pid.clone(),
+        task: t(1),
+        to: TaskState::Merged,
+    })
+    .unwrap();
+    assert_eq!(h.agent(&sub).life, Life::Stopped);
+    assert_eq!(h.agent(&task).life, Life::Running);
+}
+
+#[test]
+fn a_merged_pull_request_stops_the_sub_agents() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-pr-merge", 1);
+    let task = h.start(&pid, &exec, 1);
+    let sub = start_sub(&mut h, &pid, &task, "a");
+    h.tool(
+        &task,
+        ToolCall::SetTaskPr {
+            url: "https://github.com/o/r/pull/7".into(),
+        },
+    )
+    .unwrap();
+    h.report(&task, ReportStatus::Success).unwrap();
+    h.stop(&task, false);
+    h.runner(RunnerEvent::Pr {
+        plan: pid.clone(),
+        task: t(1),
+        state: PrGithubState {
+            merged: true,
+            closed: false,
+            ci: CiConclusion::Success,
+            head_sha: None,
+        },
+    });
+    assert_eq!(h.task(&pid, 1).state, TaskState::Merged);
+    assert_eq!(h.agent(&sub).life, Life::Stopped);
+}
+
+#[test]
+fn finishing_the_plan_stops_every_sub_agent() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-done", 1);
+    let task = h.start(&pid, &exec, 1);
+    let sub = start_sub(&mut h, &pid, &task, "a");
+    h.tool(
+        &exec,
+        ToolCall::CheckCriterion {
+            task: t(1),
+            criterion: 1,
+            checked: true,
+        },
+    )
+    .unwrap();
+    h.client(ClientAction::TransitionTask {
+        plan: pid.clone(),
+        task: t(1),
+        to: TaskState::Merged,
+    })
+    .unwrap();
+    // A sub-agent respawned after the merge (or one the merge missed).
+    h.st.plans[0]
+        .agents
+        .iter_mut()
+        .find(|a| a.id == sub)
+        .unwrap()
+        .life = Life::Running;
+    h.tool(
+        &exec,
+        ToolCall::UpdatePlan {
+            state: Some(PlanState::Done),
+            title: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(h.plan(&pid).state, PlanState::Done);
+    assert_eq!(h.agent(&sub).life, Life::Stopped);
+}
+
+#[test]
+fn a_late_exit_of_a_stopped_process_leaves_its_replacement_alone() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-late-exit", 1);
+    let task = h.start(&pid, &exec, 1);
+    let sub = start_sub(&mut h, &pid, &task, "a");
+    let old = h.term_of(&sub);
+    h.tool(&task, ToolCall::StopAgent { agent: sub.clone() })
+        .unwrap();
+    start_sub(&mut h, &pid, &task, "a");
+    assert_ne!(h.term_of(&sub), old);
+    h.runner(RunnerEvent::Exited {
+        agent: sub.clone(),
+        term: old,
+        code: None,
+    });
+    assert_eq!(h.agent(&sub).life, Life::Running);
+    assert!(h.agent(&sub).report.is_none());
+    let exited = h
+        .items_to(&task)
+        .into_iter()
+        .filter(|i| i.kind == ItemKind::ChildExited)
+        .count();
+    assert_eq!(exited, 0);
+    // The new process's own exit still counts.
+    h.runner(RunnerEvent::Exited {
+        agent: sub.clone(),
+        term: h.term_of(&sub),
+        code: Some(1),
+    });
+    assert_eq!(h.agent(&sub).life, Life::Exited { code: Some(1) });
+}
+
+fn child_questions(h: &H, to: &AgentId) -> Vec<(ItemKind, Delivery)> {
+    h.items_to(to)
+        .into_iter()
+        .filter(|i| i.kind == ItemKind::ChildQuestion)
+        .map(|i| (i.kind.clone(), i.status.clone()))
+        .collect()
+}
+
+#[test]
+fn a_finished_sub_agents_question_closes_and_no_expiry_is_sent() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-question", 1);
+    let task = h.start(&pid, &exec, 1);
+    let sub = start_sub(&mut h, &pid, &task, "a");
+    h.tool(
+        &sub,
+        ToolCall::AskParent {
+            question: "which?".into(),
+        },
+    )
+    .unwrap();
+    // The parent answers with send instead of answer_child; the sub finishes.
+    h.tool(
+        &task,
+        ToolCall::Send {
+            agent: sub.clone(),
+            text: "use x".into(),
+            interrupt: false,
+        },
+    )
+    .unwrap();
+    h.report(&sub, ReportStatus::Success).unwrap();
+    // The first Stop is blocked by the pending message; the second lands.
+    h.stop(&sub, false);
+    h.stop(&sub, true);
+    assert_eq!(
+        child_questions(&h, &task),
+        vec![(ItemKind::ChildQuestion, Delivery::Dismissed)]
+    );
+    h.tick(61 * MIN);
+    assert!(
+        h.items_to(&sub).iter().all(|i| !i.body.contains("expired")),
+        "no expiry message to a finished sub-agent"
+    );
+}
+
+#[test]
+fn stopping_or_losing_an_agent_closes_its_questions() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-question-stop", 1);
+    let task = h.start(&pid, &exec, 1);
+    let a = start_sub(&mut h, &pid, &task, "a");
+    let b = start_sub(&mut h, &pid, &task, "b");
+    for s in [&a, &b] {
+        h.tool(
+            s,
+            ToolCall::AskParent {
+                question: "which?".into(),
+            },
+        )
+        .unwrap();
+    }
+    h.tool(&task, ToolCall::StopAgent { agent: a.clone() })
+        .unwrap();
+    h.runner(RunnerEvent::Exited {
+        agent: b.clone(),
+        term: h.term_of(&b),
+        code: Some(1),
+    });
+    let qs = child_questions(&h, &task);
+    assert_eq!(qs.len(), 2);
+    assert!(qs.iter().all(|(_, s)| *s == Delivery::Dismissed), "{qs:?}");
+    h.tick(61 * MIN);
+    assert!(h.items_to(&a).iter().all(|i| !i.body.contains("expired")));
+}
+
+#[test]
+fn an_expired_question_is_not_sent_to_a_dead_asker() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("sub-question-dead", 1);
+    let task = h.start(&pid, &exec, 1);
+    let sub = start_sub(&mut h, &pid, &task, "a");
+    h.tool(
+        &sub,
+        ToolCall::AskParent {
+            question: "which?".into(),
+        },
+    )
+    .unwrap();
+    // The asker dies without anything closing the question (old saved state).
+    h.st.plans[0]
+        .agents
+        .iter_mut()
+        .find(|a| a.id == sub)
+        .unwrap()
+        .life = Life::Stopped;
+    h.tick(61 * MIN);
+    assert!(h.items_to(&sub).iter().all(|i| !i.body.contains("expired")));
+}
+
+#[test]
+fn guard_rails_table() {
+    use super::hooks::guard;
+    // (level, command, denied)
+    let table: &[(Level, &str, bool)] = &[
+        // Sub-agents never push, however the word is dressed up.
+        (Level::Sub, "git push", true),
+        (Level::Sub, "git push origin HEAD", true),
+        (Level::Sub, "/usr/bin/git push", true),
+        (Level::Sub, "(git push)", true),
+        (Level::Sub, "$(git push)", true),
+        (Level::Sub, "x=$(git push 2>&1)", true),
+        (Level::Sub, "`git push`", true),
+        (Level::Sub, "{ git push; }", true),
+        (Level::Sub, "\"git\" \"push\"", true),
+        (Level::Sub, "git -C /tmp/x push", true),
+        (Level::Sub, "git -c user.name=x push", true),
+        (Level::Sub, "git --git-dir /a/.git push", true),
+        (
+            Level::Sub,
+            "git --git-dir=/a/.git --work-tree=/a push",
+            true,
+        ),
+        (Level::Sub, "env GIT_TRACE=1 git push", true),
+        (Level::Sub, "sh -c 'git push'", true),
+        (Level::Sub, "bash -lc \"cd x && git push origin\"", true),
+        (Level::Sub, "git send-pack origin HEAD", true),
+        (Level::Sub, "git fetch && git push", true),
+        (Level::Sub, "git status; echo push", true),
+        (Level::Sub, "git log\ngit push", true),
+        // The task agent may push.
+        (Level::Task, "git push -u origin claude/T-1", false),
+        (Level::Task, "sh -c 'git push'", false),
+        // Sub-agents may do everything else.
+        (Level::Sub, "git status", false),
+        (Level::Sub, "git commit -am wip", false),
+        (Level::Sub, "git log --oneline", false),
+        (Level::Sub, "cargo test && git diff", false),
+        (Level::Sub, "push the button", false),
+        (Level::Sub, "cd /repo/git && ls", false),
+        (Level::Sub, "git commit -m 'fix push bug'", false),
+        (Level::Sub, "git commit -m 'fix push bug' && git push", true),
+        (Level::Sub, "git commit -m \"$(git push)\"", true),
+        // A known false positive of the conservative rule.
+        (Level::Sub, "echo git; echo hi push", true),
+        // Base branch: every spelling, both levels.
+        (Level::Task, "git checkout main", true),
+        (Level::Sub, "git checkout main", true),
+        (Level::Task, "git switch main", true),
+        (Level::Task, "git checkout origin/main", true),
+        (Level::Task, "git checkout refs/heads/main", true),
+        (Level::Task, "git checkout heads/main", true),
+        (Level::Task, "git switch origin/main", true),
+        (Level::Task, "git switch -d main", true),
+        (Level::Task, "git switch --detach origin/main", true),
+        (Level::Task, "git checkout --detach main", true),
+        (Level::Task, "git checkout -f main", true),
+        (Level::Task, "git checkout main --", true),
+        (Level::Task, "git checkout 'main'", true),
+        (Level::Task, "git checkout \"main\"", true),
+        (Level::Task, "/usr/bin/git checkout main", true),
+        (Level::Task, "git -C /wt checkout main", true),
+        (Level::Task, "git --git-dir /wt/.git checkout main", true),
+        (Level::Task, "git --work-tree /wt checkout main", true),
+        (Level::Task, "git --namespace x checkout main", true),
+        (Level::Task, "git --exec-path /x checkout main", true),
+        (Level::Task, "git -c advice.x=1 checkout main", true),
+        (Level::Task, "(git checkout main)", true),
+        (Level::Task, "$(git checkout main)", true),
+        (Level::Task, "`git checkout main`", true),
+        (Level::Task, "sh -c 'git checkout main'", true),
+        (Level::Task, "bash -c \"cd x; git switch main\"", true),
+        (Level::Task, "git fetch && git checkout main", true),
+        (Level::Task, "git checkout main^", true),
+        // Not the base branch.
+        (Level::Task, "git checkout claude/T-1", false),
+        (Level::Task, "git checkout -b feat main", false),
+        (Level::Task, "git switch -c feat origin/main", false),
+        (Level::Task, "git checkout main -- src/a.rs", false),
+        (
+            Level::Task,
+            "git checkout origin/main -- src/a.rs src/b.rs",
+            false,
+        ),
+        (Level::Task, "git checkout -- main", false),
+        (Level::Task, "git checkout mainline", false),
+        (Level::Task, "git checkout feature/main", false),
+        (Level::Task, "git checkout -b main-fix", false),
+        (Level::Task, "git commit -m 'checkout main'", false),
+        (Level::Task, "git log main", false),
+        (Level::Task, "git merge main", false),
+        (Level::Task, "echo checkout main", false),
+        // The executor is not guarded.
+        (Level::Executor, "git checkout main", false),
+        (Level::Executor, "git push", false),
+    ];
+    for (level, cmd, denied) in table {
+        let got = guard(*level, Some("main"), "Bash", cmd);
+        assert_eq!(got.is_some(), *denied, "{level:?} {cmd:?} -> {got:?}");
+    }
+    // Other tools are never guarded.
+    assert!(guard(Level::Sub, Some("main"), "Edit", "git push").is_none());
 }

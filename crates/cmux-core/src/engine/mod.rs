@@ -242,11 +242,23 @@ impl Ctx<'_> {
             .count() as u32
     }
 
+    /// The task's current attempt (0 when the task is unknown).
+    pub fn task_attempt(&self, pi: usize, task: TaskId) -> u32 {
+        self.plan(pi).task(task).map_or(0, |t| t.attempt)
+    }
+
+    /// Whether a sub-agent belongs to its task's current attempt.
+    pub fn current_attempt(&self, pi: usize, ai: usize) -> bool {
+        let a = self.agent(pi, ai);
+        a.task.is_none_or(|t| a.attempt == self.task_attempt(pi, t))
+    }
+
     pub fn subs_used(&self, pi: usize, task: TaskId) -> u32 {
+        let attempt = self.task_attempt(pi, task);
         let agents = self.st.plans[pi].agents.iter();
         agents
             .filter(|a| a.path.sub_name().is_some() && a.task == Some(task))
-            .filter(|a| a.is_live() && !a.landed)
+            .filter(|a| a.is_live() && !a.landed && a.attempt == attempt)
             .count() as u32
     }
 
