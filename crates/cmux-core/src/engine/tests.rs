@@ -242,6 +242,7 @@ impl H {
             who,
             Hook::SessionStart {
                 session_id: format!("sess-{who}"),
+                transcript_path: None,
             },
         )
         .unwrap();
@@ -987,6 +988,65 @@ fn exit_without_a_report_is_an_implicit_blocked_report() {
         h.human(|k| *k == ItemKind::ExitedWithoutReport)
             .iter()
             .all(|i| i.status == Delivery::Dismissed)
+    );
+}
+
+#[test]
+fn the_implicit_report_is_the_last_assistant_text() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("last text", 2);
+    let a = h.start(&pid, &exec, 1);
+    let tokens = TokenUsage {
+        input: 10,
+        output: 20,
+        cache_read: 30,
+        cache_write: 40,
+    };
+    let long = format!("I am stuck: {}", "x".repeat(3000));
+    let o = h.runner(RunnerEvent::TokensUpdated {
+        agent: a.clone(),
+        tokens,
+        last_text: Some(long.clone()),
+    });
+    assert!(!o.deltas.is_empty());
+    assert_eq!(h.agent(&a).tokens, tokens);
+    let kept = h.agent(&a).last_text.clone().unwrap();
+    assert_eq!(kept.chars().count(), LAST_TEXT_CHARS);
+    assert!(kept.starts_with("I am stuck: xxx") && kept.ends_with('…'));
+    // The same read again changes nothing; a read with no text keeps the old one.
+    let again = RunnerEvent::TokensUpdated {
+        agent: a.clone(),
+        tokens,
+        last_text: Some(long),
+    };
+    assert!(h.runner(again).deltas.is_empty());
+    let none = RunnerEvent::TokensUpdated {
+        agent: a.clone(),
+        tokens,
+        last_text: None,
+    };
+    assert!(h.runner(none).deltas.is_empty());
+    assert_eq!(h.agent(&a).last_text.as_deref(), Some(kept.as_str()));
+
+    h.runner(RunnerEvent::Exited {
+        agent: a.clone(),
+        code: Some(0),
+    });
+    let r = h.agent(&a).report.clone().unwrap();
+    assert!(r.implicit && r.status == ReportStatus::Blocked);
+    assert_eq!(r.summary, kept);
+    let to_exec = h
+        .items_to(&exec)
+        .into_iter()
+        .find(|i| i.kind == ItemKind::ChildExited)
+        .unwrap();
+    assert!(to_exec.body.contains("I am stuck: xxx"), "{}", to_exec.body);
+    // The human item still says why.
+    let needs = h.human(|k| *k == ItemKind::ExitedWithoutReport);
+    assert!(
+        needs[0].body.contains("exited without a report"),
+        "{}",
+        needs[0].body
     );
 }
 
@@ -2875,6 +2935,7 @@ fn activity_follows_the_hooks() {
         &a,
         Hook::SessionStart {
             session_id: "new".into(),
+            transcript_path: None,
         },
     )
     .unwrap();
@@ -3515,11 +3576,17 @@ fn clear_ends_the_session_but_not_the_agent() {
         &a,
         Hook::SessionStart {
             session_id: "after-clear".into(),
+            transcript_path: Some("/p/after-clear.jsonl".into()),
         },
     )
     .unwrap();
     assert_eq!(h.agent(&a).life, Life::Running);
     assert_eq!(h.agent(&a).session_id, "after-clear");
+    // The new transcript is followed from here on.
+    assert_eq!(
+        h.agent(&a).transcript.as_deref(),
+        Some(std::path::Path::new("/p/after-clear.jsonl"))
+    );
     assert!(h.agent(&a).report.is_none());
     assert_eq!(h.task(&pid, 1).state, TaskState::InProgress);
     assert!(h.human(|k| *k == ItemKind::ExitedWithoutReport).is_empty());

@@ -248,6 +248,7 @@ fn plan_with_dependent_tasks_survives_detach_and_reattach() {
     let server = rt
         .block_on(
             builder
+                .transcripts(agents.transcripts().clone())
                 .runner(agents.runner())
                 .extra_routes(move || Extra {
                     unix_only: routes.routes(),

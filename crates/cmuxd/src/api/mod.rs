@@ -28,6 +28,7 @@ use cmux_core::engine::EngineError;
 use cmux_proto::api::{ErrorBody, ErrorCode, ServerInfo};
 
 use crate::actor::{ActorGone, ActorHandle, Clock};
+use crate::claude::transcript::Transcripts;
 use crate::config::Config;
 use crate::devices::{Devices, Pairing};
 use crate::diag::Diag;
@@ -71,6 +72,8 @@ pub struct Shared {
     pub base_url: std::sync::RwLock<String>,
     /// The GitHub poller, as `/status` shows it.
     pub github: crate::git::github::Status,
+    /// Agents' conversations, for `/transcript` and `sub_chat`.
+    pub transcripts: Arc<Transcripts>,
     idem: idem::Cache,
 }
 
@@ -89,6 +92,7 @@ impl AppState {
         diag: Diag,
         data_dir: std::path::PathBuf,
         hub: Arc<Hub>,
+        transcripts: Arc<Transcripts>,
     ) -> AppState {
         let clock = actor.clock().clone();
         let p = &config.pairing;
@@ -114,6 +118,7 @@ impl AppState {
             hub,
             base_url,
             github: crate::git::github::Status::default(),
+            transcripts,
         }))
     }
 }

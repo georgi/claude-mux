@@ -9,11 +9,13 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 use cmux_core::ids::{AgentPath, slugify};
-use cmux_proto::api::{AnswerAction, AnswerReq, Created, ErrorCode, MessageReq, RepoSpec, route};
+use cmux_proto::api::{
+    AnswerAction, AnswerReq, Created, ErrorCode, MessageReq, RepoSpec, TranscriptResp, route,
+};
 use cmux_proto::stream::{ClientKind, ClientMsg, Frame, ServerMsg};
 use cmux_proto::view::{
-    AgentId, AgentView, ChangeView, ItemId, ItemKind, ItemView, Life, ObjectRef, PlanView,
-    StateView, TaskView, TermId,
+    AgentId, AgentView, ChangeView, ChatEntry, ChatKind, ChatRole, ItemId, ItemKind, ItemView,
+    Life, ObjectRef, PlanView, StateView, TaskView, TermId,
 };
 use serde::Serialize;
 
@@ -37,7 +39,8 @@ USAGE:
     cmux [-s NAME] send <agent> <text> [--steer] Queue a message, or steer (interrupt)
     cmux [-s NAME] stop <agent>                  Stop an agent
     cmux [-s NAME] resume <agent>                Resume a stopped agent
-    cmux [-s NAME] tail <agent>                  Stream the agent's terminal to stdout
+    cmux [-s NAME] tail <agent> [--chat]         Stream the agent's terminal to stdout
+                                                 (--chat: its conversation, one entry a line)
     cmux [-s NAME] attach [<agent>]              Open the TUI on that agent
 
 <plan> is a plan id or the slug of its title. <agent> is <plan>/executor,
@@ -141,6 +144,8 @@ pub enum Verb {
     },
     Tail {
         agent: String,
+        /// The conversation instead of the terminal.
+        chat: bool,
     },
     Attach {
         agent: Option<String>,
@@ -171,7 +176,7 @@ pub fn parse(verb: &str, args: &[String]) -> VResult<Verb> {
                 )
             }
             "--" => pos.extend(it.by_ref().cloned()),
-            f @ ("--json" | "--always" | "--steer") => flags.push(f),
+            f @ ("--json" | "--always" | "--steer" | "--chat") => flags.push(f),
             s if s.starts_with('-') && s.len() > 1 => {
                 return Err(usage(format!("unknown option {s} for `cmux {verb}`")));
             }
@@ -182,6 +187,7 @@ pub fn parse(verb: &str, args: &[String]) -> VResult<Verb> {
         "plans" | "board" | "inbox" => &["--json"],
         "allow" => &["--always"],
         "send" => &["--steer"],
+        "tail" => &["--chat"],
         _ => &[],
     };
     if let Some(f) = flags.iter().find(|f| !allowed.contains(f)) {
@@ -294,8 +300,11 @@ pub fn parse(verb: &str, args: &[String]) -> VResult<Verb> {
             Verb::Resume { agent: next() }
         }
         "tail" => {
-            want(1, 1, "<agent>")?;
-            Verb::Tail { agent: next() }
+            want(1, 1, "<agent> [--chat]")?;
+            Verb::Tail {
+                agent: next(),
+                chat: flag("--chat"),
+            }
         }
         "attach" => {
             want(0, 1, "[<agent>]")?;
@@ -524,7 +533,11 @@ fn exec(http: &Http, ep: &Endpoint, v: Verb, out: &mut dyn Write) -> VResult<()>
             post_empty(http, &agent_route(&id, "resume"))?;
             say(out, format!("resumed {id}"));
         }
-        Verb::Tail { agent } => {
+        Verb::Tail { agent, chat: true } => {
+            let id = resolve_agent(&state()?, &agent)?.id.clone();
+            tail_chat(ep, http, &id, out)?;
+        }
+        Verb::Tail { agent, chat: false } => {
             let sv = state()?;
             let a = resolve_agent(&sv, &agent)?;
             let term = a
@@ -784,6 +797,136 @@ pub fn tail(ep: &Endpoint, term: TermId, out: &mut dyn Write) -> VResult<()> {
     }
 }
 
+/// One chat entry for a terminal: `> ` before what the user wrote, `* ` before
+/// a tool call, `  = ` before a tool's output (one line, cut), and the
+/// assistant's text as is. Later lines of a text are indented by two spaces.
+pub fn chat_line(e: &ChatEntry) -> String {
+    let indent = |s: &str| {
+        let lines: Vec<String> = s
+            .trim_end()
+            .lines()
+            .enumerate()
+            .map(|(i, l)| match (i, l.trim_end()) {
+                (0, l) | (_, l @ "") => l.to_string(),
+                (_, l) => format!("  {l}"),
+            })
+            .collect();
+        lines.join("\n")
+    };
+    match (e.role, e.kind) {
+        (ChatRole::User, ChatKind::Text) => format!("> {}", indent(&e.text)),
+        (ChatRole::Assistant, ChatKind::Text) => indent(&e.text),
+        (_, ChatKind::ToolCall) => match &e.tool {
+            Some(t) => format!("* {} {}", t.name, t.summary),
+            None => format!("* {}", one_line(&e.text, 100)),
+        },
+        (_, ChatKind::ToolResult) => format!("  = {}", one_line(&e.text, 100)),
+    }
+}
+
+fn one_line(s: &str, max: usize) -> String {
+    let one = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() <= max {
+        return one;
+    }
+    let mut cut: String = one.chars().take(max - 1).collect();
+    cut.push('…');
+    cut
+}
+
+/// Prints the agent's conversation, then its new entries as they arrive,
+/// until the agent ends (its last entries are fetched once more then).
+pub fn tail_chat(ep: &Endpoint, http: &Http, agent: &AgentId, out: &mut dyn Write) -> VResult<()> {
+    let lost = |e: &dyn std::fmt::Display| VerbError::Server(format!("stream: {e}"));
+    let mut wire = WsWire::connect(ep).map_err(|e| lost(&e))?;
+    let token = match ep {
+        Endpoint::Remote { token, .. } if !token.is_empty() => Some(token.clone()),
+        _ => None,
+    };
+    let send = |wire: &mut WsWire, m: ClientMsg| {
+        wire.send(&Outgoing::Msg(m))
+            .map_err(|e| lost(&format!("{e:?}")))
+    };
+    send(
+        &mut wire,
+        ClientMsg::Hello {
+            client: ClientKind::Cli,
+            since_rev: None,
+            token,
+            info: Some(format!("cmux {} tail --chat", env!("CARGO_PKG_VERSION"))),
+            terms: Vec::new(),
+        },
+    )?;
+    let ended = |a: &AgentView| !matches!(a.life, Life::Running | Life::Starting);
+    // A closed pipe (`| head`) ends the tail quietly.
+    let print = |out: &mut dyn Write, entries: &[ChatEntry], last: &mut Option<String>| {
+        for e in entries {
+            *last = Some(e.uuid.clone());
+            if writeln!(out, "{}", chat_line(e))
+                .and_then(|()| out.flush())
+                .is_err()
+            {
+                return false;
+            }
+        }
+        true
+    };
+    // The entries after the last one printed, once the agent is gone: the
+    // final read happens as it ends, maybe after the stream said so.
+    let finish = |out: &mut dyn Write, last: &mut Option<String>| -> VResult<()> {
+        let mut path = route::transcript(&agent.to_string().replace('/', "%2F"));
+        if let Some(u) = last.as_deref() {
+            path.push_str(&format!("?after={u}"));
+        }
+        let rest: TranscriptResp = http.get(&path)?;
+        print(out, &rest.entries, last);
+        Ok(())
+    };
+    let (mut last, mut subscribed, mut gone) = (None, false, false);
+    let mut last_ping = Instant::now();
+    let mut nonce = 0;
+    loop {
+        match wire.recv().map_err(|e| lost(&format!("{e:?}")))? {
+            None | Some(Incoming::Binary(_)) => {}
+            Some(Incoming::Text(t)) => match serde_json::from_str::<ServerMsg>(&t) {
+                Ok(ServerMsg::Welcome { .. }) => send(
+                    &mut wire,
+                    ClientMsg::SubChat {
+                        agent: agent.clone(),
+                        after: None,
+                    },
+                )?,
+                Ok(ServerMsg::State { snapshot, .. }) => {
+                    gone |= snapshot.agent(agent).is_none_or(ended);
+                }
+                Ok(ServerMsg::Deltas { items, .. }) => {
+                    gone |= items.iter().any(|d| match &d.change {
+                        ChangeView::Agent(a) => a.id == *agent && ended(a),
+                        ChangeView::Removed(ObjectRef::Agent { agent: a }) => a == agent,
+                        _ => false,
+                    });
+                }
+                Ok(ServerMsg::Chat { agent: a, entries }) if a == *agent => {
+                    subscribed = true;
+                    if !print(out, &entries, &mut last) {
+                        return Ok(());
+                    }
+                }
+                Ok(ServerMsg::Error { message, .. }) => return Err(VerbError::Server(message)),
+                _ => {}
+            },
+        }
+        if gone && subscribed {
+            return finish(out, &mut last);
+        }
+        if last_ping.elapsed() > PING_EVERY {
+            last_ping = Instant::now();
+            nonce += 1;
+            send(&mut wire, ClientMsg::Ping { nonce })?;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -830,6 +973,13 @@ mod tests {
         );
         assert_eq!(p("attach", &[]), Ok(Verb::Attach { agent: None }));
         assert_eq!(p("tail", &["--help"]), Ok(Verb::Help));
+        assert_eq!(
+            p("tail", &["demo", "--chat"]),
+            Ok(Verb::Tail {
+                agent: "demo".into(),
+                chat: true
+            })
+        );
     }
 
     #[test]
@@ -849,6 +999,43 @@ mod tests {
             assert!(e.line().starts_with("error: "), "{e:?}");
             assert!(!e.line().contains('\n'));
         }
+    }
+
+    #[test]
+    fn chat_lines() {
+        let e = |role, kind, text: &str, tool: Option<(&str, &str)>| ChatEntry {
+            uuid: "u".into(),
+            ts: 0,
+            role,
+            kind,
+            text: text.into(),
+            tool: tool.map(|(n, s)| cmux_proto::view::ChatTool {
+                name: n.into(),
+                summary: s.into(),
+            }),
+        };
+        use ChatKind::*;
+        use ChatRole::*;
+        assert_eq!(
+            chat_line(&e(User, Text, "fix it\nplease", None)),
+            "> fix it\n  please"
+        );
+        assert_eq!(chat_line(&e(Assistant, Text, "Done.\n", None)), "Done.");
+        assert_eq!(
+            chat_line(&e(
+                Assistant,
+                ToolCall,
+                "cargo test --all",
+                Some(("Bash", "cargo test --all"))
+            )),
+            "* Bash cargo test --all"
+        );
+        let long = "ok\n".repeat(80);
+        let r = chat_line(&e(User, ToolResult, &long, Some(("Bash", ""))));
+        assert!(
+            r.starts_with("  = ok ok") && r.ends_with('…') && !r.contains('\n'),
+            "{r}"
+        );
     }
 
     #[test]

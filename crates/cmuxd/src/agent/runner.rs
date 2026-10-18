@@ -7,6 +7,7 @@
 //! ```ignore
 //! let rt = AgentRuntime::from_config(&config, hub.clone());
 //! ServerBuilder::new(config)
+//!     .transcripts(rt.transcripts().clone())
 //!     .runner(rt.runner())
 //!     .extra_routes(move || Extra { unix_only: rt.routes(), ..Extra::default() })
 //! ```
@@ -30,6 +31,7 @@ use crate::actor::{ActorHandle, EffectRunner};
 use crate::claude::spawn::{
     LevelOpts, SpawnConfig, SpawnRequest, SpawnSpec, build_spawn, digest_dir, write_files,
 };
+use crate::claude::transcript::Transcripts;
 use crate::claude::trust;
 use crate::config::Config;
 use crate::git::worktree::{WorktreePool, WorktreeRequest};
@@ -58,6 +60,9 @@ pub struct AgentRuntime {
     /// Terminals made but not yet listed by the engine: their `Spawned` is
     /// still queued in the actor, so they must not be taken for gone.
     unlisted: Mutex<HashSet<String>>,
+    /// Read at `Stop` (by the endpoint) and at exit; give the same one to
+    /// `ServerBuilder::transcripts`.
+    transcripts: Arc<Transcripts>,
 }
 
 impl AgentRuntime {
@@ -73,6 +78,7 @@ impl AgentRuntime {
             waiters: PermissionWaiters::default(),
             started: Mutex::new(Vec::new()),
             unlisted: Mutex::new(HashSet::new()),
+            transcripts: Transcripts::new(),
         })
     }
 
@@ -99,6 +105,10 @@ impl AgentRuntime {
 
     pub fn hub(&self) -> &Arc<Hub> {
         &self.hub
+    }
+
+    pub fn transcripts(&self) -> &Arc<Transcripts> {
+        &self.transcripts
     }
 
     pub fn spawn_config(&self) -> &SpawnConfig {
@@ -398,6 +408,8 @@ async fn start_agent(
         Err(_) => None,
     };
     let code = info.and_then(|i| i.signal.is_none().then_some(i.code as i32));
+    // The last answer becomes the implicit report, so it must be read first.
+    rt.transcripts.report_turn(&handle, &agent).await;
     // The terminal stays in the hub with its final screen until the engine
     // drops its record or too many pile up (see `forget_gone_terminals`).
     handle.send(Command::Runner(RunnerEvent::Exited { agent, code }));

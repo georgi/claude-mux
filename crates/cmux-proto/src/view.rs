@@ -136,6 +136,47 @@ pub struct ItemView {
     pub needs_human: bool,
 }
 
+/// One entry of an agent's conversation, read from Claude's transcript
+/// (architecture 5.3). Thinking blocks, meta lines and `<`-wrapped injections
+/// never become entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatEntry {
+    /// The transcript line's `uuid`; `uuid#n` for the n-th further entry of
+    /// one line. `after=` and `sub_chat` take it.
+    pub uuid: String,
+    pub ts: Timestamp,
+    pub role: ChatRole,
+    pub kind: ChatKind,
+    /// The text, the tool's input summary (`tool_call`), or the tool's output
+    /// cut to 400 chars (`tool_result`).
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<ChatTool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatRole {
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatKind {
+    Text,
+    ToolCall,
+    ToolResult,
+}
+
+/// The tool behind a `tool_call` or `tool_result` entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatTool {
+    pub name: String,
+    /// The input on one line, at most 60 chars.
+    pub summary: String,
+}
+
 /// A whole-object change at `rev`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeltaView {

@@ -8,7 +8,9 @@ use cmux_core::engine::{ErrorKind, HookReply, ItemAction, PermissionDecision};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::view::{AgentId, Repo, TaskId, TaskState, TermId, TermKind, TerminalView, Timestamp};
+use crate::view::{
+    AgentId, ChatEntry, Repo, TaskId, TaskState, TermId, TermKind, TerminalView, Timestamp,
+};
 
 /// Header on mutating requests; a retry with the same key replays the first
 /// response instead of acting twice.
@@ -68,6 +70,10 @@ pub mod route {
     // GET ?lines=
     pub fn scrollback(term: u32) -> String {
         format!("/v1/terminals/{term}/scrollback")
+    }
+    // GET ?after=<uuid>&limit= (TranscriptResp)
+    pub fn transcript(agent: &str) -> String {
+        format!("/v1/agents/{agent}/transcript")
     }
     // GET / DELETE
     pub fn device(id: &str) -> String {
@@ -272,6 +278,15 @@ pub struct SpawnTaskReq {
     pub instructions: Option<String>,
     #[serde(default)]
     pub force: bool,
+}
+
+/// `GET /agents/:id/transcript?after=<uuid>&limit=`: the entries after
+/// `after` (oldest first, at most `limit`), or without `after` the last
+/// `limit` entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptResp {
+    pub agent: AgentId,
+    pub entries: Vec<ChatEntry>,
 }
 
 /// `POST /agents/:id/messages`: `steer` interrupts, otherwise it is queued.

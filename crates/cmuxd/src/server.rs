@@ -23,6 +23,7 @@ use crate::actor::{
 };
 use crate::api::auth::PeerCred;
 use crate::api::{self, AppState, Extra, Transport};
+use crate::claude::transcript::Transcripts;
 use crate::config::{self, Config, ConfigError};
 use crate::devices::Devices;
 use crate::diag::{Diag, DiagLayer};
@@ -77,6 +78,7 @@ pub struct ServerBuilder {
     tick: Option<Duration>,
     runners: Vec<RunnerFactory>,
     hub: Arc<Hub>,
+    transcripts: Arc<Transcripts>,
     extra: Option<Box<dyn Fn() -> Extra + Send>>,
     global_tracing: bool,
     gh: Option<Arc<dyn Gh>>,
@@ -90,6 +92,7 @@ impl ServerBuilder {
             tick: Some(Duration::from_secs(1)),
             runners: Vec::new(),
             hub: Arc::new(Hub::new()),
+            transcripts: Transcripts::new(),
             extra: None,
             global_tracing: false,
             gh: None,
@@ -101,6 +104,13 @@ impl ServerBuilder {
     /// `let hub = b.hub(); b.runner(move |h| Box::new(MyRunner::new(h, hub)))`.
     pub fn hub(&self) -> Arc<Hub> {
         self.hub.clone()
+    }
+
+    /// The transcript tailer, shared with the agent runtime so its reads at
+    /// `Stop` and at exit reach chat subscribers too.
+    pub fn transcripts(mut self, t: Arc<Transcripts>) -> Self {
+        self.transcripts = t;
+        self
     }
 
     pub fn clock(mut self, clock: Clock) -> Self {
@@ -150,6 +160,7 @@ impl ServerBuilder {
             tick,
             runners,
             hub,
+            transcripts,
             extra,
             global_tracing,
             gh,
@@ -190,7 +201,15 @@ impl ServerBuilder {
         );
         let devices = Devices::open(&data_dir, clock.clone())
             .map_err(|e| ServerError::Io("devices.json".into(), e))?;
-        let app = AppState::new(actor, devices, config.clone(), diag, data_dir, hub);
+        let app = AppState::new(
+            actor,
+            devices,
+            config.clone(),
+            diag,
+            data_dir,
+            hub,
+            transcripts,
+        );
         close_orphan_terminals(&app).await;
         let extra = extra.unwrap_or_else(|| Box::new(Extra::default));
 
@@ -222,6 +241,11 @@ impl ServerBuilder {
 
         let (stop_tx, stop_rx) = watch::channel(false);
         let mut tasks = Vec::new();
+        tasks.push(tokio::spawn(
+            app.transcripts
+                .clone()
+                .poll(app.actor.clone(), stop_rx.clone()),
+        ));
         let router = api::router_with(app.clone(), Transport::Unix, extra());
         tasks.push(tokio::spawn(serve_unix(unix, router, stop_rx.clone())));
         let mut bound = None;

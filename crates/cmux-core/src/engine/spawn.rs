@@ -5,9 +5,11 @@ use std::path::PathBuf;
 use super::*;
 use crate::ids::{AgentPath, TermId};
 use crate::model::{
-    Activity, CI_FAILURE_CAP, CiConclusion, CiMark, Level, Plan, PlanState, QueuedSpawn, TaskState,
-    TermKind, Terminal, TransitionSource, check_task_transition, pr_to_task_state,
+    Activity, CI_FAILURE_CAP, CiConclusion, CiMark, LAST_TEXT_CHARS, Level, Plan, PlanState,
+    QueuedSpawn, TaskState, TermKind, Terminal, TransitionSource, check_task_transition,
+    pr_to_task_state,
 };
+use crate::permissions::cut_chars;
 use crate::prompts::{Template, render, task_list_line};
 
 /// Terminal size until a client resizes it.
@@ -848,6 +850,22 @@ impl Ctx<'_> {
                 {
                     t.title = title;
                     self.touch(Change::Terminal(term));
+                }
+            }
+            RunnerEvent::TokensUpdated {
+                agent,
+                tokens,
+                last_text,
+            } => {
+                let (pi, ai) = self.agent_idx(&agent)?;
+                let last_text = last_text.map(|t| cut_chars(&t, LAST_TEXT_CHARS));
+                let a = self.agent(pi, ai);
+                if a.tokens != tokens || (last_text.is_some() && a.last_text != last_text) {
+                    let a = self.agent_mut(pi, ai);
+                    a.tokens = tokens;
+                    if last_text.is_some() {
+                        a.last_text = last_text;
+                    }
                 }
             }
             RunnerEvent::Progress { term } => {

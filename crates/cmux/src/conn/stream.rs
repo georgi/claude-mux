@@ -426,7 +426,8 @@ impl Session {
                     vec![StreamEvent::Error { code, message }]
                 }
             }
-            ServerMsg::Pong { .. } => Vec::new(),
+            // The TUI sends no `sub_chat`.
+            ServerMsg::Pong { .. } | ServerMsg::Chat { .. } => Vec::new(),
         }
     }
 

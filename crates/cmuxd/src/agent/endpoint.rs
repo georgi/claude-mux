@@ -133,17 +133,34 @@ async fn hook(
     let started = Instant::now();
     let hook = parse_hook(&req.event, &req.payload).map_err(ApiError::invalid)?;
     let held = matches!(hook, Hook::PermissionRequest { .. });
+    let hash = token_hash(&req.token);
+    // The session ends: the engine gets the last answer (the implicit report)
+    // and the token sums before it handles the hook.
+    if matches!(hook, Hook::SessionEnd { clear: false }) && owns(&app, &req.agent, hash).await {
+        rt.transcripts().report_turn(&app.actor, &req.agent).await;
+    }
+    let stop = matches!(hook, Hook::Stop { .. });
     let reply = app
         .actor
         .call(Command::Hook {
             agent: req.agent.clone(),
-            token_hash: token_hash(&req.token),
+            token_hash: hash,
             hook,
         })
         .await??;
     let Reply::Hook(reply) = reply else {
         return Err(internal(format!("unexpected engine reply {reply:?}")));
     };
+    // A turn ended: token sums and the last answer, off the hook's clock so
+    // the turn ends as fast as before.
+    if stop {
+        let (t, actor, agent) = (
+            rt.transcripts().clone(),
+            app.actor.clone(),
+            req.agent.clone(),
+        );
+        tokio::spawn(async move { t.report_turn(&actor, &agent).await });
+    }
     let resp = match reply {
         HookReply::Held { item } => hold(&app, &rt, item).await,
         other => AgentHookResp::from_reply(&req.event, &other),
@@ -160,6 +177,20 @@ async fn hook(
         }),
     );
     Ok(Json(resp))
+}
+
+/// The token hash is `agent`'s (the engine checks it again for the hook).
+async fn owns(app: &AppState, agent: &AgentId, hash: [u8; 32]) -> bool {
+    let agent = agent.clone();
+    app.actor
+        .query(move |s| {
+            s.plans
+                .iter()
+                .flat_map(|p| &p.agents)
+                .any(|a| a.id == agent && a.token_hash == hash && hash != [0; 32])
+        })
+        .await
+        .unwrap_or(false)
 }
 
 /// Waits for the engine to settle a held request.

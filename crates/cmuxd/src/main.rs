@@ -123,6 +123,7 @@ async fn serve(config: Config) -> Result<(), String> {
     let agents = cmuxd::agent::AgentRuntime::from_config(&config, builder.hub());
     let routes = agents.clone();
     let server = builder
+        .transcripts(agents.transcripts().clone())
         .runner(agents.runner())
         .extra_routes(move || Extra {
             unix_only: routes.routes(),

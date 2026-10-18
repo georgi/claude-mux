@@ -118,6 +118,7 @@ impl Fx {
             let routes = agents.clone();
             rt.block_on(
                 builder
+                    .transcripts(agents.transcripts().clone())
                     .runner(agents.runner())
                     .extra_routes(move || Extra {
                         unix_only: routes.routes(),
@@ -581,4 +582,65 @@ fn exit_codes_for_bad_paths_and_a_missing_server() {
     // A usage error wins over a missing server: no connection is tried.
     let o = run_on(gone, "plans", &["extra"], &mut Vec::new());
     assert_eq!(o.code, 1, "{o:?}");
+}
+
+#[test]
+fn tail_chat_prints_the_conversation_as_it_grows() {
+    let (fx, _) = Fx::start(
+        json!({"first": [
+            {"tool": "get_plan", "args": {}},
+            {"say": "Hello from the executor."},
+        ]}),
+        true,
+    );
+    fx.wait_view("the executor to idle", |v| {
+        fx.executor(v)
+            .is_some_and(|a| a.life == Life::Running && a.activity == Activity::Idle)
+    });
+
+    let buf = Shared::default();
+    let tail = {
+        let (ep, mut out) = (fx.ep(), buf.clone());
+        std::thread::spawn(move || run_on(ep, "tail", &["demo", "--chat"], &mut out))
+    };
+    // What was said so far: the kickoff prompt, the tool call, the answer.
+    wait("the conversation so far", || {
+        (buf.text().contains("Hello from the executor.") || tail.is_finished()).then_some(())
+    });
+    assert!(
+        !tail.is_finished(),
+        "{:?} {}",
+        tail.join().unwrap(),
+        buf.text()
+    );
+    let text = buf.text();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].starts_with("> "), "{text}");
+    assert!(
+        lines.iter().any(|l| l.starts_with("* mcp__cmux__get_plan")),
+        "{text}"
+    );
+    assert!(lines.iter().any(|l| l.starts_with("  = ")), "{text}");
+
+    // A message arrives as a pasted digest line; the turn shows up live.
+    fx.ok("send", &["demo", "chat ping"]);
+    wait("the new turn", || {
+        (buf.text().matches("[cmux] 1 new message").count() >= 2).then_some(())
+    });
+    assert!(
+        buf.text().contains("\n> [cmux] 1 new message (I-"),
+        "{}",
+        buf.text()
+    );
+
+    // The agent ends: tail prints what is left and returns 0.
+    fx.ok("stop", &["demo"]);
+    let t = tail.join().unwrap();
+    assert_eq!(t.code, 0, "{t:?}");
+    // Run on an ended agent, it prints the whole conversation and returns.
+    let mut out = Vec::new();
+    let o = run_on(fx.ep(), "tail", &["demo", "--chat"], &mut out);
+    assert_eq!(o.code, 0, "{o:?}");
+    assert_eq!(String::from_utf8(out).unwrap(), buf.text());
+    fx.shutdown();
 }

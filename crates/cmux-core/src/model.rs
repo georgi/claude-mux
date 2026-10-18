@@ -351,7 +351,18 @@ pub struct Agent {
     /// Working with no progress for `Timeouts::stall`; progress clears it.
     #[serde(default)]
     pub stalled: bool,
+    /// Claude's transcript file, from `SessionStart` (it changes after `/clear`).
+    /// `None` means the default place for `cwd` and `session_id`.
+    #[serde(default)]
+    pub transcript: Option<PathBuf>,
+    /// The last assistant text in the transcript, cut to
+    /// [`LAST_TEXT_CHARS`]: the summary of an implicit report.
+    #[serde(default)]
+    pub last_text: Option<String>,
 }
+
+/// The longest implicit-report summary taken from the transcript, in chars.
+pub const LAST_TEXT_CHARS: usize = 2000;
 
 impl Agent {
     /// Starting or running: the process exists or is about to.
@@ -390,6 +401,8 @@ impl Agent {
             unconfirmed: Vec::new(),
             last_progress: None,
             stalled: false,
+            transcript: None,
+            last_text: None,
         }
     }
 }
