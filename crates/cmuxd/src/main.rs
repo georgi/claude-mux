@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use cmux_proto::api::Scope;
 use cmuxd::ServerBuilder;
+use cmuxd::api::Extra;
 use cmuxd::config::{Config, Overrides};
 
 #[derive(Parser)]
@@ -38,9 +39,9 @@ enum Cmd {
         #[arg(long, value_parser = parse_scope)]
         scope: Option<Scope>,
     },
-    /// Claude Code hook entry point (not yet implemented).
+    /// Claude Code hook entry point; always exits 0.
     Hook { event: Option<String> },
-    /// Stdio MCP server for an agent (not yet implemented).
+    /// Stdio MCP server for an agent.
     Mcp,
     /// Check the installation (not yet implemented).
     Doctor,
@@ -74,11 +75,16 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
     };
     match cli.cmd {
         // Hooks must never fail Claude's turn.
-        Cmd::Hook { .. } => {
-            eprintln!("cmuxd hook: not yet implemented");
+        Cmd::Hook { event } => {
+            if let Some(event) = event {
+                cmuxd::agent::hook::run(&event);
+            }
             Ok(ExitCode::SUCCESS)
         }
-        Cmd::Mcp => Err("mcp: not yet implemented".into()),
+        Cmd::Mcp => {
+            cmuxd::agent::mcp::run()?;
+            Ok(ExitCode::SUCCESS)
+        }
         Cmd::Doctor => {
             println!("cmuxd doctor: not yet implemented");
             Ok(ExitCode::SUCCESS)
@@ -105,7 +111,15 @@ fn runtime() -> Result<tokio::runtime::Runtime, String> {
 }
 
 async fn serve(config: Config) -> Result<(), String> {
-    let server = ServerBuilder::new(config)
+    let builder = ServerBuilder::new(config.clone());
+    let agents = cmuxd::agent::AgentRuntime::from_config(&config, builder.hub());
+    let routes = agents.clone();
+    let server = builder
+        .runner(agents.runner())
+        .extra_routes(move || Extra {
+            unix_only: routes.routes(),
+            ..Extra::default()
+        })
         .global_tracing(true)
         .start()
         .await

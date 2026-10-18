@@ -10,6 +10,7 @@
 //! - [`config`], [`diag`], [`cli`]
 
 pub mod actor;
+pub mod agent;
 pub mod api;
 pub mod claude;
 pub mod cli;
