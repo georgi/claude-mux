@@ -909,3 +909,38 @@ async fn github_status_is_on_after_a_good_auth_check_and_off_when_disabled() {
     assert_eq!(github_status(&ep).await, "off (no ticker)");
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn the_web_app_is_served_with_a_strict_csp() {
+    let h = harness().await;
+    // No token: the page itself is public; the API behind it is not.
+    for path in ["/", "/pair?code=ABCD2345"] {
+        let r = req(&h.tcp, "GET", path, &[]).await;
+        assert_eq!(r.status, 200, "{path}");
+        assert_eq!(r.header("content-security-policy"), Some(api::web::CSP));
+        assert!(api::web::CSP.contains("script-src 'self';"));
+        assert!(api::web::CSP.contains("default-src 'none'"));
+        assert_eq!(r.header("cache-control"), Some(api::web::REVALIDATE));
+        assert_eq!(r.header("x-content-type-options"), Some("nosniff"));
+        assert!(r.header("content-type").unwrap().starts_with("text/html"));
+        let body = String::from_utf8(r.body).unwrap();
+        assert!(body.contains("<html"), "{body}");
+    }
+    // Unknown API routes and missing assets stay 404s, not the page.
+    assert_eq!(req(&h.tcp, "GET", "/v1/nope", &[]).await.status, 404);
+    assert_eq!(
+        req(&h.tcp, "GET", "/assets/nope-1234.js", &[]).await.status,
+        404
+    );
+    assert_eq!(req(&h.tcp, "POST", "/", &[]).await.status, 405);
+    // With a build in web/dist/, the hashed entry script is cached for a year.
+    let index = String::from_utf8(req(&h.tcp, "GET", "/", &[]).await.body).unwrap();
+    if let Some(at) = index.find("/assets/") {
+        let src = &index[at..at + index[at..].find('"').unwrap()];
+        let r = req(&h.tcp, "GET", src, &[]).await;
+        assert_eq!(r.status, 200, "{src}");
+        assert_eq!(r.header("cache-control"), Some(api::web::IMMUTABLE));
+        assert_eq!(r.header("content-security-policy"), Some(api::web::CSP));
+    }
+    h.server.shutdown().await;
+}

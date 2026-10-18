@@ -90,6 +90,7 @@ impl Default for GlobalLimits {
 
 /// Per-plan limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Limits {
     pub tasks_per_plan: u32,
     pub subagents_per_task: u32,
@@ -124,6 +125,7 @@ pub struct Plan {
 
 /// A `spawn_task` from a client that could not start yet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct QueuedSpawn {
     pub task: TaskId,
     pub instructions: Option<String>,
@@ -154,6 +156,7 @@ impl Plan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Repo {
     pub path: PathBuf,
     pub base_branch: String,
@@ -210,12 +213,14 @@ impl Task {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Criterion {
     pub text: String,
     pub checked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Note {
     pub at: Timestamp,
     pub by: Option<AgentId>,
@@ -223,6 +228,7 @@ pub struct Note {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PrRef {
     pub url: String,
     pub number: u64,
@@ -252,6 +258,7 @@ pub const CI_FAILURE_CAP: u8 = 3;
 
 /// The CI mark shown next to a PR number (`#41 ✓`, `#41 ✗`, `#41 …`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum CiMark {
     Pending,
@@ -287,6 +294,7 @@ pub struct AllowRule {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
     Executor,
@@ -295,6 +303,7 @@ pub enum Level {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Life {
     /// Registered by the engine; waiting for the worktree or the process.
@@ -307,6 +316,7 @@ pub enum Life {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Activity {
     Working,
@@ -432,6 +442,7 @@ mod hex32 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ReportStatus {
     Success,
@@ -440,6 +451,7 @@ pub enum ReportStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Report {
     pub status: ReportStatus,
     pub summary: String,
@@ -454,6 +466,7 @@ pub struct Report {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TokenUsage {
     pub input: u64,
     pub output: u64,
@@ -474,6 +487,7 @@ pub struct Terminal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum TermKind {
     Claude,
@@ -502,6 +516,7 @@ impl InboxItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Recipient {
     Agent(AgentId),
@@ -509,6 +524,7 @@ pub enum Recipient {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ItemKind {
     ChildReport,
@@ -546,6 +562,7 @@ impl ItemKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Delivery {
     Pending,
@@ -557,6 +574,7 @@ pub enum Delivery {
 
 /// Architecture 8.1: A = Stop continuation, B = PTY paste, C = prompt piggyback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryPath {
     StopBlock,
@@ -595,6 +613,7 @@ macro_rules! state_enum {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
     Todo,
@@ -632,6 +651,7 @@ impl TaskState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum PlanState {
     Draft,

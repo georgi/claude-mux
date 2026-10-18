@@ -7,6 +7,9 @@
 //!
 //! Ids and the plain state enums come from `cmux-core` and are re-exported
 //! from [`view`], so there is one spelling of each on the wire.
+//!
+//! `web/src/api/types.ts` is generated from these types with ts-rs by
+//! `tests/ts.rs`; run `cargo test -p cmux-proto` after a wire change.
 
 pub mod api;
 pub mod stream;

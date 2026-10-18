@@ -28,6 +28,28 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Generated TypeScript types are committed
+        # `cargo test -p cmux-proto` rewrites web/src/api/types.ts.
+        run: |
+          git diff --exit-code -- web/src/api/types.ts
+          test -z "$(git status --porcelain -- web/src/api/types.ts)"
+
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
 
   release-cmuxd:
     name: cmuxd (${{ matrix.target }})
@@ -44,6 +66,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build the web app
+        working-directory: web
+        run: npm ci && npm run build
       - uses: taiki-e/install-action@v2
         with:
           tool: cross

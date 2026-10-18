@@ -27,8 +27,13 @@ vt100.workspace = true
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["registry", "std"] }
 axum-server = { version = "0.8.0", default-features = false, features = ["tls-rustls-no-provider"], optional = true }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"], optional = true }
+rust-embed = { version = "8.13.0", features = ["mime-guess"], optional = true }
 
 [features]
+default = ["web"]
+# The web app (web/dist/, built with `npm run build`) embedded and served at
+# `/`. Without a build, `/` serves a placeholder page; see src/api/web.rs.
+web = ["dep:rust-embed"]
 # Built-in TLS for the TCP listener (rustls). Off by default; see src/tls.rs.
 tls = ["dep:axum-server", "dep:rustls"]
 axum-server = ["dep:axum-server"]

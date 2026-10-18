@@ -13,6 +13,7 @@ pub mod projects;
 pub mod rest;
 pub mod stream;
 pub mod terminals;
+pub mod web;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
@@ -225,7 +226,9 @@ pub fn router_with(app: AppState, transport: Transport, extra: Extra) -> Router 
     let r = r
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn(no_store))
-        .with_state(app);
+        .with_state(app)
+        // After `no_store`: the app's assets set their own caching.
+        .merge(web::routes());
     if transport == Transport::Unix {
         r.layer(middleware::from_fn(auth::uid_guard))
     } else {
