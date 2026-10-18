@@ -27,6 +27,42 @@ pub struct State {
     pub next_item_id: u64,
     /// Next `TermId` to hand out.
     pub next_term_id: u32,
+    /// Where per-plan files live (`<data_dir>/plans/<plan>/plan.md`). Set by the server.
+    #[serde(default)]
+    pub data_dir: PathBuf,
+    #[serde(default)]
+    pub timeouts: Timeouts,
+    /// `(request_id, untruncated match input)` of each held `PermissionRequest`
+    /// hook, by its inbox item. Transient: a restart kills the held hooks.
+    #[serde(skip)]
+    pub held_permissions: BTreeMap<ItemId, (String, String)>,
+    /// Prompt template overrides by file name (`task.md`), loaded by the server.
+    #[serde(skip)]
+    pub prompt_overrides: BTreeMap<String, String>,
+}
+
+/// Engine timers, in milliseconds (architecture sections 7.2, 8.1, 8.3 and 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Timeouts {
+    /// A held permission request falls back to Claude's own prompt after this.
+    pub permission_wait: u64,
+    /// `ask_user` / `ask_parent` questions expire after this.
+    pub question: u64,
+    /// A task or sub-agent idle this long with no report needs a human.
+    pub idle_without_report: u64,
+    /// A steer waits this long for `Stop` before it is pasted.
+    pub steer: u64,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Timeouts {
+            permission_wait: 10 * 60_000,
+            question: 60 * 60_000,
+            idle_without_report: 10 * 60_000,
+            steer: 10_000,
+        }
+    }
 }
 
 /// Server-wide limits (architecture section 10).
@@ -74,6 +110,17 @@ pub struct Plan {
     pub agents: Vec<Agent>,
     /// Next task sequence number (`TaskId::new(next_task_seq)`).
     pub next_task_seq: u32,
+    /// Client spawns waiting for a free slot or for the plan to resume.
+    #[serde(default)]
+    pub spawn_queue: Vec<QueuedSpawn>,
+}
+
+/// A `spawn_task` from a client that could not start yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueuedSpawn {
+    pub task: TaskId,
+    pub instructions: Option<String>,
+    pub force: bool,
 }
 
 impl Plan {
@@ -88,6 +135,7 @@ impl Plan {
             tasks: Vec::new(),
             agents: Vec::new(),
             next_task_seq: 1,
+            spawn_queue: Vec::new(),
         }
     }
     pub fn task(&self, id: TaskId) -> Option<&Task> {
@@ -124,6 +172,9 @@ pub struct Task {
     pub attempt: u32,
     /// "Allow always for this task" answers.
     pub allow_rules: Vec<AllowRule>,
+    /// Extra instructions for the next spawn; kept until the agent starts.
+    #[serde(default)]
+    pub instructions: Option<String>,
 }
 
 impl Task {
@@ -143,6 +194,7 @@ impl Task {
             agent: None,
             attempt: 0,
             allow_rules: Vec::new(),
+            instructions: None,
         }
     }
     pub fn unchecked_criteria(&self) -> usize {
@@ -187,8 +239,12 @@ pub enum Level {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Life {
+    /// Registered by the engine; waiting for the worktree or the process.
+    Starting,
     Running,
-    Exited { code: Option<i32> },
+    Exited {
+        code: Option<i32>,
+    },
     Stopped,
 }
 
@@ -225,9 +281,20 @@ pub struct Agent {
     pub last_human_input_at: Option<Timestamp>,
     /// When the agent last went idle; drives the 10-minute no-report rule.
     pub idle_since: Option<Timestamp>,
+    /// Items pasted (path B) and not yet seen in a submitted prompt.
+    #[serde(default)]
+    pub unconfirmed: Vec<ItemId>,
+    /// The report has been landed (posted to the parent, task moved).
+    #[serde(default)]
+    pub landed: bool,
 }
 
 impl Agent {
+    /// Starting or running: the process exists or is about to.
+    pub fn is_live(&self) -> bool {
+        matches!(self.life, Life::Starting | Life::Running)
+    }
+
     /// A freshly spawned agent: running, activity unknown, no report. Level,
     /// path and task come from the id; `parent` is derived from the path.
     pub fn new(
@@ -255,6 +322,8 @@ impl Agent {
             consecutive_stop_blocks: 0,
             last_human_input_at: None,
             idle_since: None,
+            landed: false,
+            unconfirmed: Vec::new(),
         }
     }
 }
