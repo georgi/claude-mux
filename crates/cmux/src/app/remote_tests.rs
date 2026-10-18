@@ -71,10 +71,16 @@ impl Rig {
     }
 
     fn with_state(cols: u16, rows: u16, sv: StateView) -> Rig {
+        Rig::opened_on(cols, rows, sv, None)
+    }
+
+    /// As `cmux attach <agent>` starts: `open` is shown on the first state.
+    fn opened_on(cols: u16, rows: u16, sv: StateView, open: Option<Node>) -> Rig {
         let (tx, rx) = channel();
         let (handle, cmds) = ConnHandle::detached();
         let rest = Arc::new(Recording::default());
-        let remote = RemoteState::new("test".into(), None, handle, rest.clone(), None).inline();
+        let mut remote = RemoteState::new("test".into(), None, handle, rest.clone(), None).inline();
+        remote.open_on_start = open;
         let mut app = App::new_remote(options(), tx, rows, cols, remote);
         app.handle(Event::Stream(StreamEvent::Welcome {
             client_id: ClientId("me".into()),
@@ -1060,4 +1066,25 @@ fn task_window_with_two_sub_agents() {
 #[test]
 fn task_window_with_three_sub_agents() {
     insta::assert_snapshot!("task_window_3_subs_100x30", draw_task_window(3).1);
+}
+
+#[test]
+fn attach_opens_its_agent_on_the_first_state() {
+    let sv = state_with_terms();
+    let sub = sv
+        .agents
+        .iter()
+        .find(|a| a.path.sub_name().is_some())
+        .unwrap()
+        .id
+        .clone();
+    // Without a target the first window shows, not the sub-agent.
+    let rig = Rig::with_state(120, 40, sv.clone());
+    let w = &rig.app.windows[rig.app.active];
+    assert_ne!(w.pane().agent.as_ref(), Some(&sub));
+
+    let rig = Rig::opened_on(120, 40, sv, Some(Node::Sub(sub.clone())));
+    let w = &rig.app.windows[rig.app.active];
+    assert_eq!(w.pane().agent.as_ref(), Some(&sub), "{:?}", rig.names());
+    assert!(rig.app.remote.as_ref().unwrap().vs.focus == Focus::Pane);
 }

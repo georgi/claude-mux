@@ -1,0 +1,41 @@
+---
+source: crates/cmux/src/conn/it_verbs.rs
+expression: "fx.stable(&plan, &json)"
+---
+[
+  {
+    "body": "Plan P-[DATE]-demo is ready for review",
+    "created": 0,
+    "from": "P-[DATE]-demo/executor",
+    "id": 0,
+    "kind": "plan_review",
+    "needs_human": true,
+    "status": "pending",
+    "to": "human"
+  },
+  {
+    "body": "Which database?",
+    "created": 0,
+    "from": "P-[DATE]-demo/executor",
+    "id": 1,
+    "kind": "question",
+    "needs_human": true,
+    "status": "pending",
+    "to": "human"
+  },
+  {
+    "body": "Bash: cargo test",
+    "created": 0,
+    "from": "P-[DATE]-demo/executor",
+    "id": 2,
+    "kind": {
+      "permission": {
+        "input_summary": "cargo test",
+        "tool": "Bash"
+      }
+    },
+    "needs_human": true,
+    "status": "pending",
+    "to": "human"
+  }
+]

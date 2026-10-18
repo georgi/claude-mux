@@ -27,7 +27,7 @@ use crate::tui::remote_term::RemoteTerm;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 
-fn wait<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
+pub(super) fn wait<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
     let end = Instant::now() + TIMEOUT;
     loop {
         if let Some(v) = f() {
@@ -38,7 +38,7 @@ fn wait<T>(what: &str, mut f: impl FnMut() -> Option<T>) -> T {
     }
 }
 
-fn git(dir: &Path, args: &[&str]) {
+pub(super) fn git(dir: &Path, args: &[&str]) {
     let out = Proc::new("git")
         .arg("-C")
         .arg(dir)
@@ -60,7 +60,7 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 /// A clone of a local bare origin with one commit on `main`.
-fn make_repo(root: &Path) -> PathBuf {
+pub(super) fn make_repo(root: &Path) -> PathBuf {
     let origin = root.join("origin.git");
     let repo = root.join("repo");
     std::fs::create_dir_all(&origin).unwrap();
@@ -79,7 +79,7 @@ fn make_repo(root: &Path) -> PathBuf {
 }
 
 /// The `cmuxd` binary and the fake `claude`, built once per test process.
-fn binaries() -> &'static (PathBuf, PathBuf) {
+pub(super) fn binaries() -> &'static (PathBuf, PathBuf) {
     static BINS: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
     BINS.get_or_init(|| {
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
