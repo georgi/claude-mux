@@ -67,7 +67,10 @@ Press the prefix then ? inside cmux to list all key bindings.
 
 fn parse_prefix(s: &str) -> Result<u8> {
     let s = s.trim().to_ascii_lowercase();
-    let s = s.strip_prefix("c-").or_else(|| s.strip_prefix("ctrl-")).unwrap_or(&s);
+    let s = s
+        .strip_prefix("c-")
+        .or_else(|| s.strip_prefix("ctrl-"))
+        .unwrap_or(&s);
     match s.as_bytes() {
         [c @ b'a'..=b'z'] => Ok(c - b'a' + 1),
         _ => bail!("invalid prefix {s:?}: use a letter a-z"),
@@ -101,7 +104,9 @@ fn parse_args() -> Result<Options> {
             "--no-bell" => o.bell = false,
             "--no-mouse" => o.mouse = false,
             "-p" | "--prefix" => {
-                let Some(v) = args.next() else { bail!("--prefix needs a value") };
+                let Some(v) = args.next() else {
+                    bail!("--prefix needs a value")
+                };
                 o.prefix = parse_prefix(&v)?;
             }
             "--" => {
@@ -110,7 +115,8 @@ fn parse_args() -> Result<Options> {
             s if s.starts_with('-') => bail!("unknown option {s}\n\n{USAGE}"),
             dir => {
                 let p = history::expand_tilde(dir);
-                let p = std::fs::canonicalize(&p).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?;
+                let p = std::fs::canonicalize(&p)
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?;
                 o.dirs.push(p);
             }
         }
@@ -182,7 +188,11 @@ fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, opts: Options) ->
         let mut signals = signal_hook::iterator::Signals::new([SIGWINCH, SIGTERM, SIGHUP])?;
         std::thread::spawn(move || {
             for sig in signals.forever() {
-                let ev = if sig == SIGWINCH { Event::Resize } else { Event::Quit };
+                let ev = if sig == SIGWINCH {
+                    Event::Resize
+                } else {
+                    Event::Quit
+                };
                 if tx.send(ev).is_err() {
                     break;
                 }

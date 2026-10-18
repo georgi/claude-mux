@@ -142,9 +142,22 @@ pub struct SpawnSpec {
 }
 
 impl Pane {
-    pub fn spawn(id: u64, spec: SpawnSpec, rows: u16, cols: u16, events: Sender<Event>) -> Result<Pane> {
-        let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
-        let pair = native_pty_system().openpty(size).context("openpty failed")?;
+    pub fn spawn(
+        id: u64,
+        spec: SpawnSpec,
+        rows: u16,
+        cols: u16,
+        events: Sender<Event>,
+    ) -> Result<Pane> {
+        let size = PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let pair = native_pty_system()
+            .openpty(size)
+            .context("openpty failed")?;
 
         let mut cmd = CommandBuilder::new(&spec.program);
         cmd.args(&spec.args);
@@ -170,29 +183,40 @@ impl Pane {
         let mut reader = pair.master.try_clone_reader()?;
         let writer: Writer = Arc::new(Mutex::new(pair.master.take_writer()?));
 
-        let callbacks = Callbacks { writer: writer.clone(), title: None, bell: false, clipboard: Vec::new() };
-        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK, callbacks)));
+        let callbacks = Callbacks {
+            writer: writer.clone(),
+            title: None,
+            bell: false,
+            clipboard: Vec::new(),
+        };
+        let parser = Arc::new(Mutex::new(vt100::Parser::new_with_callbacks(
+            rows, cols, SCROLLBACK, callbacks,
+        )));
         let dirty = Arc::new(AtomicBool::new(false));
 
         {
             let parser = parser.clone();
             let dirty = dirty.clone();
-            std::thread::Builder::new().name(format!("pty-{id}")).spawn(move || {
-                let mut buf = vec![0u8; 64 * 1024];
-                loop {
-                    match reader.read(&mut buf) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            parser.lock().unwrap().process(&buf[..n]);
-                            // Coalesce: only one pending notification per tab.
-                            if !dirty.swap(true, Ordering::AcqRel) && events.send(Event::Output(id)).is_err() {
-                                break;
+            std::thread::Builder::new()
+                .name(format!("pty-{id}"))
+                .spawn(move || {
+                    let mut buf = vec![0u8; 64 * 1024];
+                    loop {
+                        match reader.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => {
+                                parser.lock().unwrap().process(&buf[..n]);
+                                // Coalesce: only one pending notification per tab.
+                                if !dirty.swap(true, Ordering::AcqRel)
+                                    && events.send(Event::Output(id)).is_err()
+                                {
+                                    break;
+                                }
                             }
                         }
                     }
-                }
-                let _ = events.send(Event::Exited(id));
-            })?;
+                    let _ = events.send(Event::Exited(id));
+                })?;
         }
 
         let branch = git_branch(&spec.cwd);
@@ -228,8 +252,17 @@ impl Pane {
             return;
         }
         self.size = (rows, cols);
-        let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
-        self.parser.lock().unwrap().screen_mut().set_size(rows, cols);
+        let _ = self.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+        self.parser
+            .lock()
+            .unwrap()
+            .screen_mut()
+            .set_size(rows, cols);
     }
 
     pub fn kill(&mut self) {
@@ -250,7 +283,12 @@ impl Pane {
         match &self.kind {
             Kind::Claude => {}
             Kind::Shell | Kind::Command(_) => {
-                if let Some(t) = self.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                if let Some(t) = self
+                    .title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                {
                     return t.to_string();
                 }
                 return match &self.kind {
@@ -268,7 +306,10 @@ impl Pane {
                 return t.to_string();
             }
         }
-        self.cwd.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "/".into())
+        self.cwd
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".into())
     }
 }
 
