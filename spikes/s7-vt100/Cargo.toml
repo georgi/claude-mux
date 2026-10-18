@@ -1,0 +1,8 @@
+[package]
+name = "s7-vt100"
+version = "0.0.0"
+edition = "2021"
+[dependencies]
+vt100 = "=0.16.2"
+serde_json = "1"
+[workspace]

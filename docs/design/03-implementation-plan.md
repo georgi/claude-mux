@@ -33,6 +33,75 @@ M2 is the first useful version. The order front-loads risk: the spikes come firs
 
 **Done when** every spike has a result and a chosen path. Steps 6 and 10 depend on these results.
 
+### Step 0 results (spikes, run 2026-10-18 against Claude Code 2.1.302)
+
+| # | Result | Chosen path |
+|---|---|---|
+| S1 | Pass. User, project and `--settings` hooks all fire; user and project permission rules still apply | `--settings <hooks-only file>` as designed |
+| S2 | Pass. `block` makes Claude act on `reason`; next stop has `stop_hook_active: true`, reset on the next user prompt | Path A as designed |
+| S3 | Partial. One prompt, exact text for 1 to 3 lines; 4+ lines (or 3000 chars) get wrapped in `<pasted_content id="..">` tags | One-line paste (digest file + "read <file>" for long digests); match confirmation by item ids, not whole text |
+| S4 | Pass, with a gotcha. Positional prompt is turn 1; config `env` reaches the stdio server and beats the parent env | As designed, but write `--mcp-config=<file>` (variadic flag eats the prompt otherwise) |
+| S5 | Pass. `Notification.notification_type` is `permission_prompt` or `idle_prompt`; `additionalContext` reaches the model | Path C as designed; ignore `idle_prompt` |
+| S6 | Pass. `PermissionRequest` exists; allow/deny decisions answer the prompt; `timeout` honoured at 90 s with 600 | Remote approval via hook as designed; PTY keys `1`/`2`/`4`/`Esc` as backup |
+| S7 | Pass after one fix. Cells, colours, attrs, cursor, mouse, bracketed paste all identical; alt-screen flag is lost | `state_formatted()` snapshot, prefixed with `ESC[?1049h` when `screen.alternate_screen()` |
+
+Test rig: tmux (`-L spikes`) or Python pty, `CLAUDE_CONFIG_DIR=spikes/cfg` (pre-seeded `.claude.json` with `hasCompletedOnboarding`, so `~/.claude` is untouched), claude-mux's `SESSION_ENV` scrub, `--model haiku`.
+
+#### S1 --settings merge
+- `cfg/settings.json` (user: UPS hook + deny `Bash(touch:*)`), `repo/.claude/settings.json` (project: UPS hook + deny `Bash(rm:*)`, allow `Bash(echo:*)`), `--settings hooks/s1-settings.json` (hooks only: UPS + Stop).
+- One prompt fired all three `UserPromptSubmit` hooks (USER, PROJ, FLAG) and the flag `Stop`. `rm` and `touch` were denied, `echo` ran. Hook sets are concatenated, not replaced.
+- Common payload keys: `session_id`, `transcript_path`, `cwd`, `prompt_id`, `permission_mode` (`default`), `hook_event_name`, plus `scratchpad_dir` and `effort` on some events.
+- Surprise: without `--session-id` the hook `session_id` was the OUTER session's id (an env var other than the scrubbed ones leaks it, likely `CLAUDE_CODE_REMOTE_SESSION_ID`). With `--session-id <uuid>` it is correct. cmuxd always passes `--session-id`; also scrub `CLAUDE_CODE_REMOTE*` when cmuxd itself runs inside Claude.
+- Surprise: the MCP server child sees all `CLAUDE_*` vars of the parent, plus `CLAUDECODE` and `CLAUDE_PROJECT_DIR` set by claude.
+- `claude --help` has `--setting-sources`, `--bare` (skips hooks), `--permission-mode` choices `acceptEdits auto bypassPermissions manual dontAsk plan` (default mode shows as "manual mode"; hook payload still says `default`).
+
+#### S2 Stop block
+- Hook printed `{"decision":"block","reason":"..."}` when `stop_hook_active` was false. Claude replied PONG, UI showed "Stop hook error: <reason>", then answered the reason (ZEBRA) in the same turn (same `prompt_id`, no new `UserPromptSubmit`).
+- Second `Stop` payload: `stop_hook_active: true`, `last_assistant_message: "ZEBRA"`. On the next user prompt it is `false` again.
+- `Stop` payload keys: `stop_hook_active`, `last_assistant_message`, `background_tasks`, `session_crons`, `effort`, `permission_mode`. The "at most 3 in a row" limit must be counted by cmuxd; Claude does not stop a chain itself (only tested 1 block).
+
+#### S3 Bracketed paste
+- Written as one `write`: `ESC[200~ text ESC[201~ \r` (via `tmux send-keys -H`). Works with `\r` in the same write; exactly one `UserPromptSubmit`.
+- 1 to 3 lines (blank lines, indent, leading `/`, backticks, UTF-8 all fine): `prompt` is byte-exact.
+- 4 or more lines, or about 3000 chars on one line: `prompt` (hook and transcript) becomes `"\n\n<pasted_content id=\"e8dc\">\n<text>\n</pasted_content id=\"e8dc\">\n"`. The id was the same for different pastes. The model still reads it fine.
+- Raw typed LF-separated text plus `\r` (no bracketed paste) was submitted exact, but it risks menus on `/` and `@`; not chosen.
+- A prompt sent while a turn runs is queued ("Press up to edit queued messages") and `UserPromptSubmit` fires when it is dequeued, so path B must still wait for idle.
+- tmux `send-keys "text" Enter` in one call did NOT submit (paste-burst detection ate the Enter); a separate write after about 1 s did. Real clients should write `\r` as its own write or inside the paste write as above.
+- Step 6/10 impact: digest confirmation must look for the item ids in `prompt`, tolerate the wrapper, and the transcript user message will also carry the wrapper.
+
+#### S4 Kickoff and MCP env
+- `claude --model haiku --session-id U --settings S --mcp-config=M "<prompt>"`: prompt ran as turn 1 (`UserPromptSubmit` fired, `prompt` exact).
+- `--mcp-config <file> "<prompt>"` FAILS: the flag is variadic (`<configs...>`) and takes the prompt as a second config path ("MCP config file not found"). Use `--mcp-config=<file>`, or put the prompt before the flags.
+- mcp.json `{"command","args","env":{"CMUX_AGENT","CMUX_TOKEN"}}`: server saw both, `env` overrode the parent's `CMUX_AGENT`; `args` and cwd (= claude's cwd) also as expected. Server started once, tools usable on the first turn.
+- First MCP tool call prompts for permission. Pre-approve with `--settings` `{"permissions":{"allow":["mcp__cmux"]}}`; verified no prompt.
+
+#### S5 Notification and additionalContext
+- Permission prompt: `{"hook_event_name":"Notification","message":"Claude needs your permission","notification_type":"permission_prompt"}`, fired about 6 s after the prompt appeared (and after `PermissionRequest`).
+- Idle: `{"message":"Claude is waiting for your input","notification_type":"idle_prompt"}`, 60 s after `Stop`.
+- `UserPromptSubmit` answering `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"..."}}`: model used it (answered MANGO42).
+
+#### S6 PermissionRequest
+- Exists. Order: `PreToolUse`, `PermissionRequest`, (6 s) `Notification`, then `PostToolUse` and `Stop`. Payload: `tool_name`, `tool_input` (Bash: `command`, `description`), `permission_suggestions` (list of `{type, ...}`), `permission_mode`; no `tool_use_id` (it is in `PreToolUse`).
+- Allow `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`: command ran, UI "Allowed by PermissionRequest hook". Deny with `"message"`: not run, UI "Denied by PermissionRequest hook", the model saw and quoted the message. `{}` or no output: normal terminal prompt.
+- Timeout: hook sleeping 90 s with `"timeout": 600` was honoured (allow applied at 90 s; the default 60 s does not apply). Control: `"timeout": 4` with a 10 s sleep ignored the late allow and left the prompt. Not waited for the full 10 min; unit is seconds.
+- The terminal prompt is drawn while the hook is pending. A key typed in the terminal wins; the hook process is not killed, and its late decision is ignored. cmuxd must resolve a held request on the next `PostToolUse`/`Stop`/`PreToolUse` for that agent.
+- PTY keys (no Enter needed): `1` yes, `2` always allow (for Bash, "always allow access to <dir>"), `3` switch to auto mode, `4` no, `Esc` cancel. Option numbering varies per tool, so prefer the hook.
+
+#### S7 Snapshot fidelity
+- Raw capture of a 100x30 PTY (`s7-vt100/capture.py`): startup, typed prompt, 3 spinner screens ("Hatching... (9s)", tool "Sleeping for 12 seconds"), tool output, done. 8 cut points.
+- Claude runs on the ALT SCREEN (`ESC[?1049h`) with mouse modes 1000/1002/1003/1006, focus 1004, bracketed paste 2004, cursor hide.
+- vt100 0.16.2 (`s7-vt100/src/main.rs`): parser B fed `A.state_formatted()` had 0 cell diffs (char, fg, bg, bold, italic, underline, inverse, dim, wide), same cursor, hide, bracketed paste, mouse mode/encoding, `contents_formatted()` byte-equal. Only `alternate_screen()` differed (false in B). Prefixing the snapshot with `ESC[?1049h` when A is on the alt screen fixes it.
+- xterm.js (`@xterm/headless` 5.5.0, npm registry reachable, `s7-vt100/xterm/compare.mjs`): xterm fed the raw bytes vs xterm fed the (prefixed) vt100 snapshot: 0 cell diffs (char, fg/bg mode and value, bold, italic, underline, inverse, dim, width), same cursor, both on the alternate buffer.
+- Not tested: scrollback (alt screen has none), resize while attached, wide-char heavy output.
+
+#### Harness files (for a later `cargo test --ignored` suite)
+- `launch.sh` (tmux launch with env scrub and isolated config), `ask.sh`, `cap.sh`, `sendraw.py` (raw bytes via `tmux send-keys -H`)
+- `hooks/log-hook.sh` (logs stdin JSON, optional `resp-<Tag>.json` reply and `sleep-<Tag>`), `hooks/s2-stop.py`, `hooks/*-settings.json`
+- `mcp/envsrv.py` (stdio MCP env probe), `mcp/mcp.json`
+- `s7-vt100/capture.py`, `s7-vt100/src/main.rs`, `s7-vt100/xterm/compare.mjs`, `cfg/.claude.json` (onboarding bypass)
+
+The harness is in [`spikes/`](../../spikes/README.md).
+
 ## Step 1: Workspace and CI (M)
 
 - Move today's crate into `crates/cmux/`, unchanged, so the plain local cmux still works. Add empty `cmux-core`, `cmux-proto` and `cmuxd` crates.

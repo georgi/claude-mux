@@ -326,7 +326,7 @@ binary:    [0x02][term_id u32][seq u64][bytes]   // PTY output
 ```
 claude --session-id <uuid>
        --settings  <data>/plans/<plan>/agents/<id>/settings.json      (hooks only)
-       --mcp-config <data>/plans/<plan>/agents/<id>/mcp.json          (one server: "cmux")
+       --mcp-config=<data>/plans/<plan>/agents/<id>/mcp.json          (one server: "cmux"; "=" form, the flag is variadic)
        --append-system-prompt "<prompts/{executor,task,subagent}.md, filled>"
        [--permission-mode <per level>] [--model <per level>]
        "<kickoff prompt>"
