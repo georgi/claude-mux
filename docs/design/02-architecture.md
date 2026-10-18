@@ -328,7 +328,7 @@ claude --session-id <uuid>
        --settings  <data>/plans/<plan>/agents/<id>/settings.json      (hooks only)
        --mcp-config=<data>/plans/<plan>/agents/<id>/mcp.json          (one server: "cmux"; "=" form, the flag is variadic)
        --append-system-prompt "<prompts/{executor,task,subagent}.md, filled>"
-       --permission-mode <per level, default "default">  [--model <per level>]
+       --remote-control  --permission-mode <per level, default "auto">  [--model <per level>]
        "<kickoff prompt>"
 env:   CMUX_SOCK=<api.sock>  CMUX_AGENT=<id>  CMUX_TOKEN=<random 256-bit>  TERM=xterm-256color
 cwd:   executor → repos[0]; task → its worktree; sub-agent → its task's worktree
@@ -424,7 +424,7 @@ The templates live in `cmux-core/prompts/` and are compiled in. A file of the sa
 | Web sessions | The web app trades its token for an `HttpOnly; Secure; SameSite=Strict` cookie. Mutating requests also need an `X-Cmux` header, which blocks CSRF. The WebSocket is authenticated by the cookie or by a token in `hello`, never in the URL |
 | Agent endpoint | `/v1/agent/*` exists only on the Unix socket and accepts only agent tokens. A token acts only for its own agent; the role decides the tools. An agent can never reach the client API |
 | What a full token grants | Shell-equivalent access to the server user: terminals, plus Claude with that user's permissions. The pairing screen says so. Use a dedicated Unix user on a shared machine |
-| Permissions | `cmuxd` never loosens Claude's permission mode by itself. Remote approval answers Claude's own prompts; it does not bypass them |
+| Permissions | Every `claude` that cmux starts runs in `auto` mode with Remote Control on, unless a level sets another mode. Remote approval answers Claude's own prompts; it does not bypass them |
 | Logs | The diagnostics log never records prompts, message bodies, tool inputs or tokens |
 
 ## 10. Limits, GitHub, liveness

@@ -175,8 +175,9 @@ fn executor_snapshot() {
             &format!("--add-dir={dir}/digests"),
             "--append-system-prompt",
             "You are an agent.\nBe brief.",
+            "--remote-control",
             "--permission-mode",
-            "default",
+            "auto",
             "[cmux] Start.",
         ]
     );
@@ -234,6 +235,7 @@ fn task_snapshot_with_level_options() {
             &format!("--add-dir={dir}/digests"),
             "--append-system-prompt",
             "You are an agent.\nBe brief.",
+            "--remote-control",
             "--permission-mode",
             "acceptEdits",
             "--model",

@@ -17,6 +17,7 @@ use cmux_core::ids::TermId;
 use cmux_proto::api::{
     CreateTerminalReq, CreateTerminalResp, ErrorCode, NewTerminalKind, ScrollbackResp, route,
 };
+use cmux_proto::CLAUDE_DEFAULT_ARGS;
 use cmux_proto::view::TerminalView;
 use serde::Deserialize;
 
@@ -42,7 +43,8 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// What to run for a request.
-/// `session_args` go before a Claude terminal's own arguments.
+/// `CLAUDE_DEFAULT_ARGS`, then `session_args`, go before a Claude terminal's
+/// own arguments.
 fn spec_for(
     req: &CreateTerminalReq,
     claude_bin: &str,
@@ -54,7 +56,11 @@ fn spec_for(
     let mut spec = match &req.kind {
         NewTerminalKind::Claude { args } => {
             let mut s = PtySpec::new(claude_bin, &[]);
-            s.args = session_args.iter().chain(args).cloned().collect();
+            s.args = CLAUDE_DEFAULT_ARGS
+                .iter()
+                .map(|a| a.to_string())
+                .chain(session_args.iter().chain(args).cloned())
+                .collect();
             s
         }
         NewTerminalKind::Shell => {

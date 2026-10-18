@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use cmux_proto::CLAUDE_DEFAULT_ARGS;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use crate::Event;
@@ -221,6 +222,9 @@ impl Pane {
             .context("openpty failed")?;
 
         let mut cmd = CommandBuilder::new(&spec.program);
+        if spec.kind == Kind::Claude {
+            cmd.args(CLAUDE_DEFAULT_ARGS);
+        }
         cmd.args(&spec.args);
         cmd.cwd(&spec.cwd);
         cmd.env("TERM", "xterm-256color");

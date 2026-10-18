@@ -12,5 +12,10 @@ pub mod api;
 pub mod stream;
 pub mod view;
 
+/// The flags every `claude` that cmux starts gets first: Remote Control and
+/// auto mode. `--remote-control` takes an optional name, so a flag must follow
+/// it, never a prompt. Flags that come later (the caller's own) win.
+pub const CLAUDE_DEFAULT_ARGS: &[&str] = &["--remote-control", "--permission-mode", "auto"];
+
 /// The API version prefix every route lives under.
 pub const API_PREFIX: &str = "/v1";
