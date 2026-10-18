@@ -8,10 +8,10 @@ use axum::body::Body;
 use axum::extract::connect_info::ConnectInfo;
 use axum::http::Request;
 use cmux_core::ids::TermId;
-use cmux_core::model::{Activity, Life};
+use cmux_core::model::{Activity, Level, Life};
 use cmux_proto::api::{
     Created, DevicesResp, ErrorBody, ErrorCode, PairCompleteReq, PairCompleteResp, PairStartReq,
-    PairStartResp, PatchTaskReq, Scope, route,
+    PairStartResp, PatchTaskReq, RepoInfo, ReposResp, Scope, SettingsResp, route,
 };
 use cmux_proto::view::{StateView, TaskDetail, TaskState};
 use cmuxd::agent::AgentRuntime;
@@ -943,4 +943,206 @@ async fn the_web_app_is_served_with_a_strict_csp() {
         assert_eq!(r.header("content-security-policy"), Some(api::web::CSP));
     }
     h.server.shutdown().await;
+}
+
+/// Runs `git` in `dir` without the user's branch-name default.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args([
+            "-c",
+            "init.defaultBranch=main",
+            "-c",
+            "user.email=t@example.com",
+        ])
+        .args(["-c", "user.name=Test", "-C"])
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// A repository with one commit at `<dir>/work` and its bare clone at
+/// `<dir>/origin.git`. Returns both.
+fn origin_repo(dir: &Path) -> (PathBuf, PathBuf) {
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    git(&work, &["init", "--quiet"]);
+    std::fs::write(work.join("README"), "hi\n").unwrap();
+    git(&work, &["add", "README"]);
+    git(&work, &["commit", "--quiet", "-m", "first"]);
+    let bare = dir.join("origin.git");
+    git(dir, &["clone", "--quiet", "--bare", "work", "origin.git"]);
+    (work, bare)
+}
+
+async fn repos(ep: &Endpoint) -> Vec<RepoInfo> {
+    let r: ReposResp = req(ep, "GET", route::REPOS, &[]).await.json().unwrap();
+    r.repos
+}
+
+#[tokio::test]
+async fn repos_lists_the_plans_repositories() {
+    let h = harness().await;
+    assert!(repos(&h.unix).await.is_empty());
+    let r = send(&h.unix, "POST", route::PLANS, &[], &plan_req(&h, "x")).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let listed = repos(&h.unix).await;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].path, h._tmp.path().display().to_string());
+    assert_eq!(listed[0].base_branch, "main");
+    h.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn repos_can_be_cloned_from_a_url() {
+    let h = harness().await;
+    let (_, bare) = origin_repo(h._tmp.path());
+    let url = bare.display().to_string();
+    let body = serde_json::json!({ "url": url });
+    let r = send(&h.unix, "POST", route::REPOS, &[], &body).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let info: RepoInfo = r.json().unwrap();
+    assert!(info.path.ends_with("/repos/origin"), "{}", info.path);
+    let dest = PathBuf::from(&info.path);
+    assert_eq!(git(&dest, &["log", "--format=%s"]), "first");
+    assert_eq!(
+        info.base_branch,
+        git(&bare, &["symbolic-ref", "--short", "HEAD"])
+    );
+    assert_eq!(info.remote_url.as_deref(), Some(url.as_str()));
+    assert_eq!(repos(&h.unix).await, vec![info.clone()]);
+
+    // The destination is taken now.
+    let r = send(&h.unix, "POST", route::REPOS, &[], &body).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(r.text().contains("already exists"), "{}", r.text());
+    assert!(dest.join("README").exists());
+
+    // A failed clone leaves nothing behind.
+    let missing = h._tmp.path().join("missing.git").display().to_string();
+    let r = send(
+        &h.unix,
+        "POST",
+        route::REPOS,
+        &[],
+        &serde_json::json!({ "url": missing }),
+    )
+    .await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(!dest.with_file_name("missing").exists());
+    for bad in [
+        serde_json::json!({}),
+        serde_json::json!({ "url": url, "path": url }),
+        serde_json::json!({ "url": "" }),
+        serde_json::json!({ "url": "--upload-pack=touch x" }),
+        serde_json::json!({ "url": "https://example.com/.." }),
+    ] {
+        let r = send(&h.unix, "POST", route::REPOS, &[], &bad).await;
+        assert_eq!(r.status, 400, "{bad}: {}", r.text());
+    }
+    assert_eq!(repos(&h.unix).await, vec![info]);
+    h.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn repos_can_be_registered_by_path() {
+    let h = harness().await;
+    let (work, _) = origin_repo(h._tmp.path());
+    for bad in ["relative/path", "/nonexistent/repo"] {
+        let r = send(
+            &h.unix,
+            "POST",
+            route::REPOS,
+            &[],
+            &serde_json::json!({ "path": bad }),
+        )
+        .await;
+        assert_eq!(r.status, 400, "{bad}: {}", r.text());
+    }
+    let body = serde_json::json!({ "path": work.display().to_string() });
+    let r = send(&h.unix, "POST", route::REPOS, &[], &body).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let info: RepoInfo = r.json().unwrap();
+    let canonical = work.canonicalize().unwrap().display().to_string();
+    assert_eq!(info.path, canonical);
+    assert_eq!(info.base_branch, "main");
+    assert_eq!(info.remote_url, None);
+    // Registering it again keeps one entry.
+    let r = send(&h.unix, "POST", route::REPOS, &[], &body).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    assert_eq!(repos(&h.unix).await, vec![info]);
+    let file = h._tmp.path().join("data").join("repos.json");
+    let registered: Vec<String> = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    assert_eq!(registered, vec![canonical]);
+
+    // A deleted repository drops out of the list.
+    std::fs::remove_dir_all(&work).unwrap();
+    assert!(repos(&h.unix).await.is_empty());
+    h.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn read_scope_cannot_add_repos() {
+    let h = harness().await;
+    let (work, _) = origin_repo(h._tmp.path());
+    let a = bearer(&pair(&h, Scope::Read).await.token);
+    let auth = [("Authorization", a.as_str())];
+    assert_eq!(req(&h.tcp, "GET", route::REPOS, &auth).await.status, 200);
+    let body = serde_json::json!({ "path": work.display().to_string() });
+    let r = send(&h.tcp, "POST", route::REPOS, &auth, &body).await;
+    assert_eq!(r.status, 403, "{}", r.text());
+    assert_eq!(r.json::<ErrorBody>().unwrap().code, ErrorCode::Forbidden);
+    assert!(repos(&h.unix).await.is_empty());
+    h.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn settings_show_the_limits_and_claude_options() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = config(tmp.path());
+    cfg.limits.tasks_per_plan = 7;
+    cfg.limits.subagents_per_task = 3;
+    cfg.limits.live_processes = 11;
+    cfg.agents.permission_wait_secs = 90;
+    cfg.agents.task.model = Some("opus".into());
+    cfg.agents.sub.permission_mode = Some("plan".into());
+    let server = start_with(tmp.path(), cfg).await.unwrap();
+    let ep = Endpoint::Unix(server.socket_path.clone());
+    let s: SettingsResp = req(&ep, "GET", route::SETTINGS, &[]).await.json().unwrap();
+    assert_eq!(
+        (s.tasks_per_plan, s.subagents_per_task, s.live_processes),
+        (7, 3, 11)
+    );
+    assert_eq!(s.permission_wait_secs, 90);
+    let levels: Vec<_> = s
+        .claude
+        .iter()
+        .map(|l| (l.level, l.model.as_deref(), l.permission_mode.as_str()))
+        .collect();
+    assert_eq!(
+        levels,
+        vec![
+            (Level::Executor, None, "auto"),
+            (Level::Task, Some("opus"), "auto"),
+            (Level::Sub, None, "plan"),
+        ]
+    );
+    server.shutdown().await;
+
+    // `timeouts.permission_wait_secs` wins over the agents' one.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = config(tmp.path());
+    cfg.agents.permission_wait_secs = 90;
+    cfg.timeouts.permission_wait_secs = Some(30);
+    let server = start_with(tmp.path(), cfg).await.unwrap();
+    let ep = Endpoint::Unix(server.socket_path.clone());
+    let s: SettingsResp = req(&ep, "GET", route::SETTINGS, &[]).await.json().unwrap();
+    assert_eq!(s.permission_wait_secs, 30);
+    server.shutdown().await;
 }

@@ -1,5 +1,6 @@
 //! The REST endpoints that map onto engine commands (architecture 6.1):
-//! state, status, plans, tasks, agent control and inbox answers.
+//! state, status, plans, tasks, agent control, inbox answers, the known
+//! repositories and the read-only settings.
 //!
 //! Terminals, the stream and the agent endpoints belong to later steps.
 
@@ -13,16 +14,18 @@ use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use cmux_core::engine::{ClientAction, Reply, TaskPatch};
 use cmux_core::ids::{AgentId, ItemId, PlanId, TaskId, TermId};
-use cmux_core::model::Repo;
+use cmux_core::model::{Level, Repo};
 use cmux_proto::api::{
-    AgentStatus, AnswerReq, CreatePlanReq, CreateTaskReq, Created, MessageReq, PatchTaskReq,
-    PlanBody, SpawnTaskReq, StatusResp, TranscriptResp, route,
+    AddRepoReq, AgentStatus, AnswerReq, CreatePlanReq, CreateTaskReq, Created, LevelSettings,
+    MessageReq, PatchTaskReq, PlanBody, RepoInfo, ReposResp, SettingsResp, SpawnTaskReq,
+    StatusResp, TranscriptResp, route,
 };
 use cmux_proto::view::{StateView, TaskDetail};
 
 use super::auth::Principal;
 use super::{ApiError, ApiResult, AppState};
 use crate::claude::transcript::{PAGE_DEFAULT, PAGE_MAX};
+use crate::config::LevelConfig;
 use crate::store::atomic_write;
 
 pub fn routes() -> Router<AppState> {
@@ -44,6 +47,8 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/agents/{agent}/resume", post(resume_agent))
         .route("/v1/agents/{agent}/transcript", get(transcript))
         .route(route::ITEMS_ANSWER, post(answer))
+        .route(route::REPOS, get(list_repos).post(add_repo))
+        .route(route::SETTINGS, get(settings))
 }
 
 fn parse<T: FromStr>(what: &str, s: &str) -> ApiResult<T> {
@@ -198,23 +203,26 @@ async fn create_plan(
     Ok((StatusCode::CREATED, Json(Created { id })))
 }
 
+/// The first line of `git -C <repo> <args>`, if it succeeds and says
+/// something other than `HEAD`.
+async fn git_line(repo: &FsPath, args: &[&str]) -> Option<String> {
+    let out = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (out.status.success() && !s.is_empty() && s != "HEAD").then_some(s)
+}
+
 /// The branch a repo's `origin/HEAD` points at, else the checked-out branch,
 /// else `main`.
 async fn default_branch(repo: &FsPath) -> String {
-    async fn git(repo: &FsPath, args: &[&str]) -> Option<String> {
-        let out = tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(repo)
-            .args(args)
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .await
-            .ok()?;
-        let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
-        (out.status.success() && !s.is_empty() && s != "HEAD").then_some(s)
-    }
-    if let Some(b) = git(
+    if let Some(b) = git_line(
         repo,
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
     )
@@ -222,7 +230,7 @@ async fn default_branch(repo: &FsPath) -> String {
     {
         return b.strip_prefix("origin/").unwrap_or(&b).to_string();
     }
-    git(repo, &["rev-parse", "--abbrev-ref", "HEAD"])
+    git_line(repo, &["rev-parse", "--abbrev-ref", "HEAD"])
         .await
         .unwrap_or_else(|| "main".into())
 }
@@ -477,6 +485,207 @@ async fn answer(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ---------------------------------------------------------------------------
+// Repositories and settings
+// ---------------------------------------------------------------------------
+
+/// Guards the read-modify-write of `repos.json`.
+static REGISTRY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// `<data_dir>/repos.json`: the absolute paths added with `POST /repos`.
+fn registry_file(app: &AppState) -> PathBuf {
+    app.data_dir.join("repos.json")
+}
+
+async fn read_registry(file: &FsPath) -> std::io::Result<Vec<PathBuf>> {
+    match tokio::fs::read(file).await {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Adds `path` to the registry unless it is there already.
+async fn register(file: PathBuf, path: PathBuf) -> ApiResult<()> {
+    let _guard = REGISTRY.lock().await;
+    let mut paths = read_registry(&file).await?;
+    if paths.contains(&path) {
+        return Ok(());
+    }
+    paths.push(path);
+    let bytes = serde_json::to_vec_pretty(&paths).map_err(std::io::Error::from)?;
+    tokio::task::spawn_blocking(move || atomic_write(&file, &bytes))
+        .await
+        .map_err(joined)??;
+    Ok(())
+}
+
+fn joined(e: tokio::task::JoinError) -> ApiError {
+    ApiError::new(cmux_proto::api::ErrorCode::Internal, format!("error: {e}"))
+}
+
+async fn repo_info(path: &FsPath) -> RepoInfo {
+    RepoInfo {
+        path: path.display().to_string(),
+        base_branch: default_branch(path).await,
+        remote_url: git_line(path, &["remote", "get-url", "origin"]).await,
+    }
+}
+
+/// The plans' repositories and the registered ones, by path.
+async fn list_repos(State(app): State<AppState>) -> ApiResult<Json<ReposResp>> {
+    let mut repos: std::collections::BTreeMap<String, RepoInfo> = app
+        .actor
+        .query(|s| {
+            s.plans
+                .iter()
+                .flat_map(|p| &p.repos)
+                .map(|r| {
+                    let path = r.path.display().to_string();
+                    let info = RepoInfo {
+                        path: path.clone(),
+                        base_branch: r.base_branch.clone(),
+                        remote_url: r.remote_url.clone(),
+                    };
+                    (path, info)
+                })
+                .collect()
+        })
+        .await?;
+    for path in read_registry(&registry_file(&app)).await? {
+        let key = path.display().to_string();
+        // A registered repository may have been deleted since.
+        if !repos.contains_key(&key) && path.is_dir() {
+            repos.insert(key, repo_info(&path).await);
+        }
+    }
+    Ok(Json(ReposResp {
+        repos: repos.into_values().collect(),
+    }))
+}
+
+async fn add_repo(
+    State(app): State<AppState>,
+    Json(req): Json<AddRepoReq>,
+) -> ApiResult<(StatusCode, Json<RepoInfo>)> {
+    let path = match (req.url, req.path) {
+        (Some(url), None) => clone_repo(&app.data_dir, url).await?,
+        (None, Some(path)) => existing_repo(&path).await?,
+        _ => return Err(ApiError::invalid("error: give exactly one of url and path")),
+    };
+    register(registry_file(&app), path.clone()).await?;
+    Ok((StatusCode::CREATED, Json(repo_info(&path).await)))
+}
+
+/// The directory a clone of `url` gets: its last path segment without `.git`.
+fn clone_name(url: &str) -> Option<&str> {
+    let last = url.trim_end_matches('/').rsplit(['/', ':']).next()?;
+    let name = last.strip_suffix(".git").unwrap_or(last);
+    let bad = name.is_empty() || name == "." || name == ".." || name.contains('\\');
+    (!bad).then_some(name)
+}
+
+/// `git clone <url>` into `<data_dir>/repos/<name>`, on the blocking pool.
+async fn clone_repo(data_dir: &FsPath, url: String) -> ApiResult<PathBuf> {
+    if url.is_empty() || url.starts_with('-') {
+        return Err(ApiError::invalid(format!(
+            "error: {url:?} is not a git URL"
+        )));
+    }
+    let name = clone_name(&url)
+        .ok_or_else(|| ApiError::invalid(format!("error: no repository name in {url:?}")))?;
+    let dest = data_dir.join("repos").join(name);
+    tokio::task::spawn_blocking(move || -> ApiResult<PathBuf> {
+        crate::config::ensure_private_dir(dest.parent().unwrap_or(&dest))?;
+        // Creating it first claims the name against a concurrent clone.
+        match std::fs::create_dir(&dest) {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(ApiError::invalid(format!(
+                    "error: {} already exists",
+                    dest.display()
+                )));
+            }
+            r => r?,
+        }
+        let out = std::process::Command::new("git")
+            .args(["clone", "--quiet", "--"])
+            .arg(&url)
+            .arg(&dest)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output();
+        match out {
+            Ok(out) if out.status.success() => Ok(dest.canonicalize()?),
+            out => {
+                let _ = std::fs::remove_dir_all(&dest);
+                let msg = match out {
+                    Ok(out) => String::from_utf8_lossy(&out.stderr).trim().to_string(),
+                    Err(e) => format!("error: cannot run git: {e}"),
+                };
+                Err(ApiError::invalid(if msg.is_empty() {
+                    format!("error: git clone {url} failed")
+                } else {
+                    msg
+                }))
+            }
+        }
+    })
+    .await
+    .map_err(joined)?
+}
+
+/// An existing repository on the server, canonicalized.
+async fn existing_repo(path: &str) -> ApiResult<PathBuf> {
+    let p = PathBuf::from(path);
+    if !p.is_absolute() {
+        return Err(ApiError::invalid(format!(
+            "error: repo path {path} must be absolute"
+        )));
+    }
+    let is_repo = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(&p)
+        .args(["rev-parse", "--git-dir"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|s| s.success());
+    if !is_repo {
+        return Err(ApiError::invalid(format!(
+            "error: {path} is not a git repository"
+        )));
+    }
+    Ok(tokio::fs::canonicalize(&p).await?)
+}
+
+/// What `config.toml` sets; an unset permission mode is `auto`.
+async fn settings(State(app): State<AppState>) -> Json<SettingsResp> {
+    let c = &app.config;
+    let level = |level, l: &LevelConfig| LevelSettings {
+        level,
+        model: l.model.clone(),
+        permission_mode: l.permission_mode.clone().unwrap_or_else(|| "auto".into()),
+    };
+    Json(SettingsResp {
+        tasks_per_plan: c.limits.tasks_per_plan,
+        subagents_per_task: c.limits.subagents_per_task,
+        live_processes: c.limits.live_processes,
+        permission_wait_secs: c
+            .timeouts
+            .permission_wait_secs
+            .unwrap_or(c.agents.permission_wait_secs),
+        claude: vec![
+            level(Level::Executor, &c.agents.executor),
+            level(Level::Task, &c.agents.task),
+            level(Level::Sub, &c.agents.sub),
+        ],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,6 +705,25 @@ mod tests {
         assert_eq!(parse_task("T-0001").unwrap(), TaskId::new(1));
         for bad in ["", "T-", "T-1", "t-0001", "-1", "+1", "x"] {
             assert!(parse_task(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn clone_names_are_the_last_segment_without_git() {
+        assert_eq!(clone_name("https://github.com/a/b.git"), Some("b"));
+        assert_eq!(clone_name("https://github.com/a/b/"), Some("b"));
+        assert_eq!(clone_name("git@github.com:a/b.git"), Some("b"));
+        assert_eq!(clone_name("host:b.git/"), Some("b"));
+        assert_eq!(clone_name("/tmp/origin.git"), Some("origin"));
+        for bad in [
+            "",
+            "/",
+            "https://h/a/.git",
+            "https://h/..",
+            "https://h/.",
+            "a\\b",
+        ] {
+            assert_eq!(clone_name(bad), None, "{bad:?}");
         }
     }
 
