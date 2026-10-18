@@ -1163,22 +1163,31 @@ fn a_finished_sub_agent_is_drawn_dimmed_with_its_report() {
     assert!(all.contains("tests · /home/me/api"), "{all}");
     assert!(all.contains("docs · reported success"), "{all}");
 
+    // Focus the finished pane: the active header is bold, unless dimmed.
+    let docs = AgentId::new(plan(), AgentPath::sub(t2(), "docs").unwrap());
+    rig.app.show_node(&Node::Sub(docs));
+    let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    term.draw(|f| crate::ui::draw(f, &rig.app)).unwrap();
+    let buf = term.backend().buffer().clone();
     let area = rig.app.body_area();
     let w = &rig.app.windows[2];
+    assert_eq!(w.get(w.active).unwrap().name(), "docs");
     for a in w.areas(area) {
         let name = w.get(a.id).unwrap().name();
         let cell = &buf[(a.body.x, a.body.y)];
-        let header = &buf[(a.header.unwrap().x + 1, a.header.unwrap().y)];
+        // The pane's name starts after the margin and the status glyph.
+        let header = &buf[(a.header.unwrap().x + 3, a.header.unwrap().y)];
+        assert_eq!(header.symbol(), &name[..1], "name cell of {name}");
         assert_eq!(
             cell.modifier.contains(ratatui::style::Modifier::DIM),
             name == "docs",
             "body of {name}"
         );
-        // The header of a finished pane is not bold.
-        assert_eq!(
-            header.modifier.contains(ratatui::style::Modifier::BOLD),
-            name == "T-0002",
-            "header of {name}"
+        // The header of a finished pane is not bold, even focused.
+        assert!(
+            !header.modifier.contains(ratatui::style::Modifier::BOLD),
+            "header of {name} (focused: {})",
+            a.id == w.active
         );
     }
 }
@@ -1286,4 +1295,150 @@ fn a_sub_agents_question_is_replied_to_from_the_overlay() {
     rig.keys(b"\r");
     assert!(matches!(rig.app.mode, Mode::Normal));
     assert_eq!(rig.active_agent().unwrap(), sub.to_string());
+}
+
+fn report_of(status: cmux_proto::view::ReportStatus) -> cmux_proto::view::Report {
+    cmux_proto::view::Report {
+        status,
+        summary: "x".into(),
+        pr_url: None,
+        attempt: 1,
+        implicit: false,
+        supersedes_blocked: false,
+    }
+}
+
+fn sub_mut<'a>(sv: &'a mut StateView, name: &str) -> &'a mut cmux_proto::view::AgentView {
+    sv.agents
+        .iter_mut()
+        .find(|a| a.id.to_string().ends_with(&format!("/{name}")))
+        .unwrap()
+}
+
+#[test]
+fn a_sub_agent_that_resumed_after_a_blocked_report_is_not_dimmed() {
+    use cmux_proto::view::{Activity, Life, ReportStatus};
+    let mut rig = Rig::new(120, 30);
+    rig.app.select_window(2);
+    let mut sv = state_with_subs(&["tests"]);
+    let a = sub_mut(&mut sv, "tests");
+    a.life = Life::Running;
+    a.activity = Activity::Working;
+    a.report = Some(report_of(ReportStatus::Blocked));
+    rig.set_state(sv.clone());
+    let dim = |rig: &Rig| {
+        rig.app.windows[2]
+            .panes
+            .iter()
+            .find(|p| p.name() == "tests")
+            .unwrap()
+            .dim
+    };
+    assert!(!dim(&rig));
+    let s = rig.draw(120, 30);
+    let line = s.lines().find(|l| l.contains("tests ·")).unwrap_or("");
+    assert!(!line.contains("reported blocked"), "{s}");
+    // Idle with the blocked report: it is waiting, dimmed with its report.
+    sub_mut(&mut sv, "tests").activity = Activity::Idle;
+    rig.set_state(sv);
+    assert!(dim(&rig));
+    assert!(rig.draw(120, 30).contains("tests · reported blocked"));
+}
+
+#[test]
+fn a_reported_sub_agent_that_is_still_running_can_be_closed_locally() {
+    use cmux_proto::view::{Activity, ReportStatus};
+    let mut rig = Rig::new(120, 30);
+    let mut sv = state_with_subs(&["tests", "docs"]);
+    let a = sub_mut(&mut sv, "docs");
+    a.activity = Activity::Idle;
+    a.report = Some(report_of(ReportStatus::Success));
+    rig.set_state(sv);
+    let docs = AgentId::new(plan(), AgentPath::sub(t2(), "docs").unwrap());
+    rig.app.show_node(&Node::Sub(docs.clone()));
+    rig.take_calls();
+    rig.prefix(b"x");
+    rig.keys(b"y");
+    assert_eq!(rig.take_calls(), []);
+    assert!(
+        rig.app
+            .remote
+            .as_ref()
+            .unwrap()
+            .view
+            .closed
+            .contains(&docs.to_string())
+    );
+    let w = &rig.app.windows[rig.app.active];
+    assert!(w.panes.iter().all(|p| p.agent.as_ref() != Some(&docs)));
+}
+
+#[test]
+fn showing_a_task_keeps_the_zoom_when_its_pane_is_already_focused() {
+    let mut rig = Rig::new(120, 30);
+    rig.app.select_window(2);
+    rig.set_state(state_with_subs(&["tests"]));
+    {
+        let w = &mut rig.app.windows[2];
+        let main = w.panes[0].id;
+        w.focus(main);
+        w.zoomed = true;
+    }
+    rig.app.show_node(&Node::Task(plan(), t2()));
+    assert!(rig.app.windows[2].zoomed);
+    // Another pane focused: showing the task goes to its pane and un-zooms.
+    {
+        let w = &mut rig.app.windows[2];
+        let other = w.panes[1].id;
+        w.focus(other);
+        w.zoomed = true;
+    }
+    rig.app.show_node(&Node::Task(plan(), t2()));
+    let w = &rig.app.windows[2];
+    assert!(!w.zoomed);
+    assert_eq!(w.get(w.active).unwrap().name(), "T-0002");
+}
+
+#[test]
+fn a_header_with_no_room_for_text_shows_just_the_name() {
+    for cols in [30u16, 40] {
+        let mut rig = Rig::new(cols, 30);
+        rig.app.select_window(2);
+        rig.set_state(state_with_subs(&["docs"]));
+        let s = rig.draw(cols, 30);
+        // The docs pane is right of the main pane's header.
+        let line = s.lines().find(|l| l.contains("docs")).unwrap();
+        let docs = &line[line.rfind('│').unwrap()..];
+        assert!(
+            !docs.contains('…') && !docs.contains("docs ·"),
+            "{cols}: {s}"
+        );
+    }
+}
+
+#[test]
+fn a_resumed_sub_agent_on_a_new_terminal_keeps_its_pane_and_layout() {
+    let mut rig = Rig::new(120, 30);
+    rig.app.select_window(2);
+    rig.set_state(state_with_subs(&["tests", "docs"]));
+    {
+        let w = &mut rig.app.windows[2];
+        let ids = w.layout.leaves();
+        w.layout = crate::layout::Node::preset("even-vertical", &ids).unwrap();
+        w.preset = None;
+        let docs = w.panes.iter().find(|p| p.name() == "docs").unwrap().id;
+        w.focus(docs);
+    }
+    let before = rig.pane_rects();
+    let mut sv = state_with_subs(&["tests", "docs"]);
+    sub_mut(&mut sv, "docs").term = Some(TermId(77));
+    sv.terminals
+        .iter_mut()
+        .find(|t| t.id == TermId(41))
+        .unwrap()
+        .id = TermId(77);
+    rig.set_state(sv);
+    assert_eq!(rig.pane_rects(), before);
+    let w = &rig.app.windows[2];
+    assert_eq!(w.get(w.active).unwrap().name(), "docs");
 }
