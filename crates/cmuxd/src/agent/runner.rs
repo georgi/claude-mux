@@ -30,6 +30,7 @@ use crate::actor::{ActorHandle, EffectRunner};
 use crate::claude::spawn::{
     LevelOpts, SpawnConfig, SpawnRequest, SpawnSpec, agent_dir, build_spawn, write_files,
 };
+use crate::claude::trust;
 use crate::config::Config;
 use crate::git::worktree::{WorktreePool, WorktreeRequest};
 use crate::term::hub::{Hub, TermConfig, term_key};
@@ -80,6 +81,7 @@ impl AgentRuntime {
         let a = &config.agents;
         spawn.claude_bin = a.claude_bin.clone();
         spawn.permission_wait = Duration::from_secs(a.permission_wait_secs.max(1));
+        spawn.pre_trust = a.pre_trust;
         let opts = |l: &crate::config::LevelConfig| LevelOpts {
             permission_mode: l.permission_mode.clone(),
             model: l.model.clone(),
@@ -329,6 +331,7 @@ async fn start_agent(
     cfg: TermConfig,
 ) {
     let (session_id, token_hash) = (spec.session_id.clone(), spec.token_hash);
+    let pre_trust = rt.spawn.pre_trust;
     let id = term_key(term);
     let hub = rt.hub.clone();
     rt.unlisted
@@ -338,6 +341,9 @@ async fn start_agent(
     let made = tokio::task::spawn_blocking({
         let id = id.clone();
         move || {
+            if pre_trust {
+                trust::pre_trust(&spec, std::env::vars(), &crate::config::home());
+            }
             write_files(&spec.files).map_err(|e| format!("cannot write agent files: {e}"))?;
             hub.create(&id, &pty_spec(&spec), &cfg)
                 .map_err(|e| format!("cannot start {}: {e:#}", spec.argv[0]))

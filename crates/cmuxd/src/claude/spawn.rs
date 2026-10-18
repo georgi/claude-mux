@@ -15,8 +15,13 @@ use cmux_core::model::Level;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-/// Variables that make a nested `claude` think it is a child of another session.
-/// The same list as the single-user `cmux` client.
+/// Variables of an enclosing Claude Code session that must not reach a nested
+/// `claude`: some make it think it is a child (identity, messaging socket), others
+/// carry the parent's mode and memory (an agent started under auto mode and loaded
+/// the parent's memory stores). User configuration (`ANTHROPIC_*`,
+/// `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`,
+/// proxies) is deliberately not listed. The single-user `cmux` client and the
+/// terminal host use this list too.
 pub const SESSION_ENV: &[&str] = &[
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
@@ -29,11 +34,41 @@ pub const SESSION_ENV: &[&str] = &[
     "CLAUDE_PID",
     "CLAUDE_PLUGIN_DATA",
     "AI_AGENT",
+    "CLAUDE_MEMORY_STORES",
+    "CLAUDE_ADDITIONAL_DIRECTORIES",
+    "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD",
+    "CLAUDE_AFTER_LAST_COMPACT",
+    "CLAUDE_CODE_PROJECTS_SESSION",
+    "CLAUDE_CODE_SKILL_PROPOSALS",
+    "CLAUDE_CODE_WORKER_EPOCH",
+    "CLAUDE_CODE_CCR_SURFACE",
+    "CLAUDE_CODE_USE_CCR_V2",
+    "CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2",
+    "CLAUDE_CODE_TEE_SDK_STDOUT",
+    "CLAUDE_SESSION_INGRESS_TOKEN_FILE",
+    "CLAUDE_CODE_COORDINATOR_EXTRA_TOOLS",
+    "CLAUDE_CODE_TERMINAL_MCP_TOOLS",
+    "CLAUDE_CODE_SILENT_TURN_REMINDER",
+    "CLAUDE_CODE_BG_TASKS_REPORT_RUNNING",
+    "CLAUDE_CODE_DIAGNOSTICS_FILE",
+    "CLAUDE_CODE_CONTAINER_ID",
+    "CLAUDE_CODE_ENVIRONMENT_RUNNER_VERSION",
+    "CLAUDE_EFFORT",
 ];
 
 /// Prefixes to scrub as well (spike S1: `CLAUDE_CODE_REMOTE_SESSION_ID` leaks the
 /// outer session id into hook payloads when cmuxd itself runs inside Claude).
-pub const SESSION_ENV_PREFIXES: &[&str] = &["CLAUDE_CODE_REMOTE"];
+pub const SESSION_ENV_PREFIXES: &[&str] = &[
+    "CLAUDE_CODE_REMOTE",
+    "CCR_",
+    "CLAUDE_COWORK_",
+    "CLAUDE_CODE_SYNC_",
+];
+
+/// Whether `name` is on the scrub lists.
+pub fn is_session_env(name: &str) -> bool {
+    SESSION_ENV.contains(&name) || SESSION_ENV_PREFIXES.iter().any(|p| name.starts_with(p))
+}
 
 /// The events each agent's `settings.json` registers `cmuxd hook <event>` for.
 pub const HOOK_EVENTS: &[&str] = &[
@@ -74,6 +109,10 @@ pub struct SpawnConfig {
     pub data_dir: PathBuf,
     /// How long a `PermissionRequest` hook may be held open.
     pub permission_wait: Duration,
+    /// Mark each agent's cwd trusted in Claude's global config before starting
+    /// it. Off in `new` so tests never touch the real `~/.claude.json`;
+    /// `config.toml` turns it on by default.
+    pub pre_trust: bool,
     pub executor: LevelOpts,
     pub task: LevelOpts,
     pub sub: LevelOpts,
@@ -87,6 +126,7 @@ impl SpawnConfig {
             sock,
             data_dir,
             permission_wait: Duration::from_secs(600),
+            pre_trust: false,
             executor: LevelOpts::default(),
             task: LevelOpts::default(),
             sub: LevelOpts::default(),
@@ -248,6 +288,9 @@ pub fn plan_spawn(
     argv.push(settings.display().to_string());
     // The `=` form: the flag is variadic and would swallow the prompt (spike S4).
     argv.push(format!("--mcp-config={}", mcp.display()));
+    // Digests are written here, outside the agent's cwd: without it every read
+    // of one asks for permission. Also the `=` form, for the same reason.
+    argv.push(format!("--add-dir={}", dir.display()));
     argv.push("--append-system-prompt".into());
     argv.push(req.system_prompt.into());
     if let Some(mode) = &opts.permission_mode {

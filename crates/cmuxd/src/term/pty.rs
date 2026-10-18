@@ -7,23 +7,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::claude::spawn::is_session_env;
 use anyhow::{Context, Result};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
-
-/// Variables of an enclosing Claude session that must not leak into children.
-const SESSION_ENV: &[&str] = &[
-    "CLAUDECODE",
-    "CLAUDE_CODE_ENTRYPOINT",
-    "CLAUDE_CODE_SESSION_ID",
-    "CLAUDE_CODE_CHILD_SESSION",
-    "CLAUDE_CODE_SESSION_ATTENDED",
-    "CLAUDE_CODE_MESSAGING_SOCKET",
-    "CLAUDE_CODE_MESSAGING_TOKEN",
-    "CLAUDE_CODE_EXECPATH",
-    "CLAUDE_PID",
-    "CLAUDE_PLUGIN_DATA",
-    "AI_AGENT",
-];
 
 /// What to run and how.
 #[derive(Debug, Clone)]
@@ -99,8 +85,10 @@ impl Pty {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env_remove("TMUX");
-        for var in SESSION_ENV {
-            cmd.env_remove(var);
+        for (k, _) in std::env::vars_os() {
+            if k.to_str().is_some_and(is_session_env) {
+                cmd.env_remove(k);
+            }
         }
         for var in &spec.env_remove {
             cmd.env_remove(var);

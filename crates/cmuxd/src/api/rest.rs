@@ -48,6 +48,22 @@ fn parse<T: FromStr>(what: &str, s: &str) -> ApiResult<T> {
         .map_err(|_| ApiError::invalid(format!("error: {s:?} is not a valid {what} id")))
 }
 
+/// An item id as the UI shows it (`I-5`) or as the bare number (`5`).
+fn parse_item(s: &str) -> ApiResult<ItemId> {
+    match s.parse::<u64>() {
+        Ok(n) if s.bytes().all(|b| b.is_ascii_digit()) => Ok(ItemId(n)),
+        _ => parse("item", s),
+    }
+}
+
+/// A task id as shown (`T-0001`) or as the bare number (`1`).
+fn parse_task(s: &str) -> ApiResult<TaskId> {
+    match s.parse::<u32>() {
+        Ok(n) if s.bytes().all(|b| b.is_ascii_digit()) => Ok(TaskId::new(n)),
+        _ => parse("task", s),
+    }
+}
+
 /// Runs a client action as the caller.
 async fn act(app: &AppState, p: &Principal, action: ClientAction) -> ApiResult<Reply> {
     Ok(app.actor.client(p.client(), action).await??)
@@ -292,7 +308,7 @@ async fn get_task(
     Path((plan, task)): Path<(String, String)>,
 ) -> ApiResult<Json<TaskDetail>> {
     Ok(Json(
-        task_detail(&app, parse("plan", &plan)?, parse("task", &task)?).await?,
+        task_detail(&app, parse("plan", &plan)?, parse_task(&task)?).await?,
     ))
 }
 
@@ -303,7 +319,7 @@ async fn patch_task(
     Json(req): Json<PatchTaskReq>,
 ) -> ApiResult<Json<TaskDetail>> {
     let plan: PlanId = parse("plan", &plan)?;
-    let task: TaskId = parse("task", &task)?;
+    let task: TaskId = parse_task(&task)?;
     let patch = TaskPatch {
         title: req.title,
         body: req.body,
@@ -339,7 +355,7 @@ async fn spawn_task(
     let req = body.map(|b| b.0).unwrap_or_default();
     let action = ClientAction::SpawnTask {
         plan: parse("plan", &plan)?,
-        task: parse("task", &task)?,
+        task: parse_task(&task)?,
         instructions: req.instructions,
         force: req.force,
     };
@@ -393,7 +409,7 @@ async fn resume_agent(
 async fn answer(
     State(app): State<AppState>,
     Extension(p): Extension<Principal>,
-    Path(item): Path<u64>,
+    Path(item): Path<String>,
     Json(req): Json<AnswerReq>,
 ) -> ApiResult<StatusCode> {
     let action = req.into_action().map_err(ApiError::invalid)?;
@@ -401,10 +417,33 @@ async fn answer(
         &app,
         &p,
         ClientAction::AnswerItem {
-            item: ItemId(item),
+            item: parse_item(&item)?,
             action,
         },
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn item_ids_take_the_bare_number_and_the_prefixed_form() {
+        assert_eq!(parse_item("5").unwrap(), ItemId(5));
+        assert_eq!(parse_item("I-5").unwrap(), ItemId(5));
+        for bad in ["", "I-", "I5", "-5", "+5", "I-+5", "five", "5x"] {
+            assert!(parse_item(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn task_ids_take_the_bare_number_and_the_prefixed_form() {
+        assert_eq!(parse_task("1").unwrap(), TaskId::new(1));
+        assert_eq!(parse_task("T-0001").unwrap(), TaskId::new(1));
+        for bad in ["", "T-", "T-1", "t-0001", "-1", "+1", "x"] {
+            assert!(parse_task(bad).is_err(), "{bad:?}");
+        }
+    }
 }

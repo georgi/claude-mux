@@ -36,6 +36,10 @@ pub struct AgentsConfig {
     pub claude_bin: String,
     /// How long a `PermissionRequest` hook is held open for a remote answer.
     pub permission_wait_secs: u64,
+    /// Mark an agent's working directory trusted in Claude's global config
+    /// (`$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json`) before starting
+    /// it, so the first start does not wait on the "trust this folder" dialog.
+    pub pre_trust: bool,
     pub executor: LevelConfig,
     pub task: LevelConfig,
     pub sub: LevelConfig,
@@ -46,6 +50,7 @@ impl Default for AgentsConfig {
         AgentsConfig {
             claude_bin: "claude".into(),
             permission_wait_secs: 600,
+            pre_trust: true,
             executor: LevelConfig::default(),
             task: LevelConfig::default(),
             sub: LevelConfig::default(),
@@ -282,6 +287,9 @@ mod tests {
         .unwrap();
         assert_eq!(c.agents.claude_bin, "/x/claude");
         assert_eq!(c.agents.permission_wait_secs, 600);
+        assert!(c.agents.pre_trust, "on by default");
+        let off: Config = toml::from_str("[agents]\npre_trust = false").unwrap();
+        assert!(!off.agents.pre_trust);
         assert_eq!(c.agents.task.model.as_deref(), Some("haiku"));
         assert!(c.agents.sub.model.is_none());
     }

@@ -508,6 +508,19 @@ async fn creating_a_plan_shows_up_in_state() {
             .status,
         404
     );
+    // The prefixed form the UI shows is the same item.
+    assert_eq!(
+        send(&h.unix, "POST", "/v1/items/I-99/answer", &[], &ans)
+            .await
+            .status,
+        404
+    );
+    assert_eq!(
+        send(&h.unix, "POST", "/v1/items/I-x/answer", &[], &ans)
+            .await
+            .status,
+        400
+    );
     let bad = serde_json::json!({"action": "reply"});
     assert_eq!(
         send(&h.unix, "POST", &route::item_answer(99), &[], &bad)

@@ -18,6 +18,9 @@ pub type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
 
 const SCROLLBACK: usize = 10_000;
 
+/// Variables of an enclosing Claude Code session that must not leak into
+/// children. Kept in sync with `cmuxd::claude::spawn::SESSION_ENV` (cmuxd is
+/// not a dependency of this crate); user configuration is deliberately absent.
 const SESSION_ENV: &[&str] = &[
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
@@ -30,7 +33,41 @@ const SESSION_ENV: &[&str] = &[
     "CLAUDE_PID",
     "CLAUDE_PLUGIN_DATA",
     "AI_AGENT",
+    "CLAUDE_MEMORY_STORES",
+    "CLAUDE_ADDITIONAL_DIRECTORIES",
+    "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD",
+    "CLAUDE_AFTER_LAST_COMPACT",
+    "CLAUDE_CODE_PROJECTS_SESSION",
+    "CLAUDE_CODE_SKILL_PROPOSALS",
+    "CLAUDE_CODE_WORKER_EPOCH",
+    "CLAUDE_CODE_CCR_SURFACE",
+    "CLAUDE_CODE_USE_CCR_V2",
+    "CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2",
+    "CLAUDE_CODE_TEE_SDK_STDOUT",
+    "CLAUDE_SESSION_INGRESS_TOKEN_FILE",
+    "CLAUDE_CODE_COORDINATOR_EXTRA_TOOLS",
+    "CLAUDE_CODE_TERMINAL_MCP_TOOLS",
+    "CLAUDE_CODE_SILENT_TURN_REMINDER",
+    "CLAUDE_CODE_BG_TASKS_REPORT_RUNNING",
+    "CLAUDE_CODE_DIAGNOSTICS_FILE",
+    "CLAUDE_CODE_CONTAINER_ID",
+    "CLAUDE_CODE_ENVIRONMENT_RUNNER_VERSION",
+    "CLAUDE_EFFORT",
 ];
+
+/// Prefixes to scrub as well (spike S1: `CLAUDE_CODE_REMOTE_SESSION_ID` leaks the
+/// outer session id into hook payloads when cmuxd itself runs inside Claude).
+const SESSION_ENV_PREFIXES: &[&str] = &[
+    "CLAUDE_CODE_REMOTE",
+    "CCR_",
+    "CLAUDE_COWORK_",
+    "CLAUDE_CODE_SYNC_",
+];
+
+/// Whether `name` is on the scrub lists.
+fn is_session_env(name: &str) -> bool {
+    SESSION_ENV.contains(&name) || SESSION_ENV_PREFIXES.iter().any(|p| name.starts_with(p))
+}
 
 /// vt100 callbacks. Answers terminal queries that the child sends and records
 /// side-channel requests (title, bell, clipboard) for the main loop.
@@ -192,8 +229,10 @@ impl Pane {
         cmd.env_remove("TMUX");
         // When cmux itself runs inside a Claude session, do not leak that
         // session's identity into the children.
-        for var in SESSION_ENV {
-            cmd.env_remove(var);
+        for (k, _) in std::env::vars_os() {
+            if k.to_str().is_some_and(is_session_env) {
+                cmd.env_remove(k);
+            }
         }
 
         let child = pair

@@ -172,6 +172,7 @@ fn executor_snapshot() {
             "--settings",
             &format!("{dir}/settings.json"),
             &format!("--mcp-config={dir}/mcp.json"),
+            &format!("--add-dir={dir}"),
             "--append-system-prompt",
             "You are an agent.\nBe brief.",
             "[cmux] Start.",
@@ -228,6 +229,7 @@ fn task_snapshot_with_level_options() {
             "--settings",
             &format!("{dir}/settings.json"),
             &format!("--mcp-config={dir}/mcp.json"),
+            &format!("--add-dir={dir}"),
             "--append-system-prompt",
             "You are an agent.\nBe brief.",
             "--permission-mode",
@@ -281,6 +283,80 @@ fn the_prompt_comes_last_and_mcp_config_uses_the_equals_form() {
     assert_eq!(s.argv.last().unwrap(), "[cmux] Start.");
     assert!(!s.argv.contains(&"--mcp-config".to_string()));
     assert!(s.argv.iter().any(|a| a.starts_with("--mcp-config=")));
+}
+
+#[test]
+fn the_agent_dir_is_added_in_the_equals_form_so_digests_can_be_read() {
+    let s = spec(AgentPath::Executor, Level::Executor, "/r", false, &cfg());
+    let dir = "/data/cmuxd/plans/P-20261018-auth-refactor/agents/executor";
+    assert!(s.argv.contains(&format!("--add-dir={dir}")));
+    // The bare flag is variadic and would swallow the kickoff prompt.
+    assert!(!s.argv.contains(&"--add-dir".to_string()));
+    assert_eq!(s.argv.last().unwrap(), "[cmux] Start.");
+    let sub = spec(
+        AgentPath::sub(TaskId::new(3), "tests").unwrap(),
+        Level::Sub,
+        "/r",
+        false,
+        &cfg(),
+    );
+    assert!(sub.argv.contains(
+        &"--add-dir=/data/cmuxd/plans/P-20261018-auth-refactor/agents/T-0003_tests".to_string()
+    ));
+}
+
+#[test]
+fn the_wider_session_scrub_list_leaves_user_configuration_alone() {
+    let s = spec(AgentPath::Executor, Level::Executor, "/r", false, &cfg());
+    let gone = [
+        "CCR_TEST_GIT_CLONE",
+        "CLAUDE_COWORK_MEMORY_PATH",
+        "CLAUDE_CODE_SYNC_X",
+        "CLAUDE_CODE_REMOTE",
+        "CLAUDE_MEMORY_STORES",
+        "CLAUDE_ADDITIONAL_DIRECTORIES",
+        "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD",
+        "CLAUDE_AFTER_LAST_COMPACT",
+        "CLAUDE_CODE_PROJECTS_SESSION",
+        "CLAUDE_CODE_SKILL_PROPOSALS",
+        "CLAUDE_CODE_WORKER_EPOCH",
+        "CLAUDE_CODE_CCR_SURFACE",
+        "CLAUDE_CODE_USE_CCR_V2",
+        "CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2",
+        "CLAUDE_CODE_TEE_SDK_STDOUT",
+        "CLAUDE_SESSION_INGRESS_TOKEN_FILE",
+        "CLAUDE_CODE_COORDINATOR_EXTRA_TOOLS",
+        "CLAUDE_CODE_TERMINAL_MCP_TOOLS",
+        "CLAUDE_CODE_SILENT_TURN_REMINDER",
+        "CLAUDE_CODE_BG_TASKS_REPORT_RUNNING",
+        "CLAUDE_CODE_DIAGNOSTICS_FILE",
+        "CLAUDE_CODE_CONTAINER_ID",
+        "CLAUDE_CODE_ENVIRONMENT_RUNNER_VERSION",
+        "CLAUDE_EFFORT",
+    ];
+    let kept = [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+    ];
+    let base = gone
+        .iter()
+        .chain(&kept)
+        .map(|k| (k.to_string(), "v".to_string()));
+    let out = s.final_env(base);
+    for k in gone {
+        assert!(out.iter().all(|(n, _)| n != k), "{k} leaked");
+        assert!(is_session_env(k), "{k}");
+    }
+    for k in kept {
+        assert!(out.iter().any(|(n, _)| n == k), "{k} was scrubbed");
+        assert!(!is_session_env(k), "{k}");
+    }
 }
 
 #[test]
