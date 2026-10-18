@@ -28,11 +28,14 @@ pub mod route {
     pub const STATUS: &str = "/v1/status";
     pub const STREAM: &str = "/v1/stream";
     pub const PLANS: &str = "/v1/plans";
-    pub const ITEMS_ANSWER: &str = "/v1/items/:id/answer";
+    /// axum 0.8 capture syntax (`{id}`), so servers can register it as is.
+    pub const ITEMS_ANSWER: &str = "/v1/items/{id}/answer";
     pub const TERMINALS: &str = "/v1/terminals";
     pub const PAIR_START: &str = "/v1/pair/start";
     pub const PAIR_COMPLETE: &str = "/v1/pair/complete";
     pub const DEVICES: &str = "/v1/devices";
+    /// `POST` (bearer token) sets the web session cookie; `DELETE` clears it.
+    pub const SESSION: &str = "/v1/session";
     pub const AGENT_HOOK: &str = "/v1/agent/hook";
     pub const AGENT_TOOL: &str = "/v1/agent/tool";
 
