@@ -899,22 +899,30 @@ mod input_tests {
                 &TermConfig::small(),
             )
             .unwrap();
-        // The writer takes a chunk off the queue before it blocks on the PTY,
-        // so the second full chunk waits and the third is refused.
+        // Fill the queue until a write is refused, then hand input_loop one
+        // more chunk at once. Linux blocks the writer on a full tty, but a
+        // BSD tty (macOS) discards unread input, so the writer keeps draining
+        // slowly there and the queue can free up between the two steps;
+        // retrying keeps the test about input_loop rather than that race.
         let full = vec![b'x'; INPUT_QUEUE_BYTES];
-        assert!(t.write(&full));
-        std::thread::sleep(Duration::from_millis(50));
-        assert!(t.write(&full));
-        assert!(!t.write(&full));
-        let (out, mut out_rx) = mpsc::channel(4);
-        let (tx, rx) = mpsc::channel(4);
-        tx.try_send(job(&t, full, &out)).unwrap();
-        drop(tx);
-        input_loop(rx);
-        let Message::Text(body) = out_rx.try_recv().expect("an error frame") else {
-            panic!("expected a text frame");
-        };
-        assert!(body.contains("not accepting input"));
+        let mut reported = false;
+        for _ in 0..50 {
+            while t.write(&full) {}
+            let (out, mut out_rx) = mpsc::channel(4);
+            let (tx, rx) = mpsc::channel(4);
+            tx.try_send(job(&t, full.clone(), &out)).unwrap();
+            drop(tx);
+            input_loop(rx);
+            if let Ok(msg) = out_rx.try_recv() {
+                let Message::Text(body) = msg else {
+                    panic!("expected a text frame");
+                };
+                assert!(body.contains("not accepting input"));
+                reported = true;
+                break;
+            }
+        }
+        assert!(reported, "a full queue never reported the limit");
         t.kill();
     }
 }

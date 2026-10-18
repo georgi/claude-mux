@@ -439,7 +439,8 @@ fn input_for_a_child_that_stopped_reading_is_refused_once_the_queue_is_full() {
         .unwrap();
     // The first write is taken however large; the writer thread blocks on it.
     assert!(term.write(&vec![b'x'; 4 * 1024 * 1024]));
-    wait_for(|| (!term.write(&vec![b'y'; 1024 * 1024])).then_some(()));
-    assert!(!term.input("a", &vec![b'z'; 1024 * 1024]));
+    // A BSD tty (macOS) discards unread input, so the writer drains slowly
+    // there instead of blocking: keep offering input until one is refused.
+    wait_for(|| (!term.input("a", &vec![b'z'; 1024 * 1024])).then_some(()));
     term.kill();
 }
