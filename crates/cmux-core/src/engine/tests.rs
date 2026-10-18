@@ -833,7 +833,7 @@ fn session_end_then_exit_code_and_a_clean_exit_after_a_report() {
     let mut h = H::new();
     let (pid, exec) = h.accepted_plan("session end", 2);
     let a = h.start(&pid, &exec, 1);
-    h.hook(&a, Hook::SessionEnd).unwrap();
+    h.hook(&a, Hook::SessionEnd { clear: false }).unwrap();
     assert_eq!(h.agent(&a).life, Life::Exited { code: None });
     assert_eq!(h.task(&pid, 1).state, TaskState::Blocked);
     h.runner(RunnerEvent::Exited {
@@ -1501,7 +1501,7 @@ fn a_starting_agent_cannot_authenticate_with_a_zero_hash() {
     let e = err_of(h.go(Command::Hook {
         agent: exec,
         token_hash: [0; 32],
-        hook: Hook::SessionEnd,
+        hook: Hook::SessionEnd { clear: false },
     }));
     assert_eq!(e.kind, ErrorKind::Auth);
 }
@@ -2447,6 +2447,19 @@ fn an_idle_agent_without_a_report_needs_a_human_after_ten_minutes_once() {
     // A working agent, or a parked parent, never triggers it.
     h.prompt(&a);
     assert!(h.tick(30 * MIN).deltas.is_empty());
+    // The human dismissed it and messaged the agent; a second stall is new.
+    h.client(ClientAction::AnswerItem {
+        item: items_id(&h),
+        action: ItemAction::Dismiss,
+    })
+    .unwrap();
+    h.stop(&a, false);
+    h.tick(10 * MIN);
+    assert_eq!(h.human(|k| *k == ItemKind::ExitedWithoutReport).len(), 2);
+}
+
+fn items_id(h: &H) -> ItemId {
+    h.human(|k| *k == ItemKind::ExitedWithoutReport)[0].id
 }
 
 #[test]
@@ -2720,7 +2733,7 @@ fn a_permission_answered_in_the_terminal_releases_the_held_hook() {
             h.stop(a, false);
         }),
         ("session_end", |h, a| {
-            h.hook(a, Hook::SessionEnd).unwrap();
+            h.hook(a, Hook::SessionEnd { clear: false }).unwrap();
         }),
         ("new request", |h, a| {
             h.hook(a, perm("r2", "ls", "ls")).unwrap();
@@ -3061,7 +3074,7 @@ fn a_resumed_agent_starts_with_a_clean_activity_and_a_dead_token() {
     h.client(ClientAction::ResumeAgent { agent: a.clone() })
         .unwrap();
     // The killed process's late SessionEnd must not end the resumed agent.
-    let e = err_of(h.hook(&a, Hook::SessionEnd));
+    let e = err_of(h.hook(&a, Hook::SessionEnd { clear: false }));
     assert_eq!(e.kind, ErrorKind::Auth);
     h.tick(2 * MIN);
     h.boot(&a);
@@ -3224,4 +3237,184 @@ fn resuming_an_agent_that_exited_without_a_report_respects_the_slot_limits() {
     spawn(&mut h, s3).unwrap();
     let e = err_of(h.client(ClientAction::ResumeAgent { agent: sub(s1) }));
     assert_eq!(e.kind, ErrorKind::Limit, "{e}");
+}
+
+#[test]
+fn clear_ends_the_session_but_not_the_agent() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("clear", 1);
+    let a = h.start(&pid, &exec, 1);
+    h.stop(&a, false);
+    // `/clear` in the terminal: SessionEnd(reason clear), then SessionStart with a new id.
+    h.hook(&a, Hook::SessionEnd { clear: true }).unwrap();
+    h.hook(
+        &a,
+        Hook::SessionStart {
+            session_id: "after-clear".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(h.agent(&a).life, Life::Running);
+    assert_eq!(h.agent(&a).session_id, "after-clear");
+    assert!(h.agent(&a).report.is_none());
+    assert_eq!(h.task(&pid, 1).state, TaskState::InProgress);
+    assert!(h.human(|k| *k == ItemKind::ExitedWithoutReport).is_empty());
+    assert!(
+        h.items_to(&exec)
+            .iter()
+            .all(|i| i.kind != ItemKind::ChildExited)
+    );
+    // The agent can still report.
+    h.prompt(&a);
+    h.report(&a, ReportStatus::Success).unwrap();
+}
+
+#[test]
+fn allow_always_on_git_with_a_flag_does_not_approve_every_git_command() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("git rule", 1);
+    let a = h.start(&pid, &exec, 1);
+    let cmd = "git -C /repo/.worktrees/T-0001 status";
+    let item = held(&h.hook(&a, perm("r1", cmd, cmd)).unwrap());
+    h.client(ClientAction::AnswerItem {
+        item,
+        action: ItemAction::AllowAlways,
+    })
+    .unwrap();
+    let push = "git -C /repo/.worktrees/T-0001 push --force origin main";
+    let o = h.hook(&a, perm("r2", push, push)).unwrap();
+    assert!(
+        matches!(hook_reply(&o), HookReply::Held { .. }),
+        "rules {:?} auto-allowed {push:?}",
+        h.task(&pid, 1).allow_rules
+    );
+}
+
+#[test]
+fn role_prompts_name_only_tools_the_role_may_call() {
+    use crate::prompts::Template;
+    let a = AgentId::new(PlanId::new(2026, 10, 18, "x"), AgentPath::Executor);
+    let calls = [
+        ToolCall::GetPlan,
+        ToolCall::UpdatePlan {
+            state: None,
+            title: None,
+        },
+        ToolCall::ListTasks,
+        ToolCall::GetTask { task: None },
+        ToolCall::CreateTask {
+            title: String::new(),
+            body: String::new(),
+            repo: 0,
+            deps: vec![],
+            criteria: vec![],
+        },
+        ToolCall::UpdateTask {
+            task: t(1),
+            patch: TaskPatch::default(),
+        },
+        ToolCall::TransitionTask {
+            task: t(1),
+            to: TaskState::Testing,
+        },
+        ToolCall::AddCriterion {
+            task: t(1),
+            text: String::new(),
+        },
+        ToolCall::CheckCriterion {
+            task: t(1),
+            criterion: 1,
+            checked: true,
+        },
+        ToolCall::AddNote {
+            task: t(1),
+            text: String::new(),
+        },
+        ToolCall::SpawnTask {
+            task: t(1),
+            instructions: None,
+            force: false,
+        },
+        ToolCall::SpawnSubagent {
+            name: String::new(),
+            prompt: String::new(),
+        },
+        ToolCall::Send {
+            agent: a.clone(),
+            text: String::new(),
+            interrupt: false,
+        },
+        ToolCall::StopAgent { agent: a.clone() },
+        ToolCall::ListAgents,
+        ToolCall::Peek {
+            agent: a.clone(),
+            lines: 1,
+        },
+        ToolCall::SetTaskPr { url: String::new() },
+        ToolCall::ReportResult {
+            status: ReportStatus::Success,
+            summary: String::new(),
+            pr_url: None,
+        },
+        ToolCall::AskParent {
+            question: String::new(),
+        },
+        ToolCall::AnswerChild {
+            agent: a.clone(),
+            answer: String::new(),
+        },
+        ToolCall::AskUser {
+            question: String::new(),
+        },
+    ];
+    for (tpl, level) in [
+        (Template::Executor, Level::Executor),
+        (Template::Task, Level::Task),
+        (Template::Subagent, Level::Sub),
+    ] {
+        let text = tpl.builtin();
+        let tools = text.split("## Tools").nth(1).expect("a Tools section");
+        for c in &calls {
+            let named = tools.contains(&format!("`{}`", c.name()))
+                || tools.contains(&format!("`{}(", c.name()));
+            assert!(
+                !named || c.roles().contains(&level),
+                "{} lists {} but {level:?} may not call it",
+                tpl.file_name(),
+                c.name()
+            );
+        }
+    }
+}
+
+#[test]
+fn ask_user_names_the_configured_question_timeout() {
+    let mut h = H::new();
+    h.st.timeouts.question = 15 * MIN;
+    let (_pid, exec) = h.accepted_plan("ask timeout", 1);
+    let o = h
+        .tool(
+            &exec,
+            ToolCall::AskUser {
+                question: "q".into(),
+            },
+        )
+        .unwrap();
+    assert!(text_of(&o).contains("15 minutes"), "{}", text_of(&o));
+}
+
+#[test]
+fn a_new_attempt_closes_the_old_attempts_exited_item() {
+    let mut h = H::new();
+    let (pid, exec) = h.accepted_plan("retry", 1);
+    let a = h.start(&pid, &exec, 1);
+    h.runner(RunnerEvent::Exited {
+        agent: a.clone(),
+        code: Some(1),
+    });
+    let item = h.human(|k| *k == ItemKind::ExitedWithoutReport)[0].id;
+    assert_eq!(h.task(&pid, 1).state, TaskState::Blocked);
+    h.start(&pid, &exec, 1);
+    assert_eq!(h.task(&pid, 1).attempt, 2);
+    assert_eq!(h.status(item), Delivery::Dismissed);
 }

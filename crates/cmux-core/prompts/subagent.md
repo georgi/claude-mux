@@ -14,7 +14,7 @@ You are a sub-agent working on task {{task_id}} in the worktree {{worktree}}. Yo
 
 ## Tools
 
-- `get_task`, `list_tasks`: your own task only.
+- `get_task`: your own task only.
 - `add_note`: your notes only.
 - `report_result(status, summary)`: once, at the end.
 - `ask_parent(question)`: ask the task agent when you are stuck.

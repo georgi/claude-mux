@@ -363,7 +363,7 @@ impl Ctx<'_> {
     fn watchdog(&mut self) {
         let (now, limit) = (self.now, self.st.timeouts.idle_without_report);
         let mut stalled = Vec::new();
-        for (pi, plan) in self.st.plans.iter().enumerate() {
+        for plan in &self.st.plans {
             for a in &plan.agents {
                 let parked = plan
                     .agents
@@ -377,14 +377,12 @@ impl Ctx<'_> {
                     && overdue
                     && !parked
                 {
-                    stalled.push((pi, a.id.clone(), a.task));
+                    stalled.push((a.id.clone(), a.idle_since.unwrap_or_default()));
                 }
             }
         }
-        for (pi, id, task) in stalled {
-            let attempt = task
-                .and_then(|t| self.plan(pi).task(t))
-                .map_or(0, |t| t.attempt);
+        for (id, since) in stalled {
+            // One item per idle period: a later stall of the same agent is new.
             self.post(NewItem {
                 to: Recipient::Human,
                 kind: ItemKind::ExitedWithoutReport,
@@ -394,7 +392,7 @@ impl Ctx<'_> {
                     id.path(),
                     limit / 60_000
                 ),
-                dedupe: Some(format!("idle:{id}:{attempt}")),
+                dedupe: Some(format!("idle:{id}:{since}")),
             });
         }
     }

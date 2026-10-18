@@ -324,9 +324,10 @@ impl Ctx<'_> {
                     body: question,
                     dedupe: None,
                 });
-                text(
-                    "question sent to the user; end your turn, the answer arrives as a message (it expires after 60 minutes)",
-                )
+                text(format!(
+                    "question sent to the user; end your turn, the answer arrives as a message (it expires after {} minutes)",
+                    self.st.timeouts.question / 60_000
+                ))
             }
         }
     }

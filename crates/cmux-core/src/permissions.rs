@@ -11,6 +11,14 @@ const BASH_SUBCOMMAND_TOOLS: &[&str] = &[
     "cargo", "npm", "pnpm", "yarn", "git", "go", "make", "python", "python3", "uv", "gh",
 ];
 
+/// Commands that run their arguments as another command (or, for `VAR=x`, an
+/// assignment before one). A prefix rule on their first word would approve any
+/// command, so they never get a rule.
+const BASH_WRAPPERS: &[&str] = &[
+    "bash", "sh", "zsh", "dash", "env", "sudo", "doas", "xargs", "timeout", "nice", "nohup",
+    "exec", "eval", "command", "time", "watch",
+];
+
 /// Characters that let one Bash command carry another: command separators,
 /// pipes, substitution, redirection and line breaks. A rule's `*` would
 /// otherwise let `cargo test; rm -rf ~` ride on an approved `cargo test`.
@@ -35,9 +43,10 @@ pub fn find_match<'a>(
     } else {
         input_summary.to_string()
     };
-    rules
-        .iter()
-        .find(|rule| rule.tool == tool && glob_match(&rule.pattern, &input))
+    // An empty pattern is the "ask again" rule and never matches.
+    rules.iter().find(|rule| {
+        rule.tool == tool && !rule.pattern.is_empty() && glob_match(&rule.pattern, &input)
+    })
 }
 
 fn has_shell_control(command: &str) -> bool {
@@ -49,11 +58,19 @@ fn has_shell_control(command: &str) -> bool {
 ///
 /// Bash rules are a prefix of the command plus ` *` (a word boundary): its first word, plus its
 /// second word when the first is in `BASH_SUBCOMMAND_TOOLS`. A command with any
-/// `SHELL_CONTROL` character gets pattern `""`, which never matches a Bash
-/// input, so it fails closed and the user is asked again.
+/// `SHELL_CONTROL` character, a `BASH_WRAPPERS` or `VAR=x` first word, or a
+/// subcommand tool without a plain second word (`git`, `git -C dir ..`) gets
+/// pattern `""`, which never matches, so it fails closed and the user is asked
+/// again. Other tools get a rule for exactly this input (one file path or URL),
+/// never the whole tool.
 pub fn rule_for(tool: &str, input_summary: &str) -> AllowRule {
     let pattern = if tool != "Bash" {
-        "*".to_string()
+        // Exactly this file, URL or pattern; a literal `*` cannot be expressed.
+        if input_summary.contains('*') {
+            String::new()
+        } else {
+            input_summary.to_string()
+        }
     } else if has_shell_control(input_summary) {
         String::new()
     } else {
@@ -120,9 +137,18 @@ fn bash_pattern(command: &str) -> String {
     };
     let first_start = command.len() - command.trim_start().len();
     let first_word = &command[first_start..first_end];
-    let end = match ends.get(1) {
-        Some(&second_end) if BASH_SUBCOMMAND_TOOLS.contains(&first_word) => second_end,
-        _ => first_end,
+    if BASH_WRAPPERS.contains(&first_word) || first_word.contains('=') {
+        return String::new();
+    }
+    let end = if BASH_SUBCOMMAND_TOOLS.contains(&first_word) {
+        // `git` alone or `git -C dir push` would give `git *`/`git -C *`, which
+        // approves every subcommand: fail closed instead.
+        match ends.get(1) {
+            Some(&e) if !command[first_end..e].trim_start().starts_with(['-', '+']) => e,
+            _ => return String::new(),
+        }
+    } else {
+        first_end
     };
     let prefix = &command[..end];
     if prefix.contains('*') {
@@ -370,8 +396,8 @@ mod tests {
     }
 
     #[test]
-    fn glob_empty_pattern() {
-        assert!(glob("", ""));
+    fn glob_empty_pattern_never_matches() {
+        assert!(!glob("", ""));
         assert!(!glob("", "a"));
         assert!(!glob("a", ""));
     }
@@ -539,12 +565,38 @@ mod tests {
             rule_for("Bash", "git status --short").pattern,
             "git status *"
         );
-        assert_eq!(rule_for("Bash", "git").pattern, "git *");
         assert_eq!(
-            rule_for("Bash", "python3 -m pytest").pattern,
-            "python3 -m *"
+            rule_for("Bash", "python3 tests.py").pattern,
+            "python3 tests.py *"
         );
         assert_eq!(rule_for("Bash", "gh pr view 12").pattern, "gh pr *");
+    }
+
+    #[test]
+    fn rules_never_widen_to_every_command_of_a_tool_or_wrapper() {
+        // (approved command, a command the rule must not also approve)
+        for (approved, other) in [
+            ("git", "git push --force origin main"),
+            ("git -C /repo status", "git -C /repo push --force"),
+            ("git -c color.ui=never log", "git -c alias.x=!sh x"),
+            (
+                "python3 -c print(1)",
+                "python3 -c __import__('os').remove('x')",
+            ),
+            ("cargo +nightly test", "cargo +nightly publish"),
+            ("RUST_LOG=debug cargo test", "RUST_LOG=debug rm -rf ~"),
+            ("bash scripts/check.sh", "bash -c 'rm -rf ~'"),
+            ("env FOO=1 make", "env rm -rf ~"),
+            ("timeout 60 cargo test", "timeout 60 rm -rf ~"),
+            ("sudo ls", "sudo rm -rf /"),
+        ] {
+            let r = rule_for("Bash", approved);
+            assert!(
+                find_match(std::slice::from_ref(&r), "Bash", other).is_none(),
+                "{approved:?} gave {:?}, which allows {other:?}",
+                r.pattern
+            );
+        }
     }
 
     #[test]
@@ -582,13 +634,18 @@ mod tests {
     }
 
     #[test]
-    fn rule_for_other_tools_is_star() {
+    fn rule_for_other_tools_is_exactly_this_input() {
         for tool in ["Edit", "Write", "Read", "WebFetch", "Grep"] {
             let r = rule_for(tool, "/x/y.rs");
             assert_eq!(r.tool, tool);
-            assert_eq!(r.pattern, "*");
-            assert!(find_match(std::slice::from_ref(&r), tool, "/other").is_some());
+            assert_eq!(r.pattern, "/x/y.rs");
+            assert!(find_match(std::slice::from_ref(&r), tool, "/x/y.rs").is_some());
+            assert!(find_match(std::slice::from_ref(&r), tool, "/home/u/.bashrc").is_none());
         }
+        let r = rule_for("Grep", "fn *");
+        assert!(find_match(std::slice::from_ref(&r), "Grep", "anything").is_none());
+        let r = rule_for("Edit", "");
+        assert!(find_match(std::slice::from_ref(&r), "Edit", "").is_none());
     }
 
     #[test]

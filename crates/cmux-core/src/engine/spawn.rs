@@ -359,6 +359,8 @@ impl Ctx<'_> {
         let tid = task.id;
         let id = AgentId::new(pid, AgentPath::Task(tid));
         self.register(pi, id.clone(), cwd);
+        // The old attempt's "exited without report" is answered by this one.
+        self.dismiss_stalled(&id);
         let t = self.task_mut(pi, ti);
         t.state = TaskState::InProgress;
         t.attempt += 1;

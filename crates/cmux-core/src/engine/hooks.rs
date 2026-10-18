@@ -151,9 +151,9 @@ impl Ctx<'_> {
                 }
                 HookReply::Held { item }
             }
-            Hook::SessionEnd => {
+            Hook::SessionEnd { clear } => {
                 self.release_held(&id);
-                if self.agent(pi, ai).life != Life::Stopped {
+                if !clear && self.agent(pi, ai).life != Life::Stopped {
                     self.end_agent(
                         pi,
                         ai,

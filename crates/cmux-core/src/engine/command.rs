@@ -156,7 +156,11 @@ pub enum Hook {
         /// The full, untruncated input that allow rules are matched against.
         match_input: String,
     },
-    SessionEnd,
+    /// `clear` is the payload's `reason == "clear"`: `/clear` ends the session
+    /// but not the process, and a `SessionStart` with a new session id follows.
+    SessionEnd {
+        clear: bool,
+    },
 }
 
 /// One variant per MCP tool (architecture 7.3). Agents are named by id, tasks by
