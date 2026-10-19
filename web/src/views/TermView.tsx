@@ -2,10 +2,11 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef } from "react";
 import type { Conn } from "../conn";
 import { useModel } from "../hooks";
 import type { Store } from "../store";
+import { Badge } from "@/components/ui/badge";
 
 interface Props {
   term: number;
@@ -22,6 +23,28 @@ interface Props {
 }
 
 const FONT = 13;
+
+/** Resolve a CSS color (any syntax, e.g. oklch) to rgb through a canvas. */
+function resolveColor(el: HTMLElement, prop: string): string {
+  const probe = document.createElement("span");
+  probe.style.color = `var(${prop})`;
+  probe.style.display = "none";
+  el.appendChild(probe);
+  const c = getComputedStyle(probe).color;
+  probe.remove();
+  return c;
+}
+
+/** The xterm theme from the CSS theme tokens. */
+function themeFrom(el: HTMLElement) {
+  return {
+    background: resolveColor(el, "--background"),
+    foreground: resolveColor(el, "--foreground"),
+    cursor: resolveColor(el, "--foreground"),
+    cursorAccent: resolveColor(el, "--background"),
+    selectionBackground: resolveColor(el, "--accent"),
+  };
+}
 
 /**
  * One terminal in xterm.js. Size ownership (architecture 6.2): the PTY
@@ -43,7 +66,7 @@ export function TermView({ term, title, conn, store, fit: fitPty = true, filter 
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       fontSize: FONT,
       scrollback: 5000,
-      theme: { background: "#111317" },
+      theme: themeFrom(el),
     });
     const fit = new FitAddon();
     xt.loadAddon(fit);
@@ -87,6 +110,14 @@ export function TermView({ term, title, conn, store, fit: fitPty = true, filter 
       if (!fitPty) shrinkFont(s.cols);
     };
 
+    const applyTheme = () => {
+      xt.options.theme = themeFrom(el);
+    };
+    const mo = new MutationObserver(applyTheme);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
+    const mq = typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: dark)") : null;
+    mq?.addEventListener("change", applyTheme);
+
     conn.want(term, { reset: () => xt.reset(), write: (d) => xt.write(d) });
     const offStore = store.subscribe(followOwner);
     const data = xt.onData((d) => {
@@ -115,6 +146,8 @@ export function TermView({ term, title, conn, store, fit: fitPty = true, filter 
 
     return () => {
       ro.disconnect();
+      mo.disconnect();
+      mq?.removeEventListener("change", applyTheme);
       offStore();
       data.dispose();
       bin.dispose();
@@ -128,22 +161,18 @@ export function TermView({ term, title, conn, store, fit: fitPty = true, filter 
   const other = size && size.owner !== null && size.owner !== m.clientId;
   const exit = m.exits[term];
   return (
-    <section class="termview">
-      <header class="termbar">
-        <span class="title">{title}</span>
+    <section className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-lg border bg-background">
+      <header className="flex h-8 shrink-0 items-center gap-2 border-b bg-card px-3 text-xs">
+        <span className="min-w-0 flex-1 truncate font-medium">{title}</span>
         {size && (
-          <span class="muted small">
+          <span className="shrink-0 font-mono text-muted-foreground">
             {size.cols}×{size.rows}
-            {other && fitPty ? " · sized by another client; click the terminal to take over" : ""}
           </span>
         )}
-        {exit && (
-          <span class="error small">
-            exited {exit.signal ?? exit.code}
-          </span>
-        )}
+        {other && fitPty && <Badge variant="outline">sized by another client; click to take over</Badge>}
+        {exit && <Badge variant="destructive">exited {exit.signal ?? exit.code}</Badge>}
       </header>
-      <div class="xterm-host" ref={host} />
+      <div className="xterm-host min-h-0 min-w-0 flex-1 overflow-hidden p-1" ref={host} />
     </section>
   );
 }

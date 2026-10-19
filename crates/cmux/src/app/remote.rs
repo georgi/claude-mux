@@ -26,7 +26,7 @@ use crate::history::SessionInfo;
 use crate::keys::{Key, Mouse};
 use crate::layout::{Axis, Node as LayoutNode, PRESETS};
 use crate::pane::{Kind, Pane, SpawnSpec};
-use crate::tui::draw::tree::{TreeMode, tree_mode, tree_width};
+use crate::tui::draw::tree::{MIN_WIDTH, TreeMode, tree_mode, tree_width};
 use crate::tui::hit::{self, TreeHit};
 use crate::tui::intent::{self, TreeIntent};
 use crate::tui::nav::{self, Move};
@@ -84,6 +84,8 @@ pub struct RemoteState {
     focused: Option<TermId>,
     announced: HashSet<TermId>,
     last_click: Option<(Instant, Node)>,
+    /// The mouse drags the right border of the tree.
+    tree_drag: bool,
     seen_state: bool,
     /// The server is cmuxd on this machine (Unix socket): our paths are its paths.
     local_server: bool,
@@ -128,6 +130,7 @@ impl RemoteState {
             focused: None,
             announced: HashSet::new(),
             last_click: None,
+            tree_drag: false,
             seen_state: false,
             local_server: false,
             open_on_start: None,
@@ -176,8 +179,28 @@ impl RemoteState {
     pub fn tree_cols(&self, cols: u16) -> u16 {
         if self.view.tree_hidden {
             0
+        } else if tree_mode(cols) == TreeMode::Full {
+            self.full_tree_width(cols)
         } else {
             tree_width(cols).min(cols.saturating_sub(10))
+        }
+    }
+
+    /// Columns of the full tree: the user's width, else the default.
+    fn full_tree_width(&self, cols: u16) -> u16 {
+        let max = (cols / 2).max(MIN_WIDTH);
+        self.view
+            .tree_width
+            .map_or_else(|| tree_width(cols.max(100)), |w| w.clamp(MIN_WIDTH, max))
+            .min(cols.saturating_sub(10))
+    }
+
+    /// Set the width of the full tree for a screen `cols` wide.
+    pub fn set_tree_width(&mut self, w: u16, cols: u16) {
+        let w = w.clamp(MIN_WIDTH, (cols / 2).max(MIN_WIDTH));
+        if self.view.tree_width != Some(w) {
+            self.view.tree_width = Some(w);
+            self.view_dirty = true;
         }
     }
 
@@ -201,7 +224,7 @@ impl RemoteState {
     pub fn overlay_rect(&self, full: Rect) -> Option<Rect> {
         let in_flow_full = !self.view.tree_hidden && tree_mode(full.width) == TreeMode::Full;
         (!in_flow_full).then(|| Rect {
-            width: (full.width / 5).clamp(30, 40).min(full.width),
+            width: self.full_tree_width(full.width.max(1)).min(full.width),
             ..full
         })
     }
@@ -1056,13 +1079,27 @@ impl App {
             }
             Key::Char('=') => self.take_size(),
             Key::Char('S') => self.flash("one server per cmux; start another with cmux -s NAME"),
-            Key::Char('<') | Key::Char('>') => {
-                self.flash("windows follow the plan order on a server")
-            }
+            Key::Char('<') => self.resize_tree(-2),
+            Key::Char('>') => self.resize_tree(2),
             Key::Char('!') => self.flash("panes follow the server's agents"),
             _ => return false,
         }
         true
+    }
+
+    /// Make the full tree `delta` columns wider (or narrower).
+    fn resize_tree(&mut self, delta: i32) {
+        let cols = self.screen_body().width;
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        if r.view.tree_hidden || tree_mode(cols) != TreeMode::Full {
+            self.flash("the tree is too narrow to resize here");
+            return;
+        }
+        let w = (i32::from(r.tree_cols(cols)) + delta).max(0) as u16;
+        r.set_tree_width(w, cols);
+        self.relayout();
     }
 
     fn go_up(&mut self) {
@@ -1123,6 +1160,11 @@ impl App {
 
     /// A tree-focus key, also used by the board for the selected task.
     pub(super) fn tree_key(&mut self, k: Key) {
+        match k {
+            Key::Char('<') => return self.resize_tree(-2),
+            Key::Char('>') => return self.resize_tree(2),
+            _ => {}
+        }
         let intent = {
             let Some(r) = self.remote.as_mut() else {
                 return;
@@ -1323,6 +1365,18 @@ impl App {
         let full = self.screen_body();
         let pane_area = self.body_area();
         let (col, row) = (m.col, m.row);
+        // A tree border drag holds the mouse until the button is released.
+        if let Some(r) = self.remote.as_mut()
+            && r.tree_drag
+        {
+            if m.release {
+                r.tree_drag = false;
+            } else if m.is_motion() {
+                r.set_tree_width(col.saturating_sub(full.x) + 1, full.width);
+                self.relayout();
+            }
+            return true;
+        }
         match self.mode {
             Mode::Form => return true,
             Mode::Inbox => {
@@ -1377,6 +1431,7 @@ impl App {
     }
 
     fn tree_mouse(&mut self, m: Mouse, rect: Rect, mode: TreeMode) {
+        let full = self.screen_body();
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -1386,6 +1441,11 @@ impl App {
             return;
         }
         if !m.is_left_press() {
+            return;
+        }
+        // The right border of the in-flow full tree resizes it.
+        if mode == TreeMode::Full && m.col + 1 == rect.right() && r.tree_rect(full) == Some(rect) {
+            r.tree_drag = true;
             return;
         }
         let hit = hit::tree_hit(rect, mode, &r.mirror.sv, &r.vs, m.col, m.row);
@@ -1411,7 +1471,8 @@ impl App {
                 }
             }
             Some(TreeHit::NeedsSummary) => self.open_inbox(),
-            None => {}
+            // A click anywhere else gives the tree the focus.
+            None => self.set_tree_focus(true),
         }
     }
 }

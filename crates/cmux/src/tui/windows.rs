@@ -337,6 +337,9 @@ pub struct ServerView {
     pub window: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tree_hidden: bool,
+    /// Columns of the full tree, when the user resized it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree_width: Option<u16>,
     /// Agent ids of finished agents the user closed.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub closed: BTreeSet<String>,

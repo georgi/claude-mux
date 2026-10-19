@@ -184,13 +184,14 @@ Every key in [Keys](#keys) works on a server, with these differences:
 - `x` and `&` stop the agent or the sessions in the pane or tab (asks first).
 - `prefix s` lists the sessions on the server.
 - `prefix =` takes over the terminal's size from another client.
+- `prefix <` and `>` narrow and widen the plan tree. Tabs follow the plan order.
 - One server per cmux. For another, run `cmux -s NAME` in a second terminal.
 
 Each Claude that `cmuxd` starts runs in `auto` permission mode with Remote Control on, unless a level in `config.toml` sets another mode.
 
 ## Plans
 
-A plan is a workspace, a task is a tab and a sub-agent is a pane. The plan tree sits on the left. `prefix Tab` focuses it: `jk` moves, `Enter` opens, `Esc` goes back.
+A plan is a workspace, a task is a tab and a sub-agent is a pane. The plan tree sits on the left. `prefix Tab` or a click focuses it: `jk` moves, `Enter` opens, `Esc` goes back. Drag its right border, or push `<` and `>` in the tree, to resize it. `prefix B` hides and shows it, and `prefix P` goes to the next plan.
 
 To make a plan, open a Claude session with `prefix c` and ask for one, for example "plan a retry layer for the API client". The server gives each Claude session the cmux plan tools: `create_plan`, `create_task`, `update_task`, `get_plan`, `get_task`, `list_plans` and `accept_plan`. Claude writes the plan and its tasks as a draft, and no agent starts. Review the plan in the tree, then push `A` to accept it, or tell Claude to start it. Then the executor starts the tasks: one agent per task, in a git worktree on the branch `claude/T-000N`. Task agents may start sub-agents for separable work.
 
@@ -261,6 +262,8 @@ cmux attach [<agent>]                        Open the TUI on that agent
 
 cmux uses the tmux default key table. A tab is a tmux window, and a tab can hold several panes. Press the prefix (default `Ctrl-b`), then a key. `Ctrl-b Ctrl-b` sends a literal `Ctrl-b` to Claude.
 
+A printable two-page [cheatsheet](docs/cheatsheet.pdf) lists every key, the Ghostty bindings and the mouse actions.
+
 | Key            | tmux command         | Action                                           |
 |----------------|----------------------|--------------------------------------------------|
 | `c`            | `new-window`         | New Claude session in the current directory      |
@@ -287,7 +290,7 @@ cmux uses the tmux default key table. A tab is a tmux window, and a tab can hold
 | `x`            | `kill-pane`          | Stop the session in this pane (asks first)       |
 | `&`            | `kill-window`        | Stop all sessions in this tab (asks first)       |
 | `[` / `PgUp`   | `copy-mode`          | Scroll back through output                       |
-| `<` / `>`      |                      | Move the tab                                     |
+| `<` / `>`      |                      | Move the tab (with a server: narrow / widen the plan tree) |
 | `:`            | `command-prompt`     | Run a command                                    |
 | `i`            | `display-message`    | Show pid and session id                          |
 | `d`            | `detach-client`      | Quit (with a server: detach, agents keep running) |
@@ -433,6 +436,7 @@ keybind = cmd+w=text:\x02x
 keybind = cmd+shift+w=text:\x02d
 keybind = cmd+shift+[=text:\x02p
 keybind = cmd+shift+]=text:\x02n
+# Move the tab (with a server: narrow / widen the plan tree)
 keybind = cmd+shift+left=text:\x02<
 keybind = cmd+shift+right=text:\x02>
 keybind = cmd+r=text:\x02,
@@ -450,8 +454,9 @@ keybind = cmd+ctrl+j=text:\x02\x1b[1;3B
 keybind = cmd+ctrl+k=text:\x02\x1b[1;3A
 keybind = cmd+ctrl+l=text:\x02\x1b[1;3C
 keybind = cmd+shift+enter=text:\x02z
-# Plans (server mode): focus the plan tree, or go back to the pane
+# Plans (server mode): focus the plan tree or go back, hide / show the tree
 keybind = cmd+b=text:\x02\t
+keybind = cmd+shift+b=text:\x02B
 # Shell, lazygit, new session in another directory, session picker, tabs with an alert
 keybind = cmd+shift+t=text:\x02t
 keybind = cmd+g=text:\x02g
@@ -472,7 +477,7 @@ keybind = shift+enter=text:\n
 | `Cmd-Shift-t` / `Cmd-g`         | New shell / lazygit                       |
 | `Cmd-Shift-[` / `Cmd-Shift-]`   | Previous / next tab                       |
 | `Cmd-j` / `Cmd-Shift-j`         | Next / previous tab with an alert         |
-| `Cmd-Shift-←` / `Cmd-Shift-→`   | Move the tab                              |
+| `Cmd-Shift-←` / `Cmd-Shift-→`   | Move the tab (server: resize the tree)    |
 | `Cmd-r`                         | Rename the tab                            |
 | `Cmd-s`                         | List the open tabs                        |
 | `Cmd-Shift-c`                   | Scroll back through output                |
@@ -481,6 +486,7 @@ keybind = shift+enter=text:\n
 | `Cmd-Ctrl-h` `j` `k` `l`        | Resize the pane by 5 cells                |
 | `Cmd-Shift-Enter`               | Zoom the pane                             |
 | `Cmd-b`                         | Focus the plan tree, or go back (server)  |
+| `Cmd-Shift-b`                   | Hide / show the plan tree (server)        |
 | `Cmd-w` / `Cmd-Shift-w`         | Stop the pane's session / quit cmux       |
 
 The bindings send `Ctrl-b` (`\x02`). If you use another prefix, change `\x02` to the matching control byte, for example `\x01` for `Ctrl-a`. The bindings apply to every Ghostty window, also when cmux does not run. Put them in a separate file and load it with `config-file` if you want to switch them on and off.

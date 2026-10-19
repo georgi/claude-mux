@@ -150,11 +150,9 @@ fn task_row(sv: &StateView, vs: &ViewState, task: &TaskView, has_subs: bool, ope
     let unmet: Vec<String> = task
         .deps
         .iter()
-        .filter(|d| {
-            sv.task(&task.plan, **d)
-                .is_some_and(|t| t.state != TaskState::Merged)
-        })
-        .map(ToString::to_string)
+        .filter_map(|d| sv.task(&task.plan, *d))
+        .filter(|t| t.state != TaskState::Merged)
+        .map(|t| t.title.clone())
         .collect();
     let mut right = if let Some(pr) = &task.pr {
         super::marks::pr_mark(pr)
@@ -178,7 +176,7 @@ fn task_row(sv: &StateView, vs: &ViewState, task: &TaskView, has_subs: bool, ope
         mark: theme::glyph_char(g, vs.spinner),
         mark_color: theme::glyph_color(g),
         branch: None,
-        label: format!("{} {}", task.id, task.title),
+        label: task.title.clone(),
         right,
         right_color: theme::task_state_color(task.state),
         dim: task.state == TaskState::Cancelled,

@@ -1,4 +1,6 @@
-import { useEffect, useState } from "preact/hooks";
+import { BellIcon, DownloadIcon, FolderGitIcon, GaugeIcon, ServerIcon, SmartphoneIcon, TrashIcon } from "lucide-react";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import type { Api } from "../api/http";
 import type { DeviceView, SettingsResp, StatusResp } from "../api/types";
 import {
@@ -14,6 +16,15 @@ import {
 } from "../push";
 import { isIos, isStandalone, useInstall } from "../pwa";
 import { AddRepo, useRepos } from "./Board";
+import { errText } from "./board/state";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item";
+import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 
 interface Props {
   api: Api;
@@ -30,7 +41,8 @@ function useLoad<T>(f: () => Promise<T>, deps: unknown[]): [T | null, string | n
         setV(x);
         setError(null);
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e: unknown) => setError(errText(e)));
+    // biome-ignore lint/correctness/useExhaustiveDependencies: f changes each render; deps drive reloads.
   }, [...deps, n]);
   return [v, error, () => setN((x) => x + 1)];
 }
@@ -46,11 +58,45 @@ function uptime(s: number): string {
   return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
 }
 
+function Err({ text }: { text: string | null }) {
+  return text ? <p className="text-sm text-destructive">{text}</p> : null;
+}
+
+function Section({ icon, title, description, children }: { icon: React.ReactNode; title: string; description?: string; children: React.ReactNode }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <span aria-hidden className="text-muted-foreground [&_svg]:size-4">
+            {icon}
+          </span>
+          {title}
+        </CardTitle>
+        {description && <CardDescription>{description}</CardDescription>}
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">{children}</CardContent>
+    </Card>
+  );
+}
+
+function KV({ rows }: { rows: [React.ReactNode, React.ReactNode][] }) {
+  return (
+    <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-2 text-sm">
+      {rows.map(([k, v], i) => (
+        <div key={i} className="col-span-2 grid grid-cols-subgrid items-baseline border-b border-border/50 pb-2 last:border-0 last:pb-0">
+          <dt className="min-w-0 text-muted-foreground">{k}</dt>
+          <dd className="text-right tabular-nums">{v}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 /** Settings (UI design 4.3). */
 export function Settings({ api, readOnly }: Props) {
   return (
-    <section class="settings form-page">
-      <h2>Settings</h2>
+    <section className="mx-auto flex w-full max-w-2xl flex-col gap-4 p-4">
+      <h2 className="text-lg font-medium">Settings</h2>
       <Devices api={api} readOnly={readOnly} />
       <Notifications api={api} />
       <Install />
@@ -64,41 +110,61 @@ export function Settings({ api, readOnly }: Props) {
 function Devices({ api, readOnly }: Props) {
   const [resp, error, reload] = useLoad(() => api.devices(), [api]);
   const [busy, setBusy] = useState<string | null>(null);
+  const [target, setTarget] = useState<DeviceView | null>(null);
   const revoke = async (d: DeviceView) => {
     setBusy(d.id);
     try {
       await api.revokeDevice(d.id);
+      toast.success(`Revoked ${d.name}`);
+    } catch (e) {
+      toast.error(errText(e));
     } finally {
       setBusy(null);
+      setTarget(null);
       reload();
     }
   };
   return (
-    <section>
-      <h3>Devices</h3>
-      {error && <p class="error small">{error}</p>}
-      <table class="kv">
-        <tbody>
-          {resp?.devices.map((d) => (
-            <tr key={d.id}>
-              <td>
+    <Section icon={<SmartphoneIcon />} title="Devices" description="Paired with cmuxd pair on the server.">
+      <Err text={error} />
+      {!resp && !error && <Skeleton className="h-12 w-full" />}
+      <ItemGroup className="gap-2">
+        {resp?.devices.map((d) => (
+          <Item key={d.id} variant="outline" size="sm">
+            <ItemContent>
+              <ItemTitle>
                 {d.name}
-                {d.current && <span class="muted small"> (this device)</span>}
-                <div class="muted small">
-                  {d.scope} · last seen {when(d.last_seen)}
-                </div>
-              </td>
-              <td class="right">
-                <button class="ghost" disabled={readOnly || busy === d.id} onClick={() => void revoke(d)}>
-                  Revoke
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <p class="muted small">Pair a new device with <code>cmuxd pair</code> on the server.</p>
-    </section>
+                {d.current && <Badge variant="secondary">this device</Badge>}
+              </ItemTitle>
+              <ItemDescription>
+                {d.scope} · last seen {when(d.last_seen)}
+              </ItemDescription>
+            </ItemContent>
+            <ItemActions>
+              <Button variant="destructive" size="sm" disabled={readOnly || busy === d.id} onClick={() => setTarget(d)} aria-label={`Revoke ${d.name}`}>
+                <TrashIcon /> Revoke
+              </Button>
+            </ItemActions>
+          </Item>
+        ))}
+      </ItemGroup>
+      <Dialog open={target !== null} onOpenChange={(o) => !o && setTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Revoke {target?.name}?</DialogTitle>
+            <DialogDescription>
+              {target?.current ? "This is the device you use now. You will lose access. " : ""}The device must pair again to connect.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
+            <Button variant="destructive" disabled={!target || busy !== null} onClick={() => target && void revoke(target)}>
+              Revoke device
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Section>
   );
 }
 
@@ -114,50 +180,51 @@ function Notifications({ api }: { api: Api }) {
   const [on, setOn] = useState(loadNotify);
   const [push, setPush] = useState<PushState | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     pushState().then(setPush, () => setPush("unsupported"));
   }, []);
-  const run = async (f: () => Promise<unknown>) => {
+  const run = async (f: () => Promise<unknown>, done?: string) => {
     setBusy(true);
-    setError(null);
     try {
       await f();
+      if (done) toast.success(done);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      toast.error(errText(e));
     } finally {
       setBusy(false);
       setPush(await pushState().catch(() => "unsupported" as const));
     }
   };
   const flip = (k: string) => {
-    const next = { ...on, [k]: !on[k] };
+    const next = { ...on, [k]: on[k] === false };
     setOn(next);
     saveNotify(next);
     if (push === "on") void run(() => updateKinds(api, kindsOf(next)));
   };
   return (
-    <section>
-      <h3>Notifications</h3>
-      <p class="muted small">What notifies this device.</p>
-      {NOTIFY_KINDS.map(([k, label]) => (
-        <label key={k} class="check">
-          <input type="checkbox" checked={on[k] !== false} onChange={() => flip(k)} /> {label}
-        </label>
-      ))}
-      {push && <p class="muted small">{PUSH_TEXT[push]}</p>}
-      {push === "off" && (
-        <button disabled={busy} onClick={() => void run(() => enablePush(api, kindsOf(on)))}>
-          Enable push
-        </button>
-      )}
-      {push === "on" && (
-        <button class="ghost" disabled={busy} onClick={() => void run(() => disablePush(api))}>
-          Disable
-        </button>
-      )}
-      {error && <p class="error small">{error}</p>}
-    </section>
+    <Section icon={<BellIcon />} title="Notifications" description="What notifies this device.">
+      <div className="flex flex-col gap-3">
+        {NOTIFY_KINDS.map(([k, label]) => (
+          <div key={k} className="flex items-center justify-between gap-3">
+            <Label htmlFor={`notify-${k}`}>{label}</Label>
+            <Switch id={`notify-${k}`} checked={on[k] !== false} onCheckedChange={() => flip(k)} />
+          </div>
+        ))}
+      </div>
+      {push && <p className="text-sm text-muted-foreground">{PUSH_TEXT[push]}</p>}
+      <div>
+        {push === "off" && (
+          <Button disabled={busy} onClick={() => void run(() => enablePush(api, kindsOf(on)), "Push enabled")}>
+            Enable push
+          </Button>
+        )}
+        {push === "on" && (
+          <Button variant="outline" disabled={busy} onClick={() => void run(() => disablePush(api), "Push disabled")}>
+            Disable push
+          </Button>
+        )}
+      </div>
+    </Section>
   );
 }
 
@@ -166,17 +233,17 @@ function Install() {
   if (isStandalone()) return null;
   if (install)
     return (
-      <section>
-        <h3>App</h3>
-        <button onClick={() => void install()}>Install app</button>
-      </section>
+      <Section icon={<DownloadIcon />} title="App">
+        <div>
+          <Button onClick={() => void install()}>Install app</Button>
+        </div>
+      </Section>
     );
   if (isIos())
     return (
-      <section>
-        <h3>App</h3>
-        <p class="muted small">Install: Share → Add to Home Screen.</p>
-      </section>
+      <Section icon={<DownloadIcon />} title="App">
+        <p className="text-sm text-muted-foreground">Install: Share → Add to Home Screen.</p>
+      </Section>
     );
   return null;
 }
@@ -184,20 +251,24 @@ function Install() {
 function Repositories({ api, readOnly }: Props) {
   const { repos, error, add } = useRepos(api);
   return (
-    <section>
-      <h3>Repositories</h3>
-      {error && <p class="error small">{error}</p>}
-      <ul class="plain">
+    <Section icon={<FolderGitIcon />} title="Repositories">
+      <Err text={error} />
+      {repos?.length === 0 && <p className="text-sm text-muted-foreground">None yet.</p>}
+      <ItemGroup className="gap-2">
         {repos?.map((r) => (
-          <li key={r.path}>
-            <code>{r.path}</code> <span class="muted small">{r.base_branch}</span>
-            {r.remote_url && <div class="muted small">{r.remote_url}</div>}
-          </li>
+          <Item key={r.path} variant="outline" size="sm">
+            <ItemContent>
+              <ItemTitle className="font-mono text-xs break-all">{r.path}</ItemTitle>
+              {r.remote_url && <ItemDescription className="break-all">{r.remote_url}</ItemDescription>}
+            </ItemContent>
+            <ItemActions>
+              <Badge variant="outline">{r.base_branch}</Badge>
+            </ItemActions>
+          </Item>
         ))}
-      </ul>
-      {repos?.length === 0 && <p class="muted small">None yet.</p>}
+      </ItemGroup>
       <AddRepo add={add} disabled={readOnly} />
-    </section>
+    </Section>
   );
 }
 
@@ -205,58 +276,36 @@ function ServerSettings({ api }: { api: Api }) {
   const [s, error] = useLoad<SettingsResp>(() => api.settings(), [api]);
   return (
     <>
-      <section>
-        <h3>Limits</h3>
-        {error && <p class="error small">{error}</p>}
+      <Section icon={<GaugeIcon />} title="Limits">
+        <Err text={error} />
         {s && (
-          <table class="kv">
-            <tbody>
-              <tr>
-                <td>Live Claude processes</td>
-                <td class="right">{s.live_processes}</td>
-              </tr>
-              <tr>
-                <td>Task agents per plan</td>
-                <td class="right">{s.tasks_per_plan}</td>
-              </tr>
-              <tr>
-                <td>Sub-agents per task</td>
-                <td class="right">{s.subagents_per_task}</td>
-              </tr>
-              <tr>
-                <td>Permission wait</td>
-                <td class="right">{Math.round(s.permission_wait_secs / 60)} min</td>
-              </tr>
-            </tbody>
-          </table>
+          <KV
+            rows={[
+              ["Live Claude processes", s.live_processes],
+              ["Task agents per plan", s.tasks_per_plan],
+              ["Sub-agents per task", s.subagents_per_task],
+              ["Permission wait", `${Math.round(s.permission_wait_secs / 60)} min`],
+            ]}
+          />
         )}
-      </section>
-      <section>
-        <h3>Claude</h3>
+      </Section>
+      <Section icon={<ServerIcon />} title="Claude" description="Set these in config.toml on the server.">
         {s && (
-          <table class="kv">
-            <thead>
-              <tr>
-                <th>Level</th>
-                <th>Model</th>
-                <th>Permission mode</th>
-              </tr>
-            </thead>
-            <tbody>
-              {s.claude.map((l) => (
-                <tr key={l.level}>
-                  <td>{l.level}</td>
-                  <td>{l.model ?? <span class="muted">default</span>}</td>
-                  <td>{l.permission_mode}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <ItemGroup className="gap-2">
+            {s.claude.map((l) => (
+              <Item key={l.level} variant="outline" size="sm">
+                <ItemContent>
+                  <ItemTitle>{l.level}</ItemTitle>
+                  <ItemDescription>{l.model ?? "default model"}</ItemDescription>
+                </ItemContent>
+                <ItemActions>
+                  <Badge variant="secondary">{l.permission_mode}</Badge>
+                </ItemActions>
+              </Item>
+            ))}
+          </ItemGroup>
         )}
-        <p class="muted small">
-          Set these in <code>config.toml</code> on the server.
-        </p>
-      </section>
+      </Section>
     </>
   );
 }
@@ -266,49 +315,27 @@ function Status({ api }: { api: Api }) {
   useEffect(() => {
     const t = setInterval(reload, 10_000);
     return () => clearInterval(t);
+    // biome-ignore lint/correctness/useExhaustiveDependencies: reload is stable enough; one interval per mount.
   }, []);
   return (
-    <section>
-      <h3>Server status</h3>
-      {error && <p class="error small">{error}</p>}
+    <Section icon={<ServerIcon />} title="About and server status">
+      <Err text={error} />
+      {!s && !error && <Skeleton className="h-24 w-full" />}
       {s && (
-        <table class="kv">
-          <tbody>
-            <tr>
-              <td>Version</td>
-              <td class="right">
-                {s.server.name} {s.server.version}
-              </td>
-            </tr>
-            <tr>
-              <td>Uptime</td>
-              <td class="right">{uptime(s.uptime_secs)}</td>
-            </tr>
-            <tr>
-              <td>Load</td>
-              <td class="right">{s.load ? s.load.map((x) => x.toFixed(2)).join(" ") : "n/a"}</td>
-            </tr>
-            <tr>
-              <td>Clients · live processes</td>
-              <td class="right">
-                {s.clients} · {s.live_processes}
-              </td>
-            </tr>
-            <tr>
-              <td>GitHub</td>
-              <td class="right">{s.github || "n/a"}</td>
-            </tr>
-            {s.agents.map((a) => (
-              <tr key={a.agent}>
-                <td>
-                  <code>{a.agent.slice(a.agent.indexOf("/") + 1)}</code>
-                </td>
-                <td class="right">{a.rss_kb === null ? "n/a" : `${Math.round(a.rss_kb / 1024)} MB`}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <KV
+          rows={[
+            ["Version", `${s.server.name} ${s.server.version}`],
+            ["Uptime", uptime(s.uptime_secs)],
+            ["Load", s.load ? s.load.map((x) => x.toFixed(2)).join(" ") : "n/a"],
+            ["Clients · live processes", `${s.clients} · ${s.live_processes}`],
+            ["GitHub", s.github || "n/a"],
+            ...s.agents.map((a): [React.ReactNode, React.ReactNode] => [
+              <code key={a.agent}>{a.agent.slice(a.agent.indexOf("/") + 1)}</code>,
+              a.rss_kb === null ? "n/a" : `${Math.round(a.rss_kb / 1024)} MB`,
+            ]),
+          ]}
+        />
       )}
-    </section>
+    </Section>
   );
 }

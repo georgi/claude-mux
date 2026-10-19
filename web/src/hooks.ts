@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useState } from "react";
 import type { Model, Store } from "./store";
 
 /** The store's model; re-renders on every change. */

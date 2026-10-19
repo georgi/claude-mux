@@ -28,7 +28,7 @@ test.afterEach(async ({}, info) => {
 async function pair(page: import("@playwright/test").Page) {
   await page.goto(`${server.url}/pair?code=${await server.pairCode()}`);
   await page.getByRole("button", { name: "Pair" }).click();
-  await expect(page.locator(".dot.open")).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Connected" })).toBeVisible();
 }
 
 const shots = process.env.E2E_SHOTS;
@@ -38,7 +38,7 @@ test("pair, open an agent, type into its terminal, approve its permission", asyn
   await pair(page);
 
   // A plan on a repository added by its path on the server.
-  await page.getByRole("button", { name: "New plan" }).click();
+  await page.locator("header").first().getByRole("button", { name: "New plan" }).click();
   await page.getByLabel("Title").fill("e2e plan");
   await page.getByLabel("Repository URL or path").fill(server.repo);
   await page.getByRole("button", { name: "Add", exact: true }).click();
@@ -47,8 +47,9 @@ test("pair, open an agent, type into its terminal, approve its permission", asyn
   await page.getByRole("button", { name: "Create plan" }).click();
 
   // The board opens; open the executor from it.
-  await expect(page.getByRole("heading", { name: "e2e plan" })).toBeVisible();
-  await page.getByRole("button", { name: /executor/ }).click();
+  await expect(page.getByRole("progressbar", { name: "Plan progress" })).toBeVisible();
+  await expect(page.getByText("e2e plan").first()).toBeVisible();
+  await page.getByRole("button", { name: "Executor", exact: true }).click();
   const screen = page.locator(".xterm-rows");
   await expect(screen).toContainText("TOOLS:");
 
@@ -59,17 +60,18 @@ test("pair, open an agent, type into its terminal, approve its permission", asyn
   await expect(screen).toContainText("ECHO run the tests");
 
   // The permission lands in needs-you; Allow lets the agent go on.
-  const card = page.locator(".needs-col .need", { hasText: "Allow Bash?" });
+  const needs = page.getByRole("complementary", { name: "Needs you" });
+  const card = needs.getByRole("listitem").filter({ hasText: "Allow Bash?" });
   await expect(card).toContainText("cargo test -p e2e");
   if (shots) await page.screenshot({ path: `${shots}/desktop-permission.png` });
   await card.getByRole("button", { name: "Allow", exact: true }).click();
   await expect(screen).toContainText("PERM allow");
-  await expect(page.locator(".needs-col")).toContainText("Nothing needs you.");
+  await expect(needs).toContainText("Nothing needs you.");
 
   // The chat shows the same turn.
   await page.getByRole("tab", { name: "Chat" }).click();
   await expect(page.getByRole("log", { name: "Conversation" })).toContainText("Tests ran.");
-  await expect(page.locator(".chat-msg.user").last()).toContainText("run the tests");
+  await expect(page.getByRole("log", { name: "Conversation" })).toContainText("run the tests");
 });
 
 test.describe("on a phone", () => {
@@ -87,11 +89,11 @@ test.describe("on a phone", () => {
 
     const tabs = page.getByRole("navigation", { name: "Sections" });
     await expect(tabs).toBeVisible();
-    await expect(page.locator(".side")).toHaveCount(0);
+    await expect(page.getByRole("navigation", { name: "Agents and plans" })).toBeHidden();
     await tabs.getByRole("button", { name: "Plans" }).click();
     await page.getByRole("button", { name: /phone plan/ }).click();
     if (shots) await page.screenshot({ path: `${shots}/phone-board.png` });
-    await page.getByRole("button", { name: /executor/ }).click();
+    await page.getByRole("button", { name: "Executor", exact: true }).click();
 
     // Chat is the default agent view on a phone.
     await expect(page.getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true");

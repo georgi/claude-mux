@@ -1,7 +1,7 @@
 // Installing the app: Chrome's `beforeinstallprompt`, kept from page load
 // until the user taps "Install app", and the iOS Safari hint.
 
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useState } from "react";
 
 interface InstallPrompt extends Event {
   prompt(): Promise<void>;

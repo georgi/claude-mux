@@ -1,14 +1,17 @@
-import { useEffect, useRef, useState } from "preact/hooks";
-import type { Api } from "../api/http";
-import type { AgentView, StateView } from "../api/types";
-import type { Conn } from "../conn";
-import { useModel, useSpinner } from "../hooks";
-import { KEYS, withCtrl } from "../keys";
-import type { AgentMode } from "../route";
-import type { Store } from "../store";
-import { agentGlyph } from "../tree";
+import { useEffect, useRef, useState } from "react";
+import type { Api } from "@/api/http";
+import type { AgentView, ChatEntry, StateView } from "@/api/types";
+import type { Conn } from "@/conn";
+import { useModel, useSpinner } from "@/hooks";
+import { KEYS, withCtrl } from "@/keys";
+import type { AgentMode } from "@/route";
+import type { Store } from "@/store";
+import { agentGlyph } from "@/tree";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { ChatLog, Composer } from "./Chat";
-import { TermView } from "./TermView";
+import { PendingRequest, pendingFor } from "./chat/Pending";
+import { TermView } from "./lazy";
 
 interface Props {
   view: StateView;
@@ -54,51 +57,77 @@ export function AgentPane({ view, agent, mode, phone, conn, store, api, readOnly
   const name = (a: AgentView) => (a.level === "sub" ? a.path.slice(a.path.indexOf("/") + 1) : a.path);
 
   return (
-    <section class="agent">
-      <header class="agent-head">
-        <span class="glyph">{agentGlyph(agent, spin)}</span>
-        <span class="title">{agent.path}</span>
-        <span class="grow" />
-        <div class="toggle" role="tablist" aria-label="View">
+    <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
+      <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
+        <span className="font-mono text-sm" aria-hidden="true">
+          {agentGlyph(agent, spin)}
+        </span>
+        <h2 className="min-w-0 flex-1 truncate text-sm font-medium">{agent.path}</h2>
+        <div className="flex gap-1" role="tablist" aria-label="View">
           {(["chat", "terminal"] as const).map((x) => (
-            <button
+            <Button
               key={x}
               role="tab"
+              size="sm"
+              variant={current === x ? "secondary" : "ghost"}
               aria-selected={current === x}
-              class={current === x ? "on" : ""}
               onClick={() => onMode(x)}
               disabled={x === "terminal" && agent.term === null}
             >
               {x === "chat" ? "Chat" : "Terminal"}
-            </button>
+            </Button>
           ))}
         </div>
       </header>
       {tabs.length > 1 && (
-        <nav class="subtabs">
+        <nav className="flex shrink-0 gap-1 overflow-x-auto border-b px-2 py-1" aria-label="Agents of this task">
           {tabs.map((a) => (
-            <button key={a.id} class={a.id === agent.id ? "on" : ""} onClick={() => onOpenAgent(a.id)}>
+            <Button
+              key={a.id}
+              size="xs"
+              variant={a.id === agent.id ? "secondary" : "ghost"}
+              aria-current={a.id === agent.id ? "page" : undefined}
+              onClick={() => onOpenAgent(a.id)}
+            >
               {agentGlyph(a, spin)} {name(a)}
-            </button>
+            </Button>
           ))}
         </nav>
       )}
       {current === "terminal" && agent.term !== null ? (
         <PhoneTerm term={agent.term} title={agent.id} phone={phone} conn={conn} store={store} readOnly={readOnly} />
       ) : (
-        <ChatPane agent={agent.id} conn={conn} entries={m.chats[agent.id]} />
+        <ChatPane agent={agent.id} conn={conn} entries={m.chats[agent.id]}>
+          {pendingFor(view, agent.id).map((n) => (
+            <PendingRequest key={n.item.id} need={n} api={api} />
+          ))}
+        </ChatPane>
       )}
       <Composer agent={agent.id} api={api} queued={queuedFor(view, agent.id)} readOnly={readOnly} />
     </section>
   );
 }
 
-function ChatPane({ agent, conn, entries }: { agent: string; conn: Conn; entries: Parameters<typeof ChatLog>[0]["entries"] }) {
+function ChatPane({
+  agent,
+  conn,
+  entries,
+  children,
+}: {
+  agent: string;
+  conn: Conn;
+  entries: ChatEntry[] | undefined;
+  children: React.ReactNode[];
+}) {
   useEffect(() => {
     conn.subChat(agent);
     return () => conn.unsubChat(agent);
   }, [agent, conn]);
-  return <ChatLog entries={entries} />;
+  return (
+    <ChatLog entries={entries}>
+      {children.length > 0 && <div className="flex flex-col gap-2">{children}</div>}
+    </ChatLog>
+  );
 }
 
 interface TermProps {
@@ -126,22 +155,25 @@ export function PhoneTerm({ term, title, phone, conn, store, readOnly }: TermPro
     <>
       <TermView term={term} title={title} conn={conn} store={store} fit={!phone || fit} filter={filter} />
       {phone && (
-        <div class="keybar" role="toolbar" aria-label="Terminal keys">
+        <div className="flex shrink-0 gap-1 overflow-x-auto border-t p-1" role="toolbar" aria-label="Terminal keys">
           {KEYS.map((k) =>
             k.data === undefined ? (
-              <button
+              <Button
                 key={k.label}
-                class={ctrl ? "on" : ""}
+                size="sm"
+                variant={ctrl ? "secondary" : "outline"}
                 aria-pressed={ctrl}
                 title={k.title}
                 disabled={readOnly}
                 onClick={() => setCtrl((c) => !c)}
               >
                 {k.label}
-              </button>
+              </Button>
             ) : (
-              <button
+              <Button
                 key={k.label}
+                size="sm"
+                variant="outline"
                 title={k.title}
                 disabled={readOnly}
                 // Keep the terminal's focus (and the phone keyboard) up.
@@ -149,12 +181,19 @@ export function PhoneTerm({ term, title, phone, conn, store, readOnly }: TermPro
                 onClick={() => press(k.data!)}
               >
                 {k.label}
-              </button>
+              </Button>
             ),
           )}
-          <button class={fit ? "on" : ""} aria-pressed={fit} onClick={() => setFit((f) => !f)} title="Resize the PTY to this screen">
+          <Button
+            size="sm"
+            variant={fit ? "secondary" : "outline"}
+            className={cn("shrink-0")}
+            aria-pressed={fit}
+            onClick={() => setFit((f) => !f)}
+            title="Resize the PTY to this screen"
+          >
             Fit to phone
-          </button>
+          </Button>
         </div>
       )}
     </>

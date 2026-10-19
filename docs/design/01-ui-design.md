@@ -118,7 +118,7 @@ The screen has four regions:
    - It shows the focused pane's directory, branch and agent, plus counts of agents working, items that need you, and clients attached.
    - `2 clients` warns that someone (probably you, on your phone) is attached elsewhere.
 
-Below 100 columns, the tree collapses to a 3-column glyph strip. `prefix Tab` opens the full tree as an overlay, and `prefix B` hides it.
+Below 100 columns, the tree collapses to a 3-column glyph strip. `prefix Tab` opens the full tree as an overlay, and `prefix B` hides it. A click anywhere in the tree gives it the focus. Drag the right border of the full tree to resize it, or use `prefix <` and `prefix >` (`<` and `>` alone when the tree has the focus). cmux saves the width in `view-<server>.toml`.
 
 ### 3.3 Task window with sub-agents
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatRows, KEEP, mergeEntries } from "./chat";
+import { chatRows, KEEP, mergeEntries, toolKind } from "./chat";
 import { entry } from "./fixtures";
 
 describe("mergeEntries", () => {
@@ -48,5 +48,16 @@ describe("chatRows", () => {
       { kind: "tool", key: "r", name: "tool", summary: "", result: "orphan" },
       { kind: "tool", key: "c", name: "Bash", summary: "sleep 9", result: null },
     ]);
+  });
+});
+
+describe("toolKind", () => {
+  it("groups tools by icon family", () => {
+    expect(toolKind("Bash")).toBe("shell");
+    expect(toolKind("MultiEdit")).toBe("file");
+    expect(toolKind("Glob")).toBe("search");
+    expect(toolKind("Task")).toBe("agent");
+    expect(toolKind("WebFetch")).toBe("web");
+    expect(toolKind("mcp__x__y")).toBe("other");
   });
 });

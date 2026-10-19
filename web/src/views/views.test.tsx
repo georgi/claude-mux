@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/preact";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ItemKind } from "../api/types";
 import { agent, entry, fakeApi, item, PLAN, state } from "../fixtures";
 import type { Nav } from "../needs";
 import { ChatLog, Composer } from "./Chat";
 import { NeedsYou } from "./NeedsYou";
+import { Pairing } from "./Pairing";
 
 afterEach(cleanup);
 
@@ -13,8 +14,8 @@ const nav: Nav = { openAgent: () => {}, openPlan: () => {}, openUrl: () => {} };
 const perm: ItemKind = { permission: { tool: "Bash", input_summary: "cargo test -p perms" } };
 
 describe("ChatLog", () => {
-  it("renders prompts, text and folded tool calls", () => {
-    const { container } = render(
+  it("renders prompts, text and folded tool calls", async () => {
+    render(
       <ChatLog
         entries={[
           entry("u", { role: "user", text: "Add pagination to /users" }),
@@ -25,26 +26,50 @@ describe("ChatLog", () => {
         ]}
       />,
     );
-    const user = container.querySelector(".chat-msg.user");
-    expect(user?.textContent).toBe("› Add pagination to /users");
-    expect(container.querySelector(".chat-msg.assistant")?.textContent).toBe("Added cursor pagination and tests.");
-    const tools = container.querySelectorAll("details.chat-tool");
-    expect(tools).toHaveLength(2);
-    // The result is folded inside the call, closed until tapped.
-    expect(tools[0].querySelector("summary")?.textContent).toContain("Bash git push origin ✓");
-    expect(tools[0].querySelector("pre")?.textContent).toBe("Everything up-to-date");
-    expect((tools[0] as HTMLDetailsElement).open).toBe(false);
-    // A call still running has no result yet.
-    expect(tools[1].querySelector("summary")?.textContent).toContain("gh pr create …");
-    expect(tools[1].querySelector("pre")).toBeNull();
+    expect(screen.getByText("Add pagination to /users")).toBeTruthy();
+    expect(screen.getByText("Added cursor pagination and tests.")).toBeTruthy();
+    // The result folds into its call: the output is hidden until the call is tapped.
+    const done = screen.getByRole("button", { name: "Bash output" });
+    expect(done.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByText("git push origin")).toBeTruthy();
+    expect(screen.queryByText("Everything up-to-date")).toBeNull();
+    fireEvent.click(done);
+    await waitFor(() => expect(screen.getByText("Everything up-to-date")).toBeTruthy());
+    // Only the finished call shows the done mark; the running call has no result yet.
+    expect(screen.getAllByLabelText("Done")).toHaveLength(1);
+    expect(screen.getByText("gh pr create")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /output$/ })).toHaveLength(1);
+  });
+
+  it("renders a user prompt as an end-aligned bubble", () => {
+    render(<ChatLog entries={[entry("u", { role: "user", text: "Fix the login redirect" })]} />);
+    const bubble = screen.getByText("Fix the login redirect").closest('[data-slot="bubble"]');
+    expect(bubble).not.toBeNull();
+    expect(bubble?.getAttribute("data-align")).toBe("end");
+  });
+
+  it("renders the assistant reply as markdown", async () => {
+    render(<ChatLog entries={[entry("a", { text: "Run **cargo test** first." })]} />);
+    // Streamdown parses the markup: the asterisks are gone and the words stay.
+    expect(await screen.findByText("cargo test")).toBeTruthy();
+    expect(screen.queryByText(/\*\*/)).toBeNull();
+  });
+
+  it("renders a tool call as a trace line", () => {
+    render(
+      <ChatLog entries={[entry("c", { kind: "tool_call", text: "", tool: { name: "Read", summary: "src/chat.ts" } })]} />,
+    );
+    expect(screen.getByText("Read")).toBeTruthy();
+    expect(screen.getByText("src/chat.ts")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Read output" })).toBeNull();
   });
 
   it("says when it is loading and when it is empty", () => {
-    render(<ChatLog entries={undefined} />);
-    expect(screen.getByText("Loading the conversation…")).toBeTruthy();
-    cleanup();
+    const { unmount } = render(<ChatLog entries={undefined} />);
+    expect(screen.getByRole("status", { name: "Loading the conversation" })).toBeTruthy();
+    unmount();
     render(<ChatLog entries={[]} />);
-    expect(screen.getByText("No messages yet.")).toBeTruthy();
+    expect(screen.getByText("No messages yet")).toBeTruthy();
   });
 });
 
@@ -52,14 +77,14 @@ describe("Composer", () => {
   it("queues on Enter and steers on the Steer button", async () => {
     const api = fakeApi();
     render(<Composer agent={`${PLAN}/T-0002`} api={api} queued={1} />);
-    expect(screen.getByText("✉ 1 queued")).toBeTruthy();
+    expect(screen.getByText("1 queued")).toBeTruthy();
     const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
     fireEvent.input(box, { target: { value: "use cursors" } });
     fireEvent.keyDown(box, { key: "Enter" });
     await waitFor(() => expect(api.calls).toEqual([["message", `${PLAN}/T-0002`, "use cursors", false]]));
     await waitFor(() => expect(box.value).toBe(""));
     fireEvent.input(box, { target: { value: "stop, wrong branch" } });
-    fireEvent.click(screen.getByText("Steer"));
+    fireEvent.click(screen.getByRole("button", { name: "Steer: interrupt the agent" }));
     await waitFor(() => expect(api.calls[1]).toEqual(["message", `${PLAN}/T-0002`, "stop, wrong branch", true]));
   });
 });
@@ -75,7 +100,7 @@ describe("NeedsYou", () => {
     expect(screen.getByText("cargo test -p perms")).toBeTruthy();
     expect(screen.getByText("· 2m")).toBeTruthy();
     expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["Allow", "Always", "Deny…", "Terminal"]);
-    fireEvent.click(screen.getByText("Allow"));
+    fireEvent.click(screen.getByRole("button", { name: "Allow" }));
     await waitFor(() => expect(api.calls).toHaveLength(1));
     const [name, id, req, key] = api.calls[0];
     expect([name, id, req]).toEqual(["answer", 5, { action: "allow", text: null }]);
@@ -85,17 +110,17 @@ describe("NeedsYou", () => {
   it("denies with a note", async () => {
     const api = fakeApi();
     render(<NeedsYou view={view(perm)} api={api} nav={nav} />);
-    fireEvent.click(screen.getByText("Deny…"));
+    fireEvent.click(screen.getByRole("button", { name: "Deny…" }));
     fireEvent.input(screen.getByLabelText("Note"), { target: { value: "not on main" } });
-    fireEvent.click(screen.getByText("Deny"));
+    fireEvent.click(screen.getByRole("button", { name: "Deny" }));
     await waitFor(() => expect(api.calls[0]?.slice(0, 3)).toEqual(["answer", 5, { action: "deny", text: "not on main" }]));
   });
 
   it("needs text before a reply goes out", async () => {
     const api = fakeApi();
     render(<NeedsYou view={view("question")} api={api} nav={nav} />);
-    fireEvent.click(screen.getByText("Reply…"));
-    const send = screen.getByText("Reply") as HTMLButtonElement;
+    fireEvent.click(screen.getByRole("button", { name: "Reply…" }));
+    const send = screen.getByRole("button", { name: "Reply" }) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
     fireEvent.input(screen.getByLabelText("Reply"), { target: { value: "postgres" } });
     expect(send.disabled).toBe(false);
@@ -106,12 +131,12 @@ describe("NeedsYou", () => {
   it("accepts a plan and resumes a stalled agent", async () => {
     const api = fakeApi();
     render(<NeedsYou view={view("plan_review")} api={api} nav={nav} />);
-    fireEvent.click(screen.getByText("Accept"));
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
     await waitFor(() => expect(api.calls[0]?.slice(0, 3)).toEqual(["answer", 5, { action: "accept", text: null }]));
     cleanup();
     const api2 = fakeApi();
     render(<NeedsYou view={view("stalled")} api={api2} nav={nav} />);
-    fireEvent.click(screen.getByText("Resume"));
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
     await waitFor(() => expect(api2.calls.map((c) => c[0])).toEqual(["resumeAgent", "answer"]));
     expect(api2.calls[0][1]).toBe(`${PLAN}/T-0004`);
   });
@@ -123,18 +148,42 @@ describe("NeedsYou", () => {
       },
     });
     render(<NeedsYou view={view(perm)} api={api} nav={nav} />);
-    fireEvent.click(screen.getByText("Allow"));
-    await waitFor(() => expect(screen.getByText("error: I-5 was already answered by c-2")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Allow" }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("error: I-5 was already answered by c-2"));
   });
 
   it("disables answers on a read-only device but still opens", () => {
     render(<NeedsYou view={view(perm)} api={fakeApi()} nav={nav} readOnly />);
-    expect((screen.getByText("Allow") as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByText("Terminal") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Allow" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Terminal" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("is empty when nothing is pending", () => {
     render(<NeedsYou view={state()} api={fakeApi()} nav={nav} />);
     expect(screen.getByText("Nothing needs you.")).toBeTruthy();
+  });
+
+  it("shows an empty state with no items when only answered items remain", () => {
+    const answered = state({
+      agents: [agent("T-0004")],
+      items: [item(7, { kind: perm, from: `${PLAN}/T-0004`, status: { answered: { by: "c1", answer: "y" } } })],
+    });
+    render(<NeedsYou view={answered} api={fakeApi()} nav={nav} />);
+    expect(screen.getByText("All clear")).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Needs you" })).toBeNull();
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+  });
+});
+
+describe("Pairing", () => {
+  it("enables Pair only after 8 code characters", () => {
+    render(<Pairing onPaired={() => {}} />);
+    const pair = screen.getByRole("button", { name: "Pair" }) as HTMLButtonElement;
+    const code = screen.getByLabelText("Pairing code") as HTMLInputElement;
+    expect(pair.disabled).toBe(true);
+    fireEvent.change(code, { target: { value: "ABCD123" } });
+    expect(pair.disabled).toBe(true);
+    fireEvent.change(code, { target: { value: "ABCD1234" } });
+    expect(pair.disabled).toBe(false);
   });
 });

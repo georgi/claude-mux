@@ -68,3 +68,34 @@ export function chatRows(entries: ChatEntry[]): ChatRow[] {
   }
   return rows;
 }
+
+export type ToolKind = "shell" | "file" | "read" | "search" | "agent" | "web" | "other";
+
+/** The icon family of a tool, by its name (`Bash`, `Edit`, `mcp__x__y`, ...). */
+export function toolKind(name: string): ToolKind {
+  switch (name.toLowerCase()) {
+    case "bash":
+    case "bashoutput":
+    case "killshell":
+      return "shell";
+    case "edit":
+    case "multiedit":
+    case "write":
+    case "notebookedit":
+      return "file";
+    case "read":
+      return "read";
+    case "grep":
+    case "glob":
+    case "ls":
+      return "search";
+    case "task":
+    case "agent":
+      return "agent";
+    case "webfetch":
+    case "websearch":
+      return "web";
+    default:
+      return "other";
+  }
+}

@@ -1,4 +1,18 @@
-import { useState } from "preact/hooks";
+import { CheckCheckIcon, FlagIcon, Loader2Icon, TriangleAlertIcon } from "lucide-react";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemFooter,
+  ItemGroup,
+  ItemMedia,
+  ItemTitle,
+} from "@/components/ui/item";
+import { Textarea } from "@/components/ui/textarea";
 import type { Api } from "../api/http";
 import type { StateView } from "../api/types";
 import { type Action, type Nav, type Need, needs, perform } from "../needs";
@@ -24,13 +38,24 @@ function age(created: number, now: number): string {
 export function NeedsYou({ view, api, nav, readOnly, now }: Props) {
   const list = needs(view);
   const t = now ?? Date.now();
-  if (list.length === 0) return <p class="muted pad">Nothing needs you.</p>;
+  if (list.length === 0)
+    return (
+      <Empty>
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <CheckCheckIcon />
+          </EmptyMedia>
+          <EmptyTitle>All clear</EmptyTitle>
+          <EmptyDescription>Nothing needs you.</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    );
   return (
-    <ul class="needs" aria-label="Needs you">
+    <ItemGroup aria-label="Needs you" className="gap-2 p-3">
       {list.map((n) => (
         <NeedCard key={n.item.id} need={n} api={api} nav={nav} readOnly={readOnly} age={age(n.item.created, t)} />
       ))}
-    </ul>
+    </ItemGroup>
   );
 }
 
@@ -63,57 +88,75 @@ function NeedCard({ need, api, nav, readOnly, age }: { need: Need; api: Api; nav
     void run(a);
   };
 
-  const submit = (ev: Event) => {
+  const submit = (ev: React.FormEvent) => {
     ev.preventDefault();
     if (asking) void run(asking, text);
   };
 
   const local = (a: Action) => a.id === "open" || a.id === "open_pr";
-  const glyph = need.item.kind === "stalled" ? "⚠" : "⚑";
+  const stalled = need.item.kind === "stalled";
   return (
-    <li class="need" data-item={need.item.id}>
-      <div class="need-head">
-        <span class="glyph ask">{glyph}</span>
-        <strong>{need.who}</strong>
-        <span class="muted small">· {age}</span>
-      </div>
-      <div class="need-title">{need.title}</div>
-      {need.detail && <code class="need-detail">{need.detail}</code>}
-      {asking ? (
-        <form class="need-form" onSubmit={submit}>
-          <textarea
-            aria-label={asking.text === "note" ? "Note" : asking.label.replace("…", "")}
-            placeholder={asking.text === "note" ? "Optional note" : "Text"}
-            value={text}
-            rows={2}
-            onInput={(e) => setText((e.target as HTMLTextAreaElement).value)}
-            ref={(el) => el?.focus()}
-          />
-          <div class="actions">
-            <button type="submit" disabled={busy || (asking.text === "required" && !text.trim())}>
-              {asking.label.replace("…", "")}
-            </button>
-            <button type="button" class="ghost" onClick={() => setAsking(null)}>
-              Cancel
-            </button>
-          </div>
-        </form>
-      ) : (
-        <div class="actions">
-          {need.actions.map((a) => (
-            <button
-              key={a.id}
-              type="button"
-              class={a.primary ? "" : "ghost"}
-              disabled={busy || (readOnly && !local(a))}
-              onClick={() => tap(a)}
-            >
-              {a.label}
-            </button>
-          ))}
-        </div>
-      )}
-      {error && <p class="error small">{error}</p>}
-    </li>
+    <Item variant="outline" size="sm" role="listitem" data-item={need.item.id}>
+      <ItemMedia variant="icon">
+        {stalled ? (
+          <TriangleAlertIcon aria-label="Stalled" className="text-destructive" />
+        ) : (
+          <FlagIcon aria-label="Needs you" className="text-primary" />
+        )}
+      </ItemMedia>
+      <ItemContent>
+        <ItemTitle>
+          {need.who}
+          <span className="font-normal text-muted-foreground">· {age}</span>
+        </ItemTitle>
+        <ItemDescription className="line-clamp-3">{need.title}</ItemDescription>
+        {need.detail && (
+          <code className="mt-1 block max-w-full truncate rounded-md bg-muted px-2 py-1 text-xs">{need.detail}</code>
+        )}
+      </ItemContent>
+      <ItemFooter className="flex-col items-stretch gap-2">
+        {asking ? (
+          <form onSubmit={submit} className="flex flex-col gap-2">
+            <Textarea
+              aria-label={asking.text === "note" ? "Note" : asking.label.replace("…", "")}
+              placeholder={asking.text === "note" ? "Optional note" : "Text"}
+              value={text}
+              rows={2}
+              onChange={(e) => setText(e.target.value)}
+              autoFocus
+            />
+            <ItemActions>
+              <Button type="submit" size="sm" disabled={busy || (asking.text === "required" && !text.trim())}>
+                {busy && <Loader2Icon className="animate-spin" />}
+                {asking.label.replace("…", "")}
+              </Button>
+              <Button type="button" size="sm" variant="ghost" onClick={() => setAsking(null)}>
+                Cancel
+              </Button>
+            </ItemActions>
+          </form>
+        ) : (
+          <ItemActions className="flex-wrap">
+            {need.actions.map((a) => (
+              <Button
+                key={a.id}
+                type="button"
+                size="sm"
+                variant={a.primary ? "default" : "outline"}
+                disabled={busy || (readOnly && !local(a))}
+                onClick={() => tap(a)}
+              >
+                {a.label}
+              </Button>
+            ))}
+          </ItemActions>
+        )}
+        {error && (
+          <p role="alert" className="text-xs text-destructive">
+            {error}
+          </p>
+        )}
+      </ItemFooter>
+    </Item>
   );
 }

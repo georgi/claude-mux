@@ -593,7 +593,7 @@ fn narrow_screens_show_the_strip_and_prefix_tab_the_full_tree() {
     rig.prefix(b"\t");
     let screen = rig.draw(80, 24);
     assert!(screen.contains("plans"), "the full tree overlay:\n{screen}");
-    assert!(screen.contains("T-0002"), "{screen}");
+    assert!(screen.contains("▾⠹ api"), "{screen}");
     // The overlay does not move the panes.
     assert_eq!(rig.app.body_area().x, 3);
     rig.keys(b"\x1b");
@@ -660,6 +660,51 @@ fn mouse_clicks_select_rows_and_double_clicks_focus_the_pane() {
     // The second click on the same row focuses the pane.
     rig.keys(click.as_bytes());
     assert!(matches!(rig.app.mode, Mode::Normal));
+}
+
+#[test]
+fn a_click_on_an_empty_part_of_the_tree_focuses_it() {
+    let mut rig = Rig::new(120, 30);
+    assert!(matches!(rig.app.mode, Mode::Normal));
+    let full = rig.app.screen_body();
+    let r = rig.app.remote.as_ref().unwrap();
+    let (rect, mode) = r.tree_place(full, false).unwrap();
+    let (x, y) = (rect.x + 1..rect.right() - 1)
+        .flat_map(|x| (rect.y + 1..rect.bottom() - 1).map(move |y| (x, y)))
+        .find(|(x, y)| crate::tui::hit::tree_hit(rect, mode, &r.mirror.sv, &r.vs, *x, *y).is_none())
+        .expect("an empty cell in the tree");
+    rig.keys(format!("\x1b[<0;{};{}M\x1b[<0;{};{}m", x + 1, y + 1, x + 1, y + 1).as_bytes());
+    assert!(matches!(rig.app.mode, Mode::Tree));
+}
+
+#[test]
+fn the_tree_border_drags_and_angle_keys_resize_the_tree() {
+    let mut rig = Rig::new(120, 30);
+    assert_eq!(rig.app.body_area().x, 30);
+    // Press on the right border, drag to column 45, release.
+    rig.keys(b"\x1b[<0;30;10M\x1b[<32;45;10M\x1b[<0;45;10m");
+    assert_eq!(rig.app.body_area().x, 45);
+    let r = rig.app.remote.as_ref().unwrap();
+    assert_eq!(r.view.tree_width, Some(45));
+    assert!(!matches!(rig.app.mode, Mode::Tree), "a drag does not focus");
+    // Motion after the release does not resize.
+    rig.keys(b"\x1b[<32;50;10M");
+    assert_eq!(rig.app.body_area().x, 45);
+    // prefix < and > change it by two columns.
+    rig.prefix(b"<");
+    assert_eq!(rig.app.body_area().x, 43);
+    rig.prefix(b">");
+    rig.prefix(b">");
+    assert_eq!(rig.app.body_area().x, 47);
+    // In the tree, < and > work without the prefix.
+    rig.app.set_tree_focus(true);
+    rig.keys(b"<");
+    assert_eq!(rig.app.body_area().x, 45);
+    // The width stays inside its limits.
+    rig.keys(b"\x1b[<0;45;10M\x1b[<32;2;10M\x1b[<0;2;10m");
+    assert_eq!(rig.app.body_area().x, crate::tui::draw::tree::MIN_WIDTH);
+    rig.keys(b"\x1b[<0;16;10M\x1b[<32;119;10M\x1b[<0;119;10m");
+    assert_eq!(rig.app.body_area().x, 60);
 }
 
 #[test]
