@@ -8,13 +8,13 @@ import type { StateView } from "@/api/types";
 import { available, type Binding, BINDINGS, type KeyCtx, Matcher } from "@/keys";
 import { type Nav, perform } from "@/needs";
 import type { Route } from "@/route";
+import { toggleTheme } from "../settings/theme";
 import { ShortcutsSheet } from "./shortcuts";
 
 // cmdk and its Radix dialog load with the first ⌘K.
 const Palette = lazy(() => import("./palette").then((m) => ({ default: m.Palette })));
 
 const RECENT = "cmux.recent";
-const THEME = "cmux.theme";
 
 function loadRecent(): string[] {
   try {
@@ -30,16 +30,6 @@ function saveRecent(list: string[]) {
     localStorage.setItem(RECENT, JSON.stringify(list));
   } catch {
     // Private mode: recents last for this page only.
-  }
-}
-
-/** Flips light and dark and keeps the choice (src/main.tsx reads it). */
-export function toggleTheme() {
-  const dark = document.documentElement.classList.toggle("dark");
-  try {
-    localStorage.setItem(THEME, dark ? "dark" : "light");
-  } catch {
-    // Private mode: the choice lasts for this page only.
   }
 }
 
