@@ -312,6 +312,9 @@ interface TermProps {
   readOnly?: boolean;
 }
 
+/** A key bar button: a 44 px touch target that does not shrink in the scrolling row. */
+const KEY_CLASS = "h-11 min-w-11 shrink-0 snap-start bg-background px-2.5 text-sm";
+
 /** The terminal, plus on a phone the key bar and "Fit to phone". */
 export function PhoneTerm({ term, title, phone, conn, store, readOnly }: TermProps) {
   const [fit, setFit] = useState(false);
@@ -328,13 +331,17 @@ export function PhoneTerm({ term, title, phone, conn, store, readOnly }: TermPro
     <>
       <TermView term={term} title={title} conn={conn} store={store} fit={!phone || fit} filter={filter} />
       {phone && (
-        <div className="flex shrink-0 gap-1 overflow-x-auto border-t p-1" role="toolbar" aria-label="Terminal keys">
+        <div
+          className="flex shrink-0 snap-x gap-1.5 overflow-x-auto overscroll-x-contain border-t bg-muted/40 py-1.5 pr-[max(0.5rem,env(safe-area-inset-right))] pl-[max(0.5rem,env(safe-area-inset-left))] [scrollbar-width:none]"
+          role="toolbar"
+          aria-label="Terminal keys"
+        >
           {KEYS.map((k) =>
             k.data === undefined ? (
               <Button
                 key={k.label}
-                size="sm"
-                variant={ctrl ? "secondary" : "outline"}
+                variant={ctrl ? "default" : "outline"}
+                className={KEY_CLASS}
                 aria-pressed={ctrl}
                 title={k.title}
                 disabled={readOnly}
@@ -345,8 +352,8 @@ export function PhoneTerm({ term, title, phone, conn, store, readOnly }: TermPro
             ) : (
               <Button
                 key={k.label}
-                size="sm"
                 variant="outline"
+                className={cn(KEY_CLASS, "font-mono")}
                 title={k.title}
                 disabled={readOnly}
                 // Keep the terminal's focus (and the phone keyboard) up.
@@ -358,9 +365,8 @@ export function PhoneTerm({ term, title, phone, conn, store, readOnly }: TermPro
             ),
           )}
           <Button
-            size="sm"
             variant={fit ? "secondary" : "outline"}
-            className={cn("shrink-0")}
+            className={cn(KEY_CLASS, "px-3")}
             aria-pressed={fit}
             onClick={() => setFit((f) => !f)}
             title="Resize the PTY to this screen"

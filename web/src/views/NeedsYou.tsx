@@ -17,6 +17,7 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemFooter, ItemMedia,
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Textarea } from "@/components/ui/textarea";
 import { relativeTime, useNow } from "@/lib/time";
+import { ActionSheet, Swipe } from "./shell/phone";
 import { cn } from "@/lib/utils";
 import type { Api } from "../api/http";
 import type { StateView } from "../api/types";
@@ -41,6 +42,8 @@ interface Props {
   api: Api;
   nav: Nav;
   readOnly?: boolean;
+  /** Touch layout: cards swipe, and a tap opens their details in a sheet. */
+  phone?: boolean;
   /** Milliseconds since the epoch, for the age labels (tests pin it). */
   now?: number;
 }
@@ -109,7 +112,7 @@ function typing(t: EventTarget): boolean {
 }
 
 /** The needs-you inbox (UI design 2.3): grouped by plan, triaged by keyboard. */
-export function NeedsYou({ view, api, nav, readOnly, now }: Props) {
+export function NeedsYou({ view, api, nav, readOnly, phone, now }: Props) {
   const live = useNow(30_000);
   const t = now ?? live;
   const last = useLastAnswered();
@@ -230,6 +233,7 @@ export function NeedsYou({ view, api, nav, readOnly, now }: Props) {
                 view={view}
                 now={t}
                 readOnly={readOnly}
+                phone={phone}
                 leaving={leaving.has(n.item.id)}
                 tabbable={current?.item.id === n.item.id}
                 hints={inside && current?.item.id === n.item.id}
@@ -275,6 +279,7 @@ interface CardProps {
   view: StateView;
   now: number;
   readOnly?: boolean;
+  phone?: boolean;
   leaving: boolean;
   /** The card that Tab lands on (roving focus). */
   tabbable: boolean;
@@ -285,12 +290,13 @@ interface CardProps {
 }
 
 /** One item in the Confirmation pattern: what is asked, then its actions. */
-function NeedCard({ need, view, now, readOnly, leaving, tabbable, hints, onAct, setRef }: CardProps) {
+function NeedCard({ need, view, now, readOnly, phone, leaving, tabbable, hints, onAct, setRef }: CardProps) {
   const { item } = need;
   const k = item.kind;
   const question = k === "question" || k === "child_question";
   const [asking, setAsking] = useState<Action | null>(null);
   const [text, setText] = useState("");
+  const [sheet, setSheet] = useState<"details" | "deny" | null>(null);
   const reply = useRef<HTMLTextAreaElement>(null);
   const self = useRef<HTMLDivElement | null>(null);
   const has = (id: ActionId) => need.actions.find((a) => a.id === id);
@@ -339,6 +345,8 @@ function NeedCard({ need, view, now, readOnly, leaving, tabbable, hints, onAct, 
   const pr = k === "ci_failing" ? prUrl(need) : null;
   const plan = k === "plan_review" ? view.plans.find((p) => item.from?.startsWith(`${p.id}/`)) : undefined;
   const buttons = need.actions.filter((a) => !(question && a.id === "reply"));
+  const swipe = phone ? swipeActions(need) : null;
+  const deny = has("deny");
 
   return (
     <div
@@ -359,134 +367,209 @@ function NeedCard({ need, view, now, readOnly, leaving, tabbable, hints, onAct, 
       )}
     >
       <div className="min-h-0 overflow-hidden">
-        <Item variant="outline" size="sm" className="items-start">
-          <ItemMedia variant="icon">
-            <KindIcon need={need} />
-          </ItemMedia>
-          <ItemContent className="min-w-0">
-            <ItemTitle className="w-full">
-              <span className="min-w-0 truncate">{need.title}</span>
-              <span className="ml-auto shrink-0 font-normal text-muted-foreground">
-                <span className="font-mono">{need.who}</span> · <time className="counter">{relativeTime(item.created, now)}</time>
-              </span>
-            </ItemTitle>
-            {typeof k === "object" ? (
-              <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-muted px-2 py-1.5 font-mono text-xs break-all whitespace-pre-wrap">
-                {k.permission.input_summary || need.detail}
-              </pre>
-            ) : k === "plan_review" ? (
-              <ItemDescription>
-                {plan ? `${plan.tasks.length} task${plan.tasks.length === 1 ? "" : "s"}` : need.detail}
-              </ItemDescription>
-            ) : k === "stalled" ? (
-              <ItemDescription>Idle for {idleFor(now - idle)}</ItemDescription>
-            ) : k === "ci_failing" ? (
-              <ItemDescription className="line-clamp-2">
-                {pr ? (
-                  <a href={pr} target="_blank" rel="noopener noreferrer" className="font-mono underline underline-offset-2">
-                    {need.task?.pr ? `#${need.task.pr.number}` : pr}
-                  </a>
-                ) : (
-                  need.detail
-                )}
-                {need.task?.pr?.ci_failures ? ` · ${need.task.pr.ci_failures} failing` : ""}
-              </ItemDescription>
-            ) : question || k === "child_report" ? (
-              <ItemDescription className="line-clamp-6 whitespace-pre-wrap">{item.body}</ItemDescription>
-            ) : (
-              need.detail && <ItemDescription className="line-clamp-3">{need.detail}</ItemDescription>
-            )}
-          </ItemContent>
-          <ItemFooter className="flex-col items-stretch gap-2">
-            {question && (
-              <form
-                className="flex flex-col gap-2"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  send(has("reply") ?? null);
-                }}
-              >
-                <Textarea
-                  ref={reply}
-                  aria-label="Reply"
-                  placeholder="Your answer…"
-                  rows={2}
-                  value={text}
-                  disabled={readOnly}
-                  onChange={(e) => setText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                      e.preventDefault();
-                      send(has("reply") ?? null);
-                    }
+        <Swipe
+          disabled={!phone || leaving}
+          right={
+            swipe?.right && !disabled(swipe.right)
+              ? { label: swipe.right.label.replace("…", ""), run: () => tap(swipe.right!) }
+              : null
+          }
+          left={
+            swipe?.left && !disabled(swipe.left)
+              ? {
+                  label: swipe.left.label.replace("…", ""),
+                  destructive: true,
+                  // A denial cannot be taken back: confirm it first.
+                  run: () => (swipe.left!.id === "deny" ? setSheet("deny") : onAct(need, swipe.left!)),
+                }
+              : null
+          }
+        >
+          <Item variant="outline" size="sm" className="items-start">
+            <ItemMedia variant="icon">
+              <KindIcon need={need} />
+            </ItemMedia>
+            <ItemContent
+              className="min-w-0"
+              onClick={phone ? () => setSheet("details") : undefined}
+              role={phone ? "button" : undefined}
+              aria-label={phone ? `Details: ${need.title}` : undefined}
+            >
+              <ItemTitle className="w-full">
+                <span className="min-w-0 truncate">{need.title}</span>
+                <span className="ml-auto shrink-0 font-normal text-muted-foreground">
+                  <span className="font-mono">{need.who}</span> ·{" "}
+                  <time className="counter">{relativeTime(item.created, now)}</time>
+                </span>
+              </ItemTitle>
+              {typeof k === "object" ? (
+                <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-muted px-2 py-1.5 font-mono text-xs break-all whitespace-pre-wrap">
+                  {k.permission.input_summary || need.detail}
+                </pre>
+              ) : k === "plan_review" ? (
+                <ItemDescription>
+                  {plan ? `${plan.tasks.length} task${plan.tasks.length === 1 ? "" : "s"}` : need.detail}
+                </ItemDescription>
+              ) : k === "stalled" ? (
+                <ItemDescription>Idle for {idleFor(now - idle)}</ItemDescription>
+              ) : k === "ci_failing" ? (
+                <ItemDescription className="line-clamp-2">
+                  {pr ? (
+                    <a href={pr} target="_blank" rel="noopener noreferrer" className="font-mono underline underline-offset-2">
+                      {need.task?.pr ? `#${need.task.pr.number}` : pr}
+                    </a>
+                  ) : (
+                    need.detail
+                  )}
+                  {need.task?.pr?.ci_failures ? ` · ${need.task.pr.ci_failures} failing` : ""}
+                </ItemDescription>
+              ) : question || k === "child_report" ? (
+                <ItemDescription className="line-clamp-6 whitespace-pre-wrap">{item.body}</ItemDescription>
+              ) : (
+                need.detail && <ItemDescription className="line-clamp-3">{need.detail}</ItemDescription>
+              )}
+            </ItemContent>
+            <ItemFooter className="flex-col items-stretch gap-2">
+              {question && (
+                <form
+                  className="flex flex-col gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    send(has("reply") ?? null);
                   }}
-                  className="field-sizing-content max-h-40"
-                />
-              </form>
-            )}
-            {asking && (
-              <form
-                className="flex flex-col gap-2"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  send(asking);
-                }}
-              >
-                <Textarea
-                  aria-label={asking.text === "note" ? "Note" : asking.label.replace("…", "")}
-                  placeholder={asking.text === "note" ? "Optional note" : "Text"}
-                  value={text}
-                  rows={2}
-                  onChange={(e) => setText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                      e.preventDefault();
-                      send(asking);
-                    }
+                >
+                  <Textarea
+                    ref={reply}
+                    aria-label="Reply"
+                    placeholder="Your answer…"
+                    rows={2}
+                    value={text}
+                    disabled={readOnly}
+                    onChange={(e) => setText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        send(has("reply") ?? null);
+                      }
+                    }}
+                    className="field-sizing-content max-h-40"
+                  />
+                </form>
+              )}
+              {asking && (
+                <form
+                  className="flex flex-col gap-2"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    send(asking);
                   }}
-                  autoFocus
-                />
-                <ItemActions>
-                  <Button type="submit" size="sm" disabled={asking.text === "required" && !text.trim()}>
-                    {asking.label.replace("…", "")}
-                  </Button>
-                  <Button type="button" size="sm" variant="ghost" onClick={() => setAsking(null)}>
-                    Cancel
-                  </Button>
+                >
+                  <Textarea
+                    aria-label={asking.text === "note" ? "Note" : asking.label.replace("…", "")}
+                    placeholder={asking.text === "note" ? "Optional note" : "Text"}
+                    value={text}
+                    rows={2}
+                    onChange={(e) => setText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        e.preventDefault();
+                        send(asking);
+                      }
+                    }}
+                    autoFocus
+                  />
+                  <ItemActions>
+                    <Button type="submit" size="sm" disabled={asking.text === "required" && !text.trim()}>
+                      {asking.label.replace("…", "")}
+                    </Button>
+                    <Button type="button" size="sm" variant="ghost" onClick={() => setAsking(null)}>
+                      Cancel
+                    </Button>
+                  </ItemActions>
+                </form>
+              )}
+              {!asking && (
+                <ItemActions className="flex-wrap">
+                  {question && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={disabled(has("reply")!) || !text.trim()}
+                      onClick={() => send(has("reply") ?? null)}
+                    >
+                      Reply
+                    </Button>
+                  )}
+                  {buttons.map((a) => (
+                    <Button
+                      key={a.id}
+                      type="button"
+                      size="sm"
+                      variant={a.primary ? "default" : a.id === "open" ? "ghost" : "outline"}
+                      disabled={disabled(a)}
+                      onClick={() => tap(a)}
+                    >
+                      {a.label}
+                    </Button>
+                  ))}
                 </ItemActions>
-              </form>
-            )}
-            {!asking && (
-              <ItemActions className="flex-wrap">
-                {question && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={disabled(has("reply")!) || !text.trim()}
-                    onClick={() => send(has("reply") ?? null)}
-                  >
-                    Reply
-                  </Button>
-                )}
-                {buttons.map((a) => (
-                  <Button
-                    key={a.id}
-                    type="button"
-                    size="sm"
-                    variant={a.primary ? "default" : a.id === "open" ? "ghost" : "outline"}
-                    disabled={disabled(a)}
-                    onClick={() => tap(a)}
-                  >
-                    {a.label}
-                  </Button>
-                ))}
-              </ItemActions>
-            )}
-            {hints && <Hints need={need} question={question} />}
-          </ItemFooter>
-        </Item>
+              )}
+              {hints && <Hints need={need} question={question} />}
+            </ItemFooter>
+          </Item>
+        </Swipe>
       </div>
+      {phone && (
+        <ActionSheet
+          open={sheet !== null}
+          onOpenChange={(o) => !o && setSheet(null)}
+          title={sheet === "deny" ? `Deny: ${need.title}` : need.title}
+          description={
+            sheet === "deny" ? (
+              "The agent gets a refusal. This cannot be undone."
+            ) : (
+              <>
+                <span className="font-mono">{need.who}</span> · {relativeTime(item.created, now)}
+              </>
+            )
+          }
+          actions={
+            sheet === "deny"
+              ? deny
+                ? [{ id: "deny", label: "Deny", destructive: true, run: () => onAct(need, deny) }]
+                : []
+              : buttons.map((a) => ({
+                  id: a.id,
+                  label: a.label,
+                  destructive: a.id === "deny",
+                  disabled: disabled(a),
+                  run: () => (a.id === "deny" ? setSheet("deny") : tap(a)),
+                }))
+          }
+        >
+          {sheet === "details" && <Details need={need} />}
+        </ActionSheet>
+      )}
     </div>
+  );
+}
+
+/** Swipe right runs Allow (or Open), left denies (or dismisses). */
+export function swipeActions(need: Need): { right: Action | null; left: Action | null } {
+  const has = (id: ActionId) => need.actions.find((a) => a.id === id) ?? null;
+  const primary = need.actions.find((a) => a.primary && !a.text) ?? null;
+  return { right: has("allow") ?? primary ?? has("open"), left: has("deny") ?? has("dismiss") };
+}
+
+/** Everything the card clips: the full input, body, or detail. */
+function Details({ need }: { need: Need }) {
+  const k = need.item.kind;
+  const text = typeof k === "object" ? k.permission.input_summary || need.detail : need.item.body || need.detail;
+  if (!text) return null;
+  return (
+    <pre className="max-h-[40dvh] overflow-auto rounded-md bg-muted px-3 py-2 font-mono text-xs break-all whitespace-pre-wrap select-text">
+      {text}
+    </pre>
   );
 }
 

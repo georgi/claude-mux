@@ -25,6 +25,7 @@ import {
   type TreeNode,
   visibleRows,
 } from "../tree";
+import { ActionSheet, useLongPress } from "./shell/phone";
 import { StatusDot, StatusIcon } from "./shell/status";
 
 interface Props {
@@ -55,6 +56,8 @@ export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpe
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
   const [focus, setFocus] = useState<string | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
+  // On touch, a long-press opens the row's actions in a bottom sheet.
+  const [sheet, setSheet] = useState<TreeNode | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const items = useRef(new Map<string, HTMLLIElement>());
@@ -174,11 +177,13 @@ export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpe
         open(n);
         break;
       case "ContextMenu":
-        setMenu(n.key);
+        if (isMobile) setSheet(n);
+        else setMenu(n.key);
         break;
       case "F10":
         if (!e.shiftKey) return;
-        setMenu(n.key);
+        if (isMobile) setSheet(n);
+        else setMenu(n.key);
         break;
       default:
         return;
@@ -242,82 +247,102 @@ export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpe
         {n.label}
       </span>
     );
-    const row = (
-      <ContextMenu>
-        <ContextMenuTrigger
-          className={cn(
-            "flex h-8 cursor-pointer items-center gap-2 rounded-md pr-1 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-            "group-focus-visible/item:ring-2 group-focus-visible/item:ring-sidebar-ring",
-            n.key === selected && "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
-            n.dim && "opacity-60",
-          )}
-          style={{ paddingLeft: `${0.25 + (level - 1) * 0.75}rem` }}
-          onClick={() => {
-            setFocus(n.key);
-            open(n);
-          }}
-          title={n.agent?.id ?? (n.kind === "plan" ? "Open the board" : n.label)}
-        >
-          {kids ? (
-            <CollapsibleTrigger
-              tabIndex={-1}
-              aria-label={expanded ? `Collapse ${n.label}` : `Expand ${n.label}`}
-              className="-mr-1 flex size-4 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
-              onClick={(e) => e.stopPropagation()}
+    const rowProps = {
+      className: cn(
+        "flex cursor-pointer items-center gap-2 rounded-md pr-1 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+        "group-focus-visible/item:ring-2 group-focus-visible/item:ring-sidebar-ring",
+        n.key === selected && "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
+        n.dim && "opacity-60",
+        isMobile ? "h-11 select-none [-webkit-touch-callout:none]" : "h-8",
+      ),
+      style: { paddingLeft: `${0.25 + (level - 1) * 0.75}rem` },
+      onClick: () => {
+        setFocus(n.key);
+        open(n);
+      },
+      title: n.agent?.id ?? (n.kind === "plan" ? "Open the board" : n.label),
+    };
+    const content = (
+      <>
+        {kids ? (
+          <CollapsibleTrigger
+            tabIndex={-1}
+            aria-label={expanded ? `Collapse ${n.label}` : `Expand ${n.label}`}
+            className={cn(
+              "-mr-1 flex shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground",
+              isMobile ? "-ml-2 size-9" : "size-4",
+            )}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ChevronRightIcon
+              aria-hidden
+              className={cn("size-3.5 transition-transform duration-(--duration-fast)", expanded && "rotate-90")}
+            />
+          </CollapsibleTrigger>
+        ) : (
+          <span aria-hidden className="-mr-1 size-4 shrink-0" />
+        )}
+        {n.kind === "group" ? null : <StatusDot status={n.status} />}
+        {!isMobile && (n.agent || n.task) ? <Preview node={n} now={now} trigger={label} /> : label}
+        {n.stalled && (
+          <span aria-hidden className="shrink-0 text-xs text-status-stalled">
+            ⚠
+          </span>
+        )}
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+          {n.badge && <span className="rounded-sm border px-1 text-[0.625rem] leading-4 text-muted-foreground">{n.badge}</span>}
+          {n.detail && <span className="text-xs text-muted-foreground tabular-nums">{n.detail}</span>}
+          {n.needs > 0 && (
+            <span
+              aria-label={`${n.needs} need you`}
+              className="min-w-4 rounded-full bg-status-needs px-1 text-center text-[0.625rem] leading-4 font-medium text-white tabular-nums"
             >
-              <ChevronRightIcon
-                aria-hidden
-                className={cn("size-3.5 transition-transform duration-(--duration-fast)", expanded && "rotate-90")}
-              />
-            </CollapsibleTrigger>
-          ) : (
-            <span aria-hidden className="-mr-1 size-4 shrink-0" />
-          )}
-          {n.kind === "group" ? null : <StatusDot status={n.status} />}
-          {!isMobile && (n.agent || n.task) ? <Preview node={n} now={now} trigger={label} /> : label}
-          {n.stalled && (
-            <span aria-hidden className="shrink-0 text-xs text-status-stalled">
-              ⚠
+              {n.needs}
             </span>
           )}
-          <span className="ml-auto flex shrink-0 items-center gap-1.5">
-            {n.badge && (
-              <span className="rounded-sm border px-1 text-[0.625rem] leading-4 text-muted-foreground">{n.badge}</span>
-            )}
-            {n.detail && <span className="text-xs text-muted-foreground tabular-nums">{n.detail}</span>}
-            {n.needs > 0 && (
-              <span
-                aria-label={`${n.needs} need you`}
-                className="min-w-4 rounded-full bg-status-needs px-1 text-center text-[0.625rem] leading-4 font-medium text-white tabular-nums"
+          {actions.length > 0 && isMobile && (
+            <button
+              type="button"
+              tabIndex={-1}
+              aria-label={`Actions for ${n.label}`}
+              className="-mr-1 flex size-11 items-center justify-center rounded-md text-muted-foreground active:bg-sidebar-accent"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSheet(n);
+              }}
+            >
+              <EllipsisIcon aria-hidden className="size-4" />
+            </button>
+          )}
+          {actions.length > 0 && !isMobile && (
+            <DropdownMenu open={menu === n.key} onOpenChange={(o) => setMenu(o ? n.key : null)}>
+              <DropdownMenuTrigger
+                tabIndex={-1}
+                aria-label={`Actions for ${n.label}`}
+                className="flex size-5 items-center justify-center rounded-sm text-muted-foreground opacity-100 hover:bg-sidebar-accent hover:text-foreground md:opacity-0 md:group-hover/item:opacity-100 md:group-focus-visible/item:opacity-100 md:data-popup-open:opacity-100"
+                onClick={(e) => e.stopPropagation()}
               >
-                {n.needs}
-              </span>
-            )}
-            {actions.length > 0 && (
-              <DropdownMenu open={menu === n.key} onOpenChange={(o) => setMenu(o ? n.key : null)}>
-                <DropdownMenuTrigger
-                  tabIndex={-1}
-                  aria-label={`Actions for ${n.label}`}
-                  className="flex size-5 items-center justify-center rounded-sm text-muted-foreground opacity-100 hover:bg-sidebar-accent hover:text-foreground md:opacity-0 md:group-hover/item:opacity-100 md:group-focus-visible/item:opacity-100 md:data-popup-open:opacity-100"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <EllipsisIcon aria-hidden className="size-4" />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="end"
-                  className="w-auto"
-                  finalFocus={{ current: items.current.get(n.key) ?? null }}
-                >
-                  {actions.map((x) => (
-                    <DropdownMenuItem key={x.id} onClick={() => act(n, x.id)}>
-                      {x.label}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
-          </span>
-        </ContextMenuTrigger>
+                <EllipsisIcon aria-hidden className="size-4" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-auto" finalFocus={{ current: items.current.get(n.key) ?? null }}>
+                {actions.map((x) => (
+                  <DropdownMenuItem key={x.id} onClick={() => act(n, x.id)}>
+                    {x.label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </span>
+      </>
+    );
+    const row = isMobile ? (
+      <TouchRow {...rowProps} onLong={actions.length > 0 ? () => setSheet(n) : undefined}>
+        {content}
+      </TouchRow>
+    ) : (
+      <ContextMenu>
+        <ContextMenuTrigger {...rowProps}>{content}</ContextMenuTrigger>
         {actions.length > 0 && (
           <ContextMenuContent>
             {actions.map((x) => (
@@ -329,14 +354,14 @@ export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpe
         )}
       </ContextMenu>
     );
-    if (!kids) return <li key={n.key} {...item}>{row}</li>;
+    if (!kids)
+      return (
+        <li key={n.key} {...item}>
+          {row}
+        </li>
+      );
     return (
-      <Collapsible
-        key={n.key}
-        open={expanded}
-        onOpenChange={(o) => !filtering && toggle(n, o)}
-        render={<li {...item} />}
-      >
+      <Collapsible key={n.key} open={expanded} onOpenChange={(o) => !filtering && toggle(n, o)} render={<li {...item} />}>
         {row}
         <CollapsibleContent render={<ul role="group" />}>{n.children.map((c) => render(c, level + 1))}</CollapsibleContent>
       </Collapsible>
@@ -346,7 +371,10 @@ export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpe
   return (
     <div ref={rootRef} className="flex flex-col gap-1 p-2">
       <div className="relative">
-        <SearchIcon aria-hidden className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <SearchIcon
+          aria-hidden
+          className="pointer-events-none absolute top-1/2 left-2 size-3.5 -translate-y-1/2 text-muted-foreground"
+        />
         <SidebarInput
           ref={filterRef}
           type="search"
@@ -366,8 +394,28 @@ export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpe
           {nodes.map((n) => render(n, 1))}
         </ul>
       )}
+      {isMobile && (
+        <ActionSheet
+          open={sheet !== null}
+          onOpenChange={(o) => !o && setSheet(null)}
+          title={sheet?.label ?? ""}
+          description={sheet ? (rowPath(sheet) ?? undefined) : undefined}
+          actions={(sheet ? rowActions(sheet, readOnly) : []).map((x) => ({
+            id: x.id,
+            label: x.label,
+            destructive: x.id === "stop",
+            run: () => sheet && act(sheet, x.id),
+          }))}
+        />
+      )}
     </div>
   );
+}
+
+/** A tree row on touch: tap opens, long-press shows the actions. */
+function TouchRow({ onLong, ...props }: React.ComponentProps<"div"> & { onLong?: () => void }) {
+  const press = useLongPress(() => onLong?.(), !!onLong);
+  return <div {...props} {...press} />;
 }
 
 /** The hover preview of an agent or task row (desktop only). */

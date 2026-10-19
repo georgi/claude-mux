@@ -155,7 +155,7 @@ export function Composer({ agent, api, queued, readOnly }: ComposerProps) {
 
   return (
     <form
-      className="shrink-0 border-t bg-background p-2"
+      className="shrink-0 border-t bg-background p-2 pr-[max(0.5rem,env(safe-area-inset-right))] pl-[max(0.5rem,env(safe-area-inset-left))]"
       onSubmit={(e) => {
         e.preventDefault();
         void send(steer);
@@ -231,7 +231,7 @@ export function Composer({ agent, api, queued, readOnly }: ComposerProps) {
                 <Tooltip>
                   <TooltipTrigger
                     render={
-                      <ToggleGroupItem value="steer" aria-label="Steer: interrupt the agent" disabled={readOnly} className="gap-1.5" />
+                      <ToggleGroupItem value="steer" aria-label="Steer: interrupt the agent" disabled={readOnly} className="gap-1.5 max-sm:h-11 max-sm:min-w-11" />
                     }
                   >
                     <ChevronsUpIcon /> Steer
@@ -248,6 +248,7 @@ export function Composer({ agent, api, queued, readOnly }: ComposerProps) {
                     type="submit"
                     variant="default"
                     size="icon-sm"
+                    className="max-sm:size-11"
                     aria-label={steer ? "Steer now" : "Send at the next turn"}
                     disabled={!!why}
                   >

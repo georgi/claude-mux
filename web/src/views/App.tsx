@@ -17,6 +17,7 @@ import { api, endSession, hasSession } from "../api/http";
 import { Conn, streamUrl } from "../conn";
 import { useMedia, useModel } from "../hooks";
 import { type Nav, pending } from "../needs";
+import { KEYBOARD_PX, useVisualViewport } from "../pwa";
 import { formatRoute, parseRoute, type Route } from "../route";
 import { Store } from "../store";
 import { AgentPane } from "./AgentPane";
@@ -24,6 +25,7 @@ import { NeedsYou, useAttention } from "./NeedsYou";
 import { Keyboard } from "./shell/command";
 import { crumbsFor, Header } from "./shell/header";
 import { Live } from "./shell/live";
+import { ActionSheet, OfflineBanner, PullToReconnect } from "./shell/phone";
 import { PhoneTabs, type Tab } from "./shell/phone-tabs";
 import { Board, NeedsLayout, NewPlan, Pairing, PlanList, Settings, TermView } from "./lazy";
 import { Tree } from "./Tree";
@@ -112,6 +114,9 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
   const [route, setRoute] = useState<Route>(parseRoute(location.hash));
   const phone = useMedia(PHONE);
   const wide = useMedia(WIDE);
+  const vp = useVisualViewport(phone);
+  const keyboard = !!vp && vp.keyboard > KEYBOARD_PX;
+  const [more, setMore] = useState(false);
   const seen = useRef(false);
   if (m.conn === "open") seen.current = true;
 
@@ -164,6 +169,28 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
   useAttention(v, route.view === "needs" || (route.view === "home" && phone), () => go({ view: "needs" }));
   const selected = route.view === "agent" ? route.agent : route.view === "term" ? `term-${route.term}` : null;
 
+  const tree = v ? (
+    <Tree
+      view={v}
+      selected={selected}
+      api={api}
+      readOnly={readOnly}
+      onOpenAgent={(agent, mode) => go({ view: "agent", agent, mode })}
+      onOpenTerm={(term) => go({ view: "term", term })}
+      onPlan={nav.openPlan}
+    />
+  ) : null;
+  // On a phone the list pulls down to reconnect.
+  const inbox =
+    v &&
+    (phone ? (
+      <PullToReconnect onPull={() => conn.kick()}>
+        <NeedsYou view={v} api={api} nav={nav} readOnly={readOnly} phone />
+      </PullToReconnect>
+    ) : (
+      <NeedsYou view={v} api={api} nav={nav} readOnly={readOnly} />
+    ));
+
   const body = () => {
     if (!v) return <Loading />;
     switch (route.view) {
@@ -205,10 +232,12 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
         return <PlanList view={v} onOpen={nav.openPlan} onNew={() => go({ view: "new" })} />;
       case "live":
         return <Live view={v} onOpen={nav.openAgent} />;
+      case "agents":
+        return tree;
       case "needs":
-        return <NeedsYou view={v} api={api} nav={nav} readOnly={readOnly} />;
+        return inbox;
       case "home":
-        if (phone) return <NeedsYou view={v} api={api} nav={nav} readOnly={readOnly} />;
+        if (phone) return inbox;
         return (
           <Empty>
             <EmptyHeader>
@@ -226,31 +255,27 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
   const tab: Tab =
     route.view === "home" || route.view === "needs"
       ? "needs"
-      : route.view === "plans" || route.view === "board" || route.view === "new"
-        ? "plans"
-        : route.view === "settings"
-          ? "settings"
-          : "live";
+      : route.view === "agents" || route.view === "agent" || route.view === "term"
+        ? "agents"
+        : route.view === "plans" || route.view === "board"
+          ? "plans"
+          : "more";
 
   return (
-    <SidebarProvider defaultOpen={matchMedia("(min-width: 768px)").matches} className="h-svh overflow-hidden">
+    <SidebarProvider
+      defaultOpen={matchMedia("(min-width: 768px)").matches}
+      className="h-svh overflow-hidden"
+      // A phone sizes to the visual viewport: the composer stays above the keyboard.
+      style={vp ? { position: "fixed", insetInline: 0, top: vp.top, height: vp.height, minHeight: 0 } : undefined}
+      data-keyboard={keyboard || undefined}
+    >
       <Sidebar aria-label="Agents and plans">
         <SidebarHeader className="flex-row items-center justify-between">
           <span className="px-2 text-sm font-semibold">{m.server?.name ?? "cmux"}</span>
         </SidebarHeader>
         <SidebarContent>
           <nav aria-label="Agents and plans">
-            {v ? (
-              <Tree
-                view={v}
-                selected={selected}
-                api={api}
-                readOnly={readOnly}
-                onOpenAgent={(agent, mode) => go({ view: "agent", agent, mode })}
-                onOpenTerm={(term) => go({ view: "term", term })}
-                onPlan={nav.openPlan}
-              />
-            ) : (
+            {tree ?? (
               <div className="p-3">
                 <Loading />
               </div>
@@ -278,16 +303,30 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
           onSettings={() => go({ view: "settings" })}
           onSignOut={signOut}
         />
+        {phone && <OfflineBanner status={m.conn} seen={seen.current} onRetry={() => conn.kick()} />}
         {wide && !phone ? (
           <NeedsLayout count={count} main={body()}>
             {v ? <NeedsYou view={v} api={api} nav={nav} readOnly={readOnly} /> : <Loading />}
           </NeedsLayout>
         ) : (
           <div className="flex min-h-0 flex-1">
-            <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">{body()}</main>
+            <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-y-contain">{body()}</main>
           </div>
         )}
-        {phone && <PhoneTabs tab={tab} count={count} go={(t) => go({ view: t })} />}
+        {phone && !keyboard && <PhoneTabs tab={tab} count={count} go={(t) => (t === "more" ? setMore(true) : go({ view: t }))} />}
+        {phone && (
+          <ActionSheet
+            open={more}
+            onOpenChange={setMore}
+            title="More"
+            actions={[
+              { id: "live", label: "Live activity", run: () => go({ view: "live" }) },
+              { id: "new", label: "New plan", disabled: readOnly, run: () => go({ view: "new" }) },
+              { id: "settings", label: "Settings", run: () => go({ view: "settings" }) },
+              { id: "signout", label: "Sign out", destructive: true, run: () => void signOut() },
+            ]}
+          />
+        )}
       </SidebarInset>
       <Keyboard view={v} route={route} readOnly={readOnly} api={api} nav={nav} go={go} onSignOut={signOut} />
     </SidebarProvider>

@@ -129,9 +129,13 @@ export function Header({ m, crumbs, seen, phone, wide, readOnly, needsCount, onN
   const iosHint = !install && isIos() && !isStandalone();
   const clients = m.presence.length;
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
-      <SidebarTrigger aria-label="Toggle the tree" />
-      <Separator orientation="vertical" className="h-4" />
+    <header className="box-content flex h-12 shrink-0 items-center gap-2 border-b pt-[env(safe-area-inset-top)] pr-[max(0.75rem,env(safe-area-inset-right))] pl-[max(0.75rem,env(safe-area-inset-left))]">
+      {!phone && (
+        <>
+          <SidebarTrigger aria-label="Toggle the tree" />
+          <Separator orientation="vertical" className="h-4" />
+        </>
+      )}
       <h1 className={crumbs.length ? "sr-only" : "min-w-0 truncate text-sm font-medium"}>{m.server?.name ?? "cmux"}</h1>
       <Crumbs crumbs={crumbs} phone={phone} />
       <ConnBadge status={m.conn} seen={seen} />
