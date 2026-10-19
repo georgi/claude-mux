@@ -1,6 +1,6 @@
 import type { StateView } from "./api/types";
 import type { Route } from "./route";
-import { buildTree } from "./tree";
+import { agentOrder } from "./tree";
 
 // The phone's terminal key bar (UI design 4.2): keys a phone keyboard lacks.
 // `Ctrl` is sticky: it applies to the next key typed, then lets go.
@@ -92,7 +92,7 @@ export function currentPlan(c: Pick<KeyCtx, "route" | "view">) {
 
 /** The agent `dir` steps from `current` in tree order, wrapping around. */
 export function stepAgent(v: StateView, current: string | null, dir: 1 | -1): string | null {
-  const ids = buildTree(v).flatMap((r) => (r.agent ? [r.agent] : []));
+  const ids = agentOrder(v);
   if (!ids.length) return null;
   const at = current ? ids.indexOf(current) : -1;
   if (at < 0) return dir === 1 ? ids[0] : ids[ids.length - 1];

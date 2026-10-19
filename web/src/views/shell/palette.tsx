@@ -17,7 +17,7 @@ import type { Binding } from "@/keys";
 import { agentStatus, planStatus } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import { needs } from "@/needs";
-import { buildTree } from "@/tree";
+import { agentOrder } from "@/tree";
 import { Keys } from "./shortcuts";
 import { STATUS_TEXT } from "./status";
 
@@ -46,7 +46,7 @@ interface PaletteProps {
 export function Palette({ open, onOpenChange, view, recent, actions, onAgent, onPlan, onNeed, onAction }: PaletteProps) {
   const lists = useMemo(() => {
     if (!view) return { pending: [], agents: [], plans: [] };
-    const order = buildTree(view).flatMap((r) => (r.agent ? [r.agent] : []));
+    const order = agentOrder(view);
     const tree = order.flatMap((id) => view.agents.filter((a) => a.id === id));
     return {
       pending: needs(view),

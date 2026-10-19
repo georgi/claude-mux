@@ -303,6 +303,8 @@ describe("chat rhythm", () => {
 });
 
 describe("PendingRequest", () => {
+  const perm: ItemKind = { permission: { tool: "Bash", input_summary: "cargo test -p perms" } };
+
   it("shows a permission as a confirmation with its input as code", async () => {
     const api = fakeApi();
     const v = state({ agents: [agent("T-0004")], items: [item(5, { kind: perm, from: `${PLAN}/T-0004` })] });

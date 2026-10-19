@@ -239,6 +239,11 @@ export function visibleRows(nodes: TreeNode[], expanded: (n: TreeNode) => boolea
   return out;
 }
 
+/** The agent ids in tree order, every level expanded. */
+export function agentOrder(v: StateView): string[] {
+  return visibleRows(buildTree(v), () => true).flatMap((r) => (r.node.agent ? [r.node.agent.id] : []));
+}
+
 /** Whether a node starts expanded: finished plans start collapsed. */
 export function expandedByDefault(n: TreeNode): boolean {
   return !(n.kind === "plan" && n.dim);
