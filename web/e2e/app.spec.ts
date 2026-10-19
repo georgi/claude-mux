@@ -66,12 +66,45 @@ test("pair, open an agent, type into its terminal, approve its permission", asyn
   if (shots) await page.screenshot({ path: `${shots}/desktop-permission.png` });
   await card.getByRole("button", { name: "Allow", exact: true }).click();
   await expect(screen).toContainText("PERM allow");
-  await expect(needs).toContainText("Nothing needs you.");
+  await expect(needs).toContainText("Nothing needs you");
 
   // The chat shows the same turn.
   await page.getByRole("tab", { name: "Chat" }).click();
   await expect(page.getByRole("log", { name: "Conversation" })).toContainText("Tests ran.");
   await expect(page.getByRole("log", { name: "Conversation" })).toContainText("run the tests");
+});
+
+test("approve a permission from the inbox with the a key", async ({ page }) => {
+  await pair(page);
+  const h = { "X-Cmux": "1" };
+  await page.request.post(`${server.url}/v1/repos`, { headers: h, data: { path: server.repo } });
+  const r = await page.request.post(`${server.url}/v1/plans`, {
+    headers: h,
+    data: { title: "inbox plan", repos: [{ path: server.repo, base_branch: null }], request: "Plan it." },
+  });
+  expect(r.status()).toBe(201);
+  const { id } = (await r.json()) as { id: string };
+
+  // Ask the executor for a permission from its terminal.
+  await page.goto(`${server.url}/#/agent/${encodeURIComponent(`${id}/executor`)}/terminal`);
+  const screen = page.locator(".xterm-rows");
+  await expect(screen).toContainText("TOOLS:");
+  await page.locator(".xterm-host").click();
+  await page.keyboard.type("run the tests");
+  await page.keyboard.press("Enter");
+
+  // The card lands in the inbox, grouped under its plan; focus it and press a.
+  const needs = page.getByRole("complementary", { name: "Needs you" });
+  const card = needs.getByRole("list", { name: "inbox plan" }).getByRole("listitem").filter({ hasText: "Allow Bash?" });
+  await expect(card).toContainText("cargo test -p e2e");
+  await expect(page).toHaveTitle("(1) cmux");
+  await card.focus();
+  await expect(card.locator("kbd").first()).toBeVisible();
+  if (shots) await page.screenshot({ path: `${shots}/desktop-inbox-focused.png` });
+  await page.keyboard.press("a");
+  await expect(needs).toContainText("Nothing needs you");
+  await expect(screen).toContainText("PERM allow");
+  await expect(page).toHaveTitle("cmux");
 });
 
 test.describe("on a phone", () => {
