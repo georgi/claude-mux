@@ -69,12 +69,12 @@ export function TaskCard({ t, tasks, view, onOpen }: TaskProps) {
   const { agent, subs } = agentsOf(t, view);
   const wait = t.state === "todo" ? waitingOn(t, tasks) : [];
   return (
-    <Card size="sm" data-task={t.id} className="relative transition-colors hover:bg-muted/50 has-[button:focus-visible]:ring-2 has-[button:focus-visible]:ring-ring">
+    <Card size="sm" data-task={t.id} className="relative transition-colors hover:bg-muted/50">
       <CardHeader>
         <CardTitle className="flex items-start gap-2">
           <button
             type="button"
-            className="min-w-0 flex-1 text-left outline-none after:absolute after:inset-0 after:content-['']"
+            className="min-w-0 flex-1 text-left outline-none after:absolute after:inset-0 after:rounded-[inherit] after:content-[''] focus-visible:after:ring-2 focus-visible:after:ring-ring"
             onClick={() => onOpen(t.id)}
           >
             <code className="mr-1.5 text-xs text-muted-foreground">{t.id}</code>
@@ -125,16 +125,17 @@ export function TaskRow({ t, tasks, view, onOpen }: TaskProps) {
   const wait = t.state === "todo" ? waitingOn(t, tasks) : [];
   return (
     <Item
+      role="listitem"
       size="xs"
       data-task={t.id}
-      className="relative flex-nowrap px-3 py-2 hover:bg-muted/50 has-[button:focus-visible]:ring-2 has-[button:focus-visible]:ring-ring"
+      className="relative flex-nowrap px-3 py-2 hover:bg-muted/50"
     >
       <StatusIcon status={taskStatus(t.state)} />
       <ItemContent className="min-w-0">
         <ItemTitle className="w-full min-w-0">
           <button
             type="button"
-            className="flex min-w-0 items-baseline gap-2 text-left outline-none after:absolute after:inset-0 after:content-['']"
+            className="flex min-w-0 items-baseline gap-2 text-left outline-none after:absolute after:inset-0 after:rounded-[inherit] after:content-[''] focus-visible:after:ring-2 focus-visible:after:ring-ring"
             onClick={() => onOpen(t.id)}
           >
             <code className="shrink-0 text-xs text-muted-foreground">{t.id}</code>

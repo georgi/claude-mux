@@ -157,7 +157,10 @@ export function Composer({ agent, api, queued, readOnly }: ComposerProps) {
       )}
       <Tooltip disabled={!readOnly}>
         <TooltipTrigger render={<div />}>
-          <InputGroup>
+          {/* Dim the group only when the textarea is off (read-only), not when Send waits for text. */}
+          <InputGroup
+            className="has-disabled:bg-transparent has-disabled:opacity-100 dark:has-disabled:bg-input/30 has-[textarea:disabled]:opacity-50"
+          >
             <InputGroupTextarea
               ref={area}
               aria-label="Message"

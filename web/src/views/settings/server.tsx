@@ -117,7 +117,7 @@ export function Claude({ settings: [s, error] }: { settings: ReturnType<typeof u
       {s && (
         <ItemGroup className="gap-2">
           {s.claude.map((l) => (
-            <Item key={l.level} variant="outline" size="sm">
+            <Item key={l.level} role="listitem" variant="outline" size="sm">
               <ItemContent>
                 <ItemTitle className="capitalize">{l.level}</ItemTitle>
                 <ItemDescription>{l.model ?? "Default model"}</ItemDescription>

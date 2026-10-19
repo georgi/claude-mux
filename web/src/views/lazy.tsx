@@ -1,14 +1,24 @@
-import { lazy, Suspense, type ComponentProps } from "react";
+import { lazy, Suspense, type ComponentProps, type ReactNode } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ErrorBoundary } from "./boundary";
+
+/** A lazy chunk: a skeleton while it loads, Reload if the load fails. */
+function Chunk({ fallback, children, failed }: { fallback: ReactNode; children: ReactNode; failed?: ReactNode }) {
+  return (
+    <ErrorBoundary what="This part" fallback={failed}>
+      <Suspense fallback={fallback}>{children}</Suspense>
+    </ErrorBoundary>
+  );
+}
 
 // xterm and its WebGL addon are large. Load them when a terminal opens.
 const TermViewImpl = lazy(() => import("./TermView").then((m) => ({ default: m.TermView })));
 
 export function TermView(props: ComponentProps<typeof TermViewImpl>) {
   return (
-    <Suspense fallback={<Skeleton className="m-2 h-[calc(100%-1rem)] min-h-24" aria-busy="true" />}>
+    <Chunk fallback={<Skeleton className="m-2 h-[calc(100%-1rem)] min-h-24" aria-busy="true" />}>
       <TermViewImpl {...props} />
-    </Suspense>
+    </Chunk>
   );
 }
 
@@ -18,9 +28,9 @@ const MarkdownImpl = lazy(() => import("@/components/markdown").then((m) => ({ d
 
 export function Markdown({ children, streaming }: { children: string; streaming?: boolean }) {
   return (
-    <Suspense fallback={<p className="whitespace-pre-wrap">{children}</p>}>
+    <Chunk fallback={<p className="whitespace-pre-wrap">{children}</p>} failed={<p className="whitespace-pre-wrap">{children}</p>}>
       <MarkdownImpl streaming={streaming}>{children}</MarkdownImpl>
-    </Suspense>
+    </Chunk>
   );
 }
 
@@ -42,30 +52,30 @@ const SettingsImpl = lazy(() => import("./Settings").then((m) => ({ default: m.S
 
 export function Board(props: ComponentProps<typeof BoardImpl>) {
   return (
-    <Suspense fallback={<Loading />}>
+    <Chunk fallback={<Loading />}>
       <BoardImpl {...props} />
-    </Suspense>
+    </Chunk>
   );
 }
 export function PlanList(props: ComponentProps<typeof PlanListImpl>) {
   return (
-    <Suspense fallback={<Loading />}>
+    <Chunk fallback={<Loading />}>
       <PlanListImpl {...props} />
-    </Suspense>
+    </Chunk>
   );
 }
 export function NewPlan(props: ComponentProps<typeof NewPlanImpl>) {
   return (
-    <Suspense fallback={<Loading />}>
+    <Chunk fallback={<Loading />}>
       <NewPlanImpl {...props} />
-    </Suspense>
+    </Chunk>
   );
 }
 export function Settings(props: ComponentProps<typeof SettingsImpl>) {
   return (
-    <Suspense fallback={<Loading />}>
+    <Chunk fallback={<Loading />}>
       <SettingsImpl {...props} />
-    </Suspense>
+    </Chunk>
   );
 }
 
@@ -75,16 +85,16 @@ const SplitViewImpl = lazy(() => import("./SplitView").then((m) => ({ default: m
 
 export function NeedsLayout(props: ComponentProps<typeof NeedsLayoutImpl>) {
   return (
-    <Suspense fallback={<Loading />}>
+    <Chunk fallback={<Loading />}>
       <NeedsLayoutImpl {...props} />
-    </Suspense>
+    </Chunk>
   );
 }
 export function SplitView(props: ComponentProps<typeof SplitViewImpl>) {
   return (
-    <Suspense fallback={<Loading />}>
+    <Chunk fallback={<Loading />}>
       <SplitViewImpl {...props} />
-    </Suspense>
+    </Chunk>
   );
 }
 
@@ -93,8 +103,8 @@ const PairingImpl = lazy(() => import("./Pairing").then((m) => ({ default: m.Pai
 
 export function Pairing(props: ComponentProps<typeof PairingImpl>) {
   return (
-    <Suspense fallback={<Loading />}>
+    <Chunk fallback={<Loading />}>
       <PairingImpl {...props} />
-    </Suspense>
+    </Chunk>
   );
 }

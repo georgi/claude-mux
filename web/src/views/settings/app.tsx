@@ -11,6 +11,7 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle }
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { MiddlePath } from "../shell/path";
 
 const THEMES: [Theme, string, typeof SunIcon][] = [
   ["light", "Light", SunIcon],
@@ -82,9 +83,11 @@ export function Repositories({ api, readOnly }: { api: Api; readOnly?: boolean }
       {repos?.length === 0 && <p className="text-sm text-muted-foreground">No repositories yet. Add one by its path or URL.</p>}
       <ItemGroup className="gap-2">
         {repos?.map((r) => (
-          <Item key={r.path} variant="outline" size="sm">
+          <Item key={r.path} role="listitem" variant="outline" size="sm">
             <ItemContent>
-              <ItemTitle className="font-mono text-xs break-all">{r.path}</ItemTitle>
+              <ItemTitle className="w-full min-w-0 font-mono text-xs">
+                <MiddlePath value={r.path} />
+              </ItemTitle>
               {r.remote_url && <ItemDescription className="break-all">{r.remote_url}</ItemDescription>}
             </ItemContent>
             <ItemActions>

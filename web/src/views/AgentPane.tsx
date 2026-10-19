@@ -37,6 +37,7 @@ import type { ToolContext } from "./chat/tools/parts";
 import { SplitView, TermView } from "./lazy";
 import { TokenUsageSummary } from "./shell/token-usage";
 import { STATUS_TEXT, StatusIcon } from "./shell/status";
+import { MiddlePath } from "./shell/path";
 
 interface Props {
   view: StateView;
@@ -141,7 +142,9 @@ export function AgentPane({ view, agent, mode, phone, conn, store, api, readOnly
           <Dot status={status} />
           <span className={STATUS_TEXT[status.token]}>{status.label}</span>
         </span>
-        <h2 className="min-w-0 flex-1 truncate font-mono text-sm">{agent.path}</h2>
+        <h2 className="flex min-w-0 flex-1 font-mono text-sm">
+          <MiddlePath value={agent.path} />
+        </h2>
         {task?.branch && !phone && (
           <Button
             variant="outline"

@@ -28,18 +28,20 @@ export function PlanList({ view, onOpen, onNew }: { view: StateView; onOpen: (pl
           {plans.map((p) => {
             const { m, n } = progress(p);
             return (
-              <Item key={p.id} variant="outline" render={<button type="button" onClick={() => onOpen(p.id)} className="cursor-pointer text-left hover:bg-muted" />}>
-                <ItemContent>
-                  <ItemTitle>{p.title}</ItemTitle>
-                  <ItemDescription>
-                    {m}/{n} merged
-                  </ItemDescription>
-                  <Progress value={n ? Math.round((m / n) * 100) : 0} aria-label="Plan progress" className="w-full" />
-                </ItemContent>
-                <ItemActions>
-                  <PlanBadge state={p.state} paused={p.paused} />
-                </ItemActions>
-              </Item>
+              <div key={p.id} role="listitem">
+                <Item variant="outline" render={<button type="button" onClick={() => onOpen(p.id)} className="cursor-pointer text-left hover:bg-muted" />}>
+                  <ItemContent>
+                    <ItemTitle>{p.title}</ItemTitle>
+                    <ItemDescription>
+                      {m}/{n} merged
+                    </ItemDescription>
+                    <Progress value={n ? Math.round((m / n) * 100) : 0} aria-label="Plan progress" className="w-full" />
+                  </ItemContent>
+                  <ItemActions>
+                    <PlanBadge state={p.state} paused={p.paused} />
+                  </ItemActions>
+                </Item>
+              </div>
             );
           })}
         </ItemGroup>

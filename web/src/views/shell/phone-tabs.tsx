@@ -31,7 +31,6 @@ export function PhoneTabs({ tab, count, go }: Props) {
               <button
                 type="button"
                 aria-current={on ? "page" : undefined}
-                aria-label={id === "needs" && count > 0 ? `${label}, ${count}` : label}
                 onClick={() => go(id)}
                 className={cn(
                   "group/tab flex h-14 min-h-11 w-full min-w-11 flex-col items-center justify-center gap-0.5 text-[0.6875rem] font-medium outline-none select-none [-webkit-tap-highlight-color:transparent] focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:ring-inset",
@@ -47,13 +46,14 @@ export function PhoneTabs({ tab, count, go }: Props) {
                   <Icon aria-hidden className="size-5" />
                   {id === "needs" && count > 0 && (
                     <span
-                      aria-hidden
                       className="counter absolute -top-1 left-1/2 ml-1.5 h-4 min-w-4 rounded-full bg-status-needs px-1 text-center text-[0.625rem] leading-4 font-semibold text-background"
                     >
                       {count > 99 ? "99+" : count}
                     </span>
                   )}
                 </span>
+                {/* A space, so the name reads "3 Needs you". */}
+                {id === "needs" && count > 0 && " "}
                 {label}
               </button>
             </li>

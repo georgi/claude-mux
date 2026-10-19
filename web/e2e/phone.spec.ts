@@ -47,6 +47,13 @@ async function newPlan(page: Page, title: string): Promise<string> {
   return ((await r.json()) as { id: string }).id;
 }
 
+/** Waits out a route's View Transition: while it runs, the page takes no touches. */
+async function viewTransitionDone(page: Page) {
+  await page.waitForFunction(() =>
+    document.getAnimations().every((a) => !String((a.effect as KeyframeEffect | null)?.pseudoElement ?? "").startsWith("::view-transition")),
+  );
+}
+
 /** One finger on `el`: down, `dx` px sideways in steps, then (unless `hold`) up. */
 async function drag(cdp: CDPSession, el: Locator, dx: number, hold = false) {
   const box = (await el.boundingBox())!;
@@ -71,10 +78,11 @@ test("swipe right on a permission card allows it, and the card leaves", async ({
   await page.keyboard.press("Enter");
 
   const tabs = page.getByRole("navigation", { name: "Sections" });
-  await expect(tabs.getByRole("button", { name: "Needs you, 1" })).toBeVisible();
-  await tabs.getByRole("button", { name: /^Needs you/ }).tap();
+  await expect(tabs.getByRole("button", { name: "1 Needs you" })).toBeVisible();
+  await tabs.getByRole("button", { name: /Needs you$/ }).tap();
   const card = page.getByRole("listitem").filter({ hasText: "Allow Bash?" });
   await expect(card).toContainText("cargo test -p e2e");
+  await viewTransitionDone(page);
 
   // Past the threshold the label under the card turns solid; letting go allows.
   const cdp = await page.context().newCDPSession(page);
@@ -135,6 +143,7 @@ test("More opens a sheet, and a long-press on a tree row opens its actions", asy
   await expect(tabs.getByRole("button", { name: "Agents" })).toHaveAttribute("aria-current", "page");
   const row = page.getByRole("treeitem", { name: /executor/i }).first();
   await expect(row).toBeVisible();
+  await viewTransitionDone(page);
   const box = (await row.boundingBox())!;
   const cdp = await page.context().newCDPSession(page);
   const at = { x: box.x + box.width / 2, y: box.y + 22 };

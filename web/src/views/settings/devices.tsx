@@ -57,7 +57,7 @@ export function Devices({ api, readOnly, onSignedOut }: { api: Api; readOnly?: b
       {devices?.length === 0 && <p className="text-sm text-muted-foreground">No paired devices.</p>}
       <ItemGroup className="gap-2">
         {devices?.map((d) => (
-          <Item key={d.id} variant="outline" size="sm">
+          <Item key={d.id} role="listitem" variant="outline" size="sm">
             <ItemContent>
               <ItemTitle className="flex-wrap">
                 {d.name}

@@ -1,4 +1,4 @@
-import { PlusIcon, SquareMousePointerIcon } from "lucide-react";
+import { CloudOffIcon, PlusIcon, SearchXIcon, SquareMousePointerIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -21,9 +21,11 @@ import { KEYBOARD_PX, useVisualViewport } from "../pwa";
 import { formatRoute, parseRoute, type Route } from "../route";
 import { Store } from "../store";
 import { AgentPane } from "./AgentPane";
+import { ErrorBoundary } from "./boundary";
+import { focusHeading, viewTransition } from "./motion";
 import { NeedsYou, useAttention } from "./NeedsYou";
 import { Keyboard } from "./shell/command";
-import { crumbsFor, Header } from "./shell/header";
+import { crumbsFor, Header, titleFor } from "./shell/header";
 import { Live } from "./shell/live";
 import { ActionSheet, OfflineBanner, PullToReconnect } from "./shell/phone";
 import { PhoneTabs, type Tab } from "./shell/phone-tabs";
@@ -46,8 +48,12 @@ export function App() {
   let body: React.ReactNode;
   if (error)
     body = (
-      <Empty className="min-h-svh">
+      <main className="flex min-h-svh">
+      <Empty role="alert">
         <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <CloudOffIcon className="text-destructive" />
+          </EmptyMedia>
           <EmptyTitle>Cannot reach the server</EmptyTitle>
           <EmptyDescription className="break-all">{error}</EmptyDescription>
         </EmptyHeader>
@@ -62,6 +68,7 @@ export function App() {
           </Button>
         </EmptyContent>
       </Empty>
+      </main>
     );
   else if (phase === "checking")
     body = (
@@ -100,9 +107,17 @@ function Missing({ text }: { text: string }) {
   return (
     <Empty>
       <EmptyHeader>
+        <EmptyMedia variant="icon">
+          <SearchXIcon />
+        </EmptyMedia>
         <EmptyTitle>Not found</EmptyTitle>
         <EmptyDescription>{text}</EmptyDescription>
       </EmptyHeader>
+      <EmptyContent>
+        <Button variant="outline" render={<a href="#/" />} nativeButton={false}>
+          Go home
+        </Button>
+      </EmptyContent>
     </Empty>
   );
 }
@@ -112,6 +127,9 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
   const conn = useMemo(() => new Conn(store, { url: streamUrl(location), info: navigator.userAgent }), [store]);
   const m = useModel(store);
   const [route, setRoute] = useState<Route>(parseRoute(location.hash));
+  const routeKey = formatRoute(route);
+  const shown = useRef(routeKey);
+  shown.current = routeKey;
   const phone = useMedia(PHONE);
   const wide = useMedia(WIDE);
   const vp = useVisualViewport(phone);
@@ -124,7 +142,11 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
     conn.start();
     const kick = () => conn.kick();
     const visible = () => document.visibilityState === "visible" && conn.kick();
-    const hash = () => setRoute(parseRoute(location.hash));
+    const hash = () => {
+      const r = parseRoute(location.hash);
+      // `go` set the route already; a back or forward button did not.
+      if (formatRoute(r) !== shown.current) viewTransition(() => setRoute(r));
+    };
     window.addEventListener("online", kick);
     document.addEventListener("visibilitychange", visible);
     window.addEventListener("hashchange", hash);
@@ -154,9 +176,22 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
   };
 
   const go = (r: Route) => {
-    location.hash = formatRoute(r);
-    setRoute(r);
+    viewTransition(() => {
+      shown.current = formatRoute(r);
+      location.hash = shown.current;
+      setRoute(r);
+    });
   };
+
+  // A new route moves focus to its heading; the first render keeps it.
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    focusHeading();
+  }, [routeKey]);
   const nav: Nav = {
     openAgent: (agent) => go({ view: "agent", agent, mode: null }),
     openPlan: (plan) => go({ view: "board", plan }),
@@ -166,7 +201,7 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
   const v = m.view;
   const readOnly = m.scope === "read";
   const count = v ? pending(v).length : 0;
-  useAttention(v, route.view === "needs" || (route.view === "home" && phone), () => go({ view: "needs" }));
+  const announce = useAttention(v, route.view === "needs" || (route.view === "home" && phone), () => go({ view: "needs" }));
   const selected = route.view === "agent" ? route.agent : route.view === "term" ? `term-${route.term}` : null;
 
   const tree = v ? (
@@ -259,6 +294,14 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
     }
   };
 
+  const crumbs = crumbsFor(v, route);
+  const title = titleFor(crumbs, route, phone, m.server?.name ?? "cmux");
+  const page = (
+    <ErrorBoundary resetKey={routeKey} what="This view">
+      {body()}
+    </ErrorBoundary>
+  );
+
   const tab: Tab =
     route.view === "home" || route.view === "needs"
       ? "needs"
@@ -299,7 +342,8 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
       <SidebarInset className="min-w-0 overflow-hidden">
         <Header
           m={m}
-          crumbs={crumbsFor(v, route)}
+          title={title}
+          crumbs={crumbs}
           seen={seen.current}
           phone={phone}
           wide={wide}
@@ -312,12 +356,12 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
         />
         {phone && <OfflineBanner status={m.conn} seen={seen.current} onRetry={() => conn.kick()} />}
         {wide && !phone ? (
-          <NeedsLayout count={count} main={body()}>
+          <NeedsLayout count={count} main={page}>
             {v ? <NeedsYou view={v} api={api} nav={nav} readOnly={readOnly} /> : <Loading />}
           </NeedsLayout>
         ) : (
           <div className="flex min-h-0 flex-1">
-            <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-y-contain">{body()}</main>
+            <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-y-contain">{page}</main>
           </div>
         )}
         {phone && !keyboard && <PhoneTabs tab={tab} count={count} go={(t) => (t === "more" ? setMore(true) : go({ view: t }))} />}
@@ -335,6 +379,14 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
           />
         )}
       </SidebarInset>
+      {/* New needs-you items, said politely wherever the inbox is. */}
+      <div aria-live="polite" className="sr-only">
+        {announce}
+      </div>
+      {/* Server errors also toast; this says them at once to a screen reader. */}
+      <div role="alert" aria-live="assertive" className="sr-only">
+        {m.error && m.error.code !== "unauthorized" ? m.error.message : ""}
+      </div>
       <Keyboard view={v} route={route} readOnly={readOnly} api={api} nav={nav} go={go} onSignOut={signOut} />
     </SidebarProvider>
   );

@@ -27,20 +27,21 @@ export function Live({ view, onOpen }: { view: StateView; onOpen: (agent: string
       {[...live]
         .sort((a, b) => rank(a) - rank(b))
         .map((a) => (
-          <Item
-            key={a.id}
-            size="xs"
-            render={<button type="button" onClick={() => onOpen(a.id)} className="text-left" />}
-            className="hover:bg-muted"
-          >
-            <ItemMedia>
-              <StatusIcon status={agentStatus(a)} />
-            </ItemMedia>
-            <ItemContent>
-              <ItemTitle className="break-all">{a.path}</ItemTitle>
-              <ItemDescription>{plans.get(a.id.slice(0, a.id.indexOf("/"))) ?? ""}</ItemDescription>
-            </ItemContent>
-          </Item>
+          <div key={a.id} role="listitem">
+            <Item
+              size="xs"
+              render={<button type="button" onClick={() => onOpen(a.id)} className="text-left" />}
+              className="hover:bg-muted"
+            >
+              <ItemMedia>
+                <StatusIcon status={agentStatus(a)} />
+              </ItemMedia>
+              <ItemContent>
+                <ItemTitle className="break-all">{a.path}</ItemTitle>
+                <ItemDescription>{plans.get(a.id.slice(0, a.id.indexOf("/"))) ?? ""}</ItemDescription>
+              </ItemContent>
+            </Item>
+          </div>
         ))}
     </ItemGroup>
   );

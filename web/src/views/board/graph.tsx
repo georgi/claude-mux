@@ -106,7 +106,7 @@ export function TaskGraph({ tasks, onOpen }: { tasks: TaskView[]; onOpen: (task:
               tabIndex={0}
               aria-label={`${t.id} ${t.title}, ${st.label}`}
               transform={`translate(${n.x},${n.y})`}
-              className="group cursor-pointer outline-none"
+              className="group cursor-pointer outline-none focus-visible:[&>rect]:stroke-ring focus-visible:[&>rect]:stroke-[3]"
               onClick={open}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
@@ -120,7 +120,7 @@ export function TaskGraph({ tasks, onOpen }: { tasks: TaskView[]; onOpen: (task:
                 height={NODE_H}
                 rx={10}
                 strokeWidth={1.5}
-                className={cn(STATUS_NODE[st.token], "group-hover:stroke-[2.5] group-focus-visible:stroke-[3]")}
+                className={cn(STATUS_NODE[st.token], "group-hover:stroke-[2.5]")}
               />
               <text x={12} y={21} className="fill-muted-foreground font-mono text-[11px]">
                 {t.id} · {st.label}

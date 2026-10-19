@@ -36,6 +36,7 @@ import {
   perform,
   prUrl,
 } from "../needs";
+import { useEnter } from "./motion";
 
 interface Props {
   view: StateView;
@@ -48,8 +49,8 @@ interface Props {
   now?: number;
 }
 
-/** How long an answered card takes to collapse; matches `duration-150` below. */
-export const EXIT_MS = 150;
+/** How long an answered card takes to collapse; matches `--duration-base` (index.css). */
+export const EXIT_MS = 200;
 
 // When this device last saw an item answered, for the empty state. Kept in
 // localStorage so a reload still shows it; it is a convenience, not state.
@@ -123,6 +124,7 @@ export function NeedsYou({ view, api, nav, readOnly, phone, now }: Props) {
   const [active, setActive] = useState<number | null>(null);
   const [inside, setInside] = useState(false);
   const cards = useRef(new Map<number, HTMLDivElement>());
+  const enter = useEnter();
   const listRef = useRef<HTMLDivElement>(null);
 
   const visible = needs(view).filter((n) => !gone.has(n.item.id));
@@ -239,6 +241,7 @@ export function NeedsYou({ view, api, nav, readOnly, phone, now }: Props) {
                 hints={inside && current?.item.id === n.item.id}
                 onAct={act}
                 setRef={(el) => {
+                  enter(n.item.id, el);
                   if (el) cards.current.set(n.item.id, el);
                   else cards.current.delete(n.item.id);
                 }}
@@ -362,7 +365,7 @@ function NeedCard({ need, view, now, readOnly, phone, leaving, tabbable, hints, 
       tabIndex={tabbable ? 0 : -1}
       onKeyDown={onKeyDown}
       className={cn(
-        "grid rounded-lg outline-none transition-[grid-template-rows,opacity,scale] duration-150 ease-out focus-visible:ring-2 focus-visible:ring-ring",
+        "grid rounded-lg outline-none transition-[grid-template-rows,opacity,scale] duration-(--duration-base) ease-out focus-visible:ring-2 focus-visible:ring-ring",
         leaving ? "pointer-events-none grid-rows-[0fr] scale-98 opacity-0" : "grid-rows-[1fr]",
       )}
     >
@@ -389,14 +392,20 @@ function NeedCard({ need, view, now, readOnly, phone, leaving, tabbable, hints, 
             <ItemMedia variant="icon">
               <KindIcon need={need} />
             </ItemMedia>
-            <ItemContent
-              className="min-w-0"
-              onClick={phone ? () => setSheet("details") : undefined}
-              role={phone ? "button" : undefined}
-              aria-label={phone ? `Details: ${need.title}` : undefined}
-            >
+            {/* On a phone a tap anywhere opens the details; the title is the button for the keyboard. */}
+            <ItemContent className="min-w-0" onClick={phone ? () => setSheet("details") : undefined}>
               <ItemTitle className="w-full">
-                <span className="min-w-0 truncate">{need.title}</span>
+                {phone ? (
+                  <button
+                    type="button"
+                    aria-haspopup="dialog"
+                    className="min-w-0 truncate rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {need.title}
+                  </button>
+                ) : (
+                  <span className="min-w-0 truncate">{need.title}</span>
+                )}
                 <span className="ml-auto shrink-0 font-normal text-muted-foreground">
                   <span className="font-mono">{need.who}</span> ·{" "}
                   <time className="counter">{relativeTime(item.created, now)}</time>
@@ -647,10 +656,12 @@ async function badgeFavicon(on: boolean): Promise<void> {
  * title, a dot on the favicon, and a toast with an Open action for each new
  * item while `inInbox` is false (only kinds the notification settings allow).
  */
-export function useAttention(view: StateView | null, inInbox: boolean, openInbox: () => void): void {
+/** Returns the text for a polite live region: the newest needs-you items. */
+export function useAttention(view: StateView | null, inInbox: boolean, openInbox: () => void): string {
   const list = view ? pending(view) : [];
   const count = list.length;
   const seen = useRef<Set<number> | null>(null);
+  const [announce, setAnnounce] = useState("");
 
   useEffect(() => {
     document.title = count > 0 ? `(${count}) cmux` : "cmux";
@@ -668,6 +679,8 @@ export function useAttention(view: StateView | null, inInbox: boolean, openInbox
     seen.current = now;
     if (!before) return;
     if ([...before].some((id) => !now.has(id))) markAnswered();
+    const fresh = list.filter((i) => !before.has(i.id));
+    if (fresh.length) setAnnounce(`Needs you: ${fresh.map((i) => describe(view, i).title).join("; ")}`);
     if (inInbox) return;
     const on = loadNotify();
     for (const i of list) {
@@ -682,4 +695,5 @@ export function useAttention(view: StateView | null, inInbox: boolean, openInbox
       });
     }
   }, [ids]);
+  return announce;
 }
