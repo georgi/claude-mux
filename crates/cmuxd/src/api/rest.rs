@@ -20,7 +20,7 @@ use cmux_proto::api::{
     MessageReq, PatchTaskReq, PlanBody, RepoInfo, ReposResp, SettingsResp, SpawnTaskReq,
     StatusResp, TranscriptResp, route,
 };
-use cmux_proto::view::{StateView, TaskDetail};
+use cmux_proto::view::{ChatEntry, StateView, TaskDetail};
 
 use super::auth::Principal;
 use super::{ApiError, ApiResult, AppState};
@@ -46,6 +46,10 @@ pub fn routes() -> Router<AppState> {
         .route("/v1/agents/{agent}/stop", post(stop_agent))
         .route("/v1/agents/{agent}/resume", post(resume_agent))
         .route("/v1/agents/{agent}/transcript", get(transcript))
+        .route(
+            "/v1/agents/{agent}/transcript/{uuid}",
+            get(transcript_entry),
+        )
         .route(route::ITEMS_ANSWER, post(answer))
         .route(route::REPOS, get(list_repos).post(add_repo))
         .route(route::SETTINGS, get(settings))
@@ -440,6 +444,20 @@ async fn transcript(
         .await
         .ok_or_else(|| ApiError::not_found(format!("error: no agent {agent}")))?;
     Ok(Json(TranscriptResp { agent, entries }))
+}
+
+/// One entry of the agent's conversation with its text uncut (1 MB at most).
+async fn transcript_entry(
+    State(app): State<AppState>,
+    Path((agent, uuid)): Path<(String, String)>,
+) -> ApiResult<Json<ChatEntry>> {
+    let agent: AgentId = parse("agent", &agent)?;
+    app.transcripts
+        .entry(&app.actor, &agent, &uuid)
+        .await
+        .ok_or_else(|| ApiError::not_found(format!("error: no agent {agent}")))?
+        .map(Json)
+        .ok_or_else(|| ApiError::not_found(format!("error: no entry {uuid} for {agent}")))
 }
 
 async fn stop_agent(

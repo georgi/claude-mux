@@ -230,10 +230,16 @@ Scrollback beyond the screen is fetched on demand, with `GET /v1/terminals/:id/s
 This serves the chat view. For each agent that has at least one chat subscriber, the server tails `~/.claude/projects/<dir>/<session_id>.jsonl`. It polls the file size every 500 ms and parses only the bytes it has not yet read.
 
 Each line becomes a `ChatEntry`:
-- `{uuid, ts, role: user|assistant, kind: text|tool_call|tool_result, text, tool?: {name, summary}}`;
-- tool results are cut to 400 characters, with the full text on request;
-- thinking blocks are skipped;
+- `{uuid, ts, role: user|assistant, kind: text|thinking|tool_call|tool_result, text, tool?: {name, summary, input?}, call_id?, is_error, full_len?, model?}`;
+- `call_id` is the `tool_use` id. It is on a `tool_call` and on the `tool_result` that answers it, so a client pairs the two by id. Clients fall back to the tool name when it is absent (older servers);
+- `is_error` (default `false`) copies the `is_error` flag of a `tool_result`;
+- `thinking` entries hold the text of assistant thinking blocks. Empty (redacted) thinking blocks are skipped;
+- `tool.input` is on a `tool_call` of a known tool. It keeps only the fields a view draws: `Bash` {command, description}, `Edit` {file_path, old_string, new_string}, `MultiEdit` {file_path, edits[]}, `Write` {file_path, content}, `Read` {file_path, offset, limit}, `Grep`/`Glob` {pattern, path}, `WebFetch` {url}, `WebSearch` {query}, `Task` {description, subagent_type}, `TodoWrite` {todos[]}. Each string is cut to 20 KB and each list to 100 items; the object then has `truncated: true`. MCP and other tools have no `input`;
+- tool input and output in `text` are cut to 400 characters. `full_len` then gives the uncut length in characters. `GET /agents/:id/transcript/:uuid` reads that one entry again from the file and returns it uncut (1 MB at most);
+- `model` is on assistant `text` entries when the line names the model;
 - token usage is summed into `agent.tokens`.
+
+All the new fields are optional or have a default, so older clients ignore them.
 
 The parsing reuses claude-mux's `history.rs` rules: skip meta lines, skip `<`-wrapped injections, and read titles. The same code produces the implicit report (the last assistant text) when an agent exits without reporting.
 
@@ -276,7 +282,7 @@ The same API is served on the TCP listener (remote clients, token required) and 
 | `GET/PUT /plans/:id/body` | `plan.md` |
 | `POST /plans/:id/tasks` · `GET/PATCH /tasks/:plan/:task` | Tasks, including body, notes and criteria |
 | `POST /agents/:id/messages {text, steer}` | Queue or steer |
-| `POST /agents/:id/{stop,resume}` · `GET /agents/:id/transcript?after=` | Agent control, chat history |
+| `POST /agents/:id/{stop,resume}` · `GET /agents/:id/transcript?after=` · `GET /agents/:id/transcript/:uuid` | Agent control, chat history, one entry uncut |
 | `POST /items/:id/answer {action, text?}` | `allow`, `allow_always`, `deny`, `reply`, `accept`, `send_back`, `dismiss` |
 | `POST /terminals {kind, cwd, cmd?}` · `DELETE /terminals/:id` · `GET /terminals/:id/scrollback?lines=` | Loose terminals (shell, lazygit, plain Claude) and helper panes (`$EDITOR`, diff) |
 | `GET/POST /repos` | Repositories known to the server; `POST` with a URL runs `git clone` |

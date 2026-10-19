@@ -1,14 +1,14 @@
 //! Transcript lines as chat entries (architecture 5.3), and an incremental
 //! reader that follows one transcript file as Claude appends to it.
 //!
-//! The line rules are shared with the session picker: meta lines, thinking
-//! blocks and `<`-wrapped injections (system reminders, slash-command echoes,
+//! The line rules are shared with the session picker: meta lines, empty
+//! (redacted) thinking blocks and `<`-wrapped injections (system reminders, slash-command echoes,
 //! local command output) are skipped, and a `<pasted_content>` wrapper is
 //! unwrapped, so a pasted digest pointer reads as the one line it is.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use cmux_proto::view::{ChatEntry, ChatKind, ChatRole, ChatTool, Timestamp, TokenUsage};
@@ -19,6 +19,15 @@ pub const TOOL_RESULT_CHARS: usize = 400;
 
 /// Longest input summary shown to humans, in chars including the `…`.
 pub const SUMMARY_CHARS: usize = 60;
+
+/// Longest text of one entry fetched on its own ([`find_entry`]), in bytes.
+pub const FULL_BYTES: usize = 1 << 20;
+
+/// Longest string in a structured tool input ([`ChatTool::input`]), in bytes.
+pub const INPUT_BYTES: usize = 20 * 1024;
+
+/// Most items kept of a list in a structured tool input (`edits`, `todos`).
+pub const INPUT_ITEMS: usize = 100;
 
 fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
@@ -55,6 +64,78 @@ pub fn cut(s: &str, max: usize) -> String {
     }
     let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
     out.push('…');
+    out
+}
+
+/// `s` cut to at most `max` bytes on a char boundary, and whether it was cut.
+pub fn cap(s: &str, max: usize) -> (String, bool) {
+    if s.len() <= max {
+        return (s.to_string(), false);
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    (s[..end].to_string(), true)
+}
+
+/// The fields of `input` a view draws for the known tools, each string cut
+/// to [`INPUT_BYTES`] and each list to [`INPUT_ITEMS`]. `"truncated": true`
+/// when anything was cut. `None` for other tools (MCP tools among them).
+pub fn structured_input(tool: &str, input: &Value) -> Option<Value> {
+    let keys: &[&str] = match tool {
+        "Bash" => &["command", "description"],
+        "Edit" => &["file_path", "old_string", "new_string"],
+        "MultiEdit" => &["file_path", "edits"],
+        "Write" => &["file_path", "content"],
+        "Read" => &["file_path", "offset", "limit"],
+        "Grep" | "Glob" => &["pattern", "path"],
+        "WebFetch" => &["url"],
+        "WebSearch" => &["query"],
+        "Task" => &["description", "subagent_type"],
+        "TodoWrite" => &["todos"],
+        _ => return None,
+    };
+    let mut truncated = false;
+    let mut out = pick(input, keys, &mut truncated);
+    if truncated {
+        out.insert("truncated".into(), Value::Bool(true));
+    }
+    Some(Value::Object(out))
+}
+
+/// The scalar fields `keys` of `v`, and the lists `edits` and `todos` with
+/// the fields of their items.
+fn pick(v: &Value, keys: &[&str], truncated: &mut bool) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    for &k in keys {
+        let picked = match (k, v.get(k)) {
+            (_, None | Some(Value::Null)) => continue,
+            (_, Some(Value::String(s))) => {
+                let (s, cut) = cap(s, INPUT_BYTES);
+                *truncated |= cut;
+                Value::String(s)
+            }
+            (_, Some(n @ (Value::Number(_) | Value::Bool(_)))) => n.clone(),
+            ("edits" | "todos", Some(Value::Array(items))) => {
+                let fields: &[&str] = if k == "edits" {
+                    &["old_string", "new_string", "replace_all"]
+                } else {
+                    &["content", "status", "activeForm"]
+                };
+                *truncated |= items.len() > INPUT_ITEMS;
+                Value::Array(
+                    items
+                        .iter()
+                        .take(INPUT_ITEMS)
+                        .map(|i| Value::Object(pick(i, fields, truncated)))
+                        .collect(),
+                )
+            }
+            _ => continue,
+        };
+        out.insert(k.to_string(), picked);
+    }
     out
 }
 
@@ -167,8 +248,37 @@ fn result_text(content: &Value) -> String {
 }
 
 /// Parses one transcript line. `tools` remembers tool calls for the results
-/// that follow them.
+/// that follow them. Tool input and output are cut to [`TOOL_RESULT_CHARS`].
 pub fn parse_line(line: &str, tools: &mut ToolNames) -> Line {
+    parse_line_cut(line, tools, Cut::Stream)
+}
+
+/// How long the text of a tool entry may be.
+#[derive(Clone, Copy)]
+enum Cut {
+    /// [`TOOL_RESULT_CHARS`] chars, for the stream and pages.
+    Stream,
+    /// [`FULL_BYTES`] bytes, for one entry on its own.
+    Full,
+}
+
+impl Cut {
+    /// `text` cut, and its length in chars when it was cut.
+    fn apply(self, text: &str) -> (String, Option<u32>) {
+        let (out, cut) = match self {
+            Cut::Stream => {
+                let out = cut(text, TOOL_RESULT_CHARS);
+                let was_cut = out.len() != text.len();
+                (out, was_cut)
+            }
+            Cut::Full => cap(text, FULL_BYTES),
+        };
+        let len = cut.then(|| u32::try_from(text.chars().count()).unwrap_or(u32::MAX));
+        (out, len)
+    }
+}
+
+fn parse_line_cut(line: &str, tools: &mut ToolNames, limit: Cut) -> Line {
     let mut out = Line::default();
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         return out;
@@ -195,21 +305,38 @@ pub fn parse_line(line: &str, tools: &mut ToolNames) -> Line {
     }
     let uuid = str_of(&v, "uuid").unwrap_or("").to_string();
     let ts = str_of(&v, "timestamp").map_or(0, parse_ts);
-    let mut push = |kind: ChatKind, text: String, tool: Option<ChatTool>| {
-        let n = out.entries.len();
-        out.entries.push(ChatEntry {
-            uuid: if n == 0 {
-                uuid.clone()
-            } else {
-                format!("{uuid}#{n}")
-            },
-            ts,
-            role,
-            kind,
-            text,
-            tool,
-        });
+    let model = match role {
+        ChatRole::Assistant => str_of(msg, "model").map(str::to_string),
+        ChatRole::User => None,
     };
+    let entry = |n: usize, kind: ChatKind, text: String| ChatEntry {
+        uuid: if n == 0 {
+            uuid.clone()
+        } else {
+            format!("{uuid}#{n}")
+        },
+        ts,
+        role,
+        kind,
+        model: if kind == ChatKind::Text {
+            model.clone()
+        } else {
+            None
+        },
+        text,
+        tool: None,
+        call_id: None,
+        is_error: false,
+        full_len: None,
+    };
+    // Pushes an entry and yields it, for the tool fields.
+    macro_rules! push {
+        ($kind:expr, $text:expr) => {{
+            let e = entry(out.entries.len(), $kind, $text);
+            out.entries.push(e);
+            out.entries.last_mut().expect("just pushed")
+        }};
+    }
     let blocks = match msg.get("content") {
         Some(Value::String(s)) => {
             let text = match role {
@@ -217,7 +344,7 @@ pub fn parse_line(line: &str, tools: &mut ToolNames) -> Line {
                 ChatRole::Assistant => Some(s.trim().to_string()).filter(|t| !t.is_empty()),
             };
             if let Some(t) = text {
-                push(ChatKind::Text, t, None);
+                push!(ChatKind::Text, t);
             }
             return out;
         }
@@ -228,41 +355,84 @@ pub fn parse_line(line: &str, tools: &mut ToolNames) -> Line {
         match (role, str_of(b, "type")) {
             (ChatRole::User, Some("text")) => {
                 if let Some(t) = str_of(b, "text").and_then(human_text) {
-                    push(ChatKind::Text, t, None);
+                    push!(ChatKind::Text, t);
                 }
             }
             (ChatRole::Assistant, Some("text")) => {
                 let t = str_of(b, "text").unwrap_or("").trim();
                 if !t.is_empty() {
-                    push(ChatKind::Text, t.to_string(), None);
+                    push!(ChatKind::Text, t.to_string());
+                }
+            }
+            (ChatRole::Assistant, Some("thinking")) => {
+                let t = str_of(b, "thinking").unwrap_or("").trim();
+                if !t.is_empty() {
+                    push!(ChatKind::Thinking, t.to_string());
                 }
             }
             (ChatRole::Assistant, Some("tool_use")) => {
                 let name = str_of(b, "name").unwrap_or("").to_string();
-                let full = match_input(&name, b.get("input").unwrap_or(&Value::Null));
+                let input = b.get("input").unwrap_or(&Value::Null);
+                let full = match_input(&name, input);
                 let tool = ChatTool {
                     summary: summarize(&full),
+                    input: None,
                     name,
                 };
-                if let Some(id) = str_of(b, "id") {
-                    tools.insert(id.to_string(), tool.clone());
+                let call_id = str_of(b, "id").map(str::to_string);
+                if let Some(id) = &call_id {
+                    tools.insert(id.clone(), tool.clone());
                 }
-                push(
-                    ChatKind::ToolCall,
-                    cut(&full, TOOL_RESULT_CHARS),
-                    Some(tool),
-                );
+                let (text, full_len) = limit.apply(&full);
+                let e = push!(ChatKind::ToolCall, text);
+                e.tool = Some(ChatTool {
+                    input: structured_input(&tool.name, input),
+                    ..tool
+                });
+                e.call_id = call_id;
+                e.full_len = full_len;
             }
             (ChatRole::User, Some("tool_result")) => {
                 let text = result_text(b.get("content").unwrap_or(&Value::Null));
-                let tool = str_of(b, "tool_use_id").and_then(|id| tools.get(id).cloned());
-                push(ChatKind::ToolResult, cut(&text, TOOL_RESULT_CHARS), tool);
+                let call_id = str_of(b, "tool_use_id").map(str::to_string);
+                let (text, full_len) = limit.apply(&text);
+                let e = push!(ChatKind::ToolResult, text);
+                e.tool = call_id.as_ref().and_then(|id| tools.get(id).cloned());
+                e.call_id = call_id;
+                e.is_error = b.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                e.full_len = full_len;
             }
-            // Thinking, redacted thinking, images, documents.
+            // Redacted thinking, images, documents.
             _ => {}
         }
     }
     out
+}
+
+/// The entry `uuid` of the transcript at `path` with its text uncut (at
+/// most [`FULL_BYTES`]); `full_len` is set only when even that was cut.
+/// `None` when no line holds it.
+pub fn find_entry(path: &Path, uuid: &str) -> std::io::Result<Option<ChatEntry>> {
+    let line_uuid = uuid.split_once('#').map_or(uuid, |(u, _)| u);
+    let needle = format!("\"uuid\":\"{line_uuid}\"");
+    let mut tools = ToolNames::new();
+    for line in BufReader::new(File::open(path)?).split(b'\n') {
+        let line = line?;
+        let line = String::from_utf8_lossy(&line);
+        if line.trim().is_empty() {
+            continue;
+        }
+        if !line_uuid.is_empty() && line.contains(&needle) {
+            let parsed = parse_line_cut(&line, &mut tools, Cut::Full);
+            if let Some(e) = parsed.entries.into_iter().find(|e| e.uuid == uuid) {
+                return Ok(Some(e));
+            }
+        } else if line.contains("\"tool_use\"") {
+            // Only for the tool names of later results.
+            parse_line(&line, &mut tools);
+        }
+    }
+    Ok(None)
 }
 
 /// Follows one transcript file: each [`read_new`](Self::read_new) parses the

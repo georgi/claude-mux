@@ -13,6 +13,9 @@
 //!   also sends the engine one `TokensUpdated` when the sums or the last
 //!   assistant text changed;
 //! - for `GET /agents/:id/transcript` and a new `sub_chat`.
+//!
+//! `GET /agents/:id/transcript/:uuid` reads the one entry again from the
+//! file, uncut ([`Transcripts::entry`]).
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -22,6 +25,7 @@ use std::time::Duration;
 use cmux_core::engine::{Command, RunnerEvent};
 use cmux_core::ids::AgentId;
 use cmux_core::model::{State, TokenUsage};
+use cmux_history::chat::find_entry;
 use cmux_history::{TranscriptReader, transcript_file};
 use cmux_proto::view::ChatEntry;
 use tokio::sync::{broadcast, watch};
@@ -64,6 +68,8 @@ fn add(sum: &mut TokenUsage, u: TokenUsage) {
 /// One agent's conversation so far.
 struct Tail {
     reader: Option<TranscriptReader>,
+    /// Files finished before the current one (`/clear`), oldest first.
+    done: Vec<PathBuf>,
     entries: VecDeque<ChatEntry>,
     /// Tokens of the files finished before the current one (`/clear`).
     base: TokenUsage,
@@ -78,6 +84,7 @@ impl Tail {
     fn new() -> Tail {
         Tail {
             reader: None,
+            done: Vec::new(),
             entries: VecDeque::new(),
             base: TokenUsage::default(),
             last_text: None,
@@ -106,6 +113,7 @@ impl Tail {
                 self.last_text = Some(t);
             }
             add(&mut self.base, old.tokens);
+            self.done.push(old.path().to_path_buf());
         }
         let reader = self
             .reader
@@ -224,6 +232,41 @@ impl Transcripts {
             all.drain(..all.len().saturating_sub(limit));
         }
         Some(all)
+    }
+
+    /// `GET /agents/:id/transcript/:uuid`: the entry `uuid` with its text
+    /// uncut, from the current file or one finished before it. `None` when
+    /// the agent does not exist; `Some(None)` when no file holds the entry.
+    pub async fn entry(
+        self: &Arc<Self>,
+        actor: &ActorHandle,
+        agent: &AgentId,
+        uuid: &str,
+    ) -> Option<Option<ChatEntry>> {
+        let a = agent.clone();
+        let Ok(Some(path)) = actor.query(move |s| path_of(s, &a)).await else {
+            return None;
+        };
+        let mut files = self
+            .lock()
+            .get(agent)
+            .map(|t| t.done.clone())
+            .unwrap_or_default();
+        files.push(path);
+        let uuid = uuid.to_string();
+        let found = tokio::task::spawn_blocking(move || {
+            files.iter().rev().find_map(|f| match find_entry(f, &uuid) {
+                Ok(e) => e,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => {
+                    tracing::warn!(target: "transcript", "cannot read {}: {e}", f.display());
+                    None
+                }
+            })
+        })
+        .await
+        .unwrap_or(None);
+        Some(found)
     }
 
     /// Starts a chat subscription: reads what is new, then hands out the

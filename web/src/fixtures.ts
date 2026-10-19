@@ -95,7 +95,7 @@ export function state(over: Partial<StateView> = {}): StateView {
 }
 
 export function entry(uuid: string, over: Partial<ChatEntry> = {}): ChatEntry {
-  return { uuid, ts: 1000, role: "assistant", kind: "text", text: `text ${uuid}`, ...over };
+  return { uuid, ts: 1000, role: "assistant", kind: "text", text: `text ${uuid}`, is_error: false, ...over };
 }
 
 /** Every `Api` call, in order, as `[method, ...args]`. */
@@ -118,6 +118,7 @@ export function fakeApi(over: Partial<Api> = {}): Api & { calls: Call[] } {
     plan: rec("plan", undefined),
     createPlan: rec("createPlan", { id: "P-20261018-new" }),
     transcript: rec("transcript", { agent: "", entries: [] }),
+    entry: rec("entry", entry("full")),
     repos: rec("repos", { repos: [] }),
     addRepo: rec("addRepo", { path: "/srv/repos/x", base_branch: "main", remote_url: null }),
     devices: rec("devices", { devices: [] }),

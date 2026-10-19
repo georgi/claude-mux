@@ -372,7 +372,12 @@ mod tests {
                 tool: Some(crate::view::ChatTool {
                     name: "Bash".into(),
                     summary: "cargo test".into(),
+                    input: Some(serde_json::json!({"command": "cargo test"})),
                 }),
+                call_id: Some("toolu_1".into()),
+                is_error: false,
+                full_len: None,
+                model: None,
             }],
         });
         assert!(

@@ -4,6 +4,7 @@
 import type {
   AddRepoReq,
   AnswerReq,
+  ChatEntry,
   CreatePlanReq,
   Created,
   DevicesResp,
@@ -111,6 +112,8 @@ export interface Api {
   plan(plan: string, action: "accept" | "pause" | "resume" | "cancel"): Promise<void>;
   createPlan(req: CreatePlanReq): Promise<Created>;
   transcript(agent: string, after?: string): Promise<TranscriptResp>;
+  /** One transcript entry with its text uncut (`full_len` said it was cut). */
+  entry(agent: string, uuid: string): Promise<ChatEntry>;
   repos(): Promise<ReposResp>;
   addRepo(req: AddRepoReq): Promise<RepoInfo>;
   devices(): Promise<DevicesResp>;
@@ -141,6 +144,7 @@ export const api: Api = {
   createPlan: (req) => json(once("POST", "/v1/plans", req)),
   transcript: (agent, after) =>
     json(call("GET", `/v1/agents/${seg(agent)}/transcript${after ? `?after=${seg(after)}` : ""}`)),
+  entry: (agent, uuid) => json(call("GET", `/v1/agents/${seg(agent)}/transcript/${seg(uuid)}`)),
   repos: () => json(call("GET", "/v1/repos")),
   addRepo: (req) => json(once("POST", "/v1/repos", req)),
   devices: () => json(call("GET", "/v1/devices")),

@@ -35,6 +35,10 @@
 //!   `PERM allow`, `PERM deny: <message>` or `PERM none`. A deny from
 //!   `PreToolUse` ends the step first: `PRE deny: <reason>`
 //! - `{"say": text}`: an assistant text line in the transcript
+//! - `{"think": text}`: an assistant thinking line in the transcript
+//! - `{"call": name, "input": {..}, "result": text, "is_error": bool}`: a
+//!   `tool_use` line and its `tool_result` in the transcript, with no MCP call
+//!   (for built-in tools such as `Edit` or `Bash`)
 //! - `{"sleep_ms": n}`, `{"wait_file": path}`, `{"print": text}`,
 //!   `{"exit": code}` (after `SessionEnd`)
 
@@ -253,13 +257,18 @@ impl Transcript {
         self.assistant(json!([{"type": "text", "text": text}]));
     }
 
-    fn tool(&mut self, name: &str, args: &Value, result: &str) {
+    fn think(&mut self, text: &str) {
+        self.assistant(json!([{"type": "thinking", "thinking": text, "signature": "ZmFrZQ=="}]));
+    }
+
+    fn tool(&mut self, name: &str, args: &Value, result: &str, is_error: bool) {
         let id = format!("toolu_{}", self.next + 1);
         self.assistant(json!([{"type": "tool_use", "id": id, "name": name, "input": args}]));
         self.write(
             "user",
             json!({"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": id, "content": result}]}),
+                {"type": "tool_result", "tool_use_id": id, "content": result,
+                 "is_error": is_error}]}),
         );
     }
 }
@@ -369,10 +378,16 @@ impl Session {
         if let Some(name) = step["tool"].as_str() {
             let text = self.mcp.call(name, &step["args"]);
             self.transcript
-                .tool(&format!("mcp__cmux__{name}"), &step["args"], &text);
+                .tool(&format!("mcp__cmux__{name}"), &step["args"], &text, false);
             say(format!("TOOL {name}: {text}"));
+        } else if let Some(name) = step["call"].as_str() {
+            let result = step["result"].as_str().unwrap_or("");
+            let is_error = step["is_error"].as_bool().unwrap_or(false);
+            self.transcript.tool(name, &step["input"], result, is_error);
         } else if let Some(text) = step["say"].as_str() {
             self.transcript.say(text);
+        } else if let Some(text) = step["think"].as_str() {
+            self.transcript.think(text);
         } else if let Some(p) = step.get("permission") {
             self.permission(p);
         } else if let Some(ms) = step["sleep_ms"].as_u64() {

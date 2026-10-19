@@ -798,8 +798,9 @@ pub fn tail(ep: &Endpoint, term: TermId, out: &mut dyn Write) -> VResult<()> {
 }
 
 /// One chat entry for a terminal: `> ` before what the user wrote, `* ` before
-/// a tool call, `  = ` before a tool's output (one line, cut), and the
-/// assistant's text as is. Later lines of a text are indented by two spaces.
+/// a tool call, `  = ` before a tool's output (`  ! ` for an error), `  ~ `
+/// before thinking (each one line, cut), and the assistant's text as is.
+/// Later lines of a text are indented by two spaces.
 pub fn chat_line(e: &ChatEntry) -> String {
     let indent = |s: &str| {
         let lines: Vec<String> = s
@@ -820,7 +821,9 @@ pub fn chat_line(e: &ChatEntry) -> String {
             Some(t) => format!("* {} {}", t.name, t.summary),
             None => format!("* {}", one_line(&e.text, 100)),
         },
+        (_, ChatKind::ToolResult) if e.is_error => format!("  ! {}", one_line(&e.text, 100)),
         (_, ChatKind::ToolResult) => format!("  = {}", one_line(&e.text, 100)),
+        (_, ChatKind::Thinking) => format!("  ~ {}", one_line(&e.text, 100)),
     }
 }
 
@@ -1012,7 +1015,12 @@ mod tests {
             tool: tool.map(|(n, s)| cmux_proto::view::ChatTool {
                 name: n.into(),
                 summary: s.into(),
+                input: None,
             }),
+            call_id: None,
+            is_error: false,
+            full_len: None,
+            model: None,
         };
         use ChatKind::*;
         use ChatRole::*;

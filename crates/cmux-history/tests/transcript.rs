@@ -5,7 +5,9 @@
 use std::io::Write;
 
 use cmux_history::TranscriptReader;
-use cmux_history::chat::{TOOL_RESULT_CHARS, ToolNames, parse_line};
+use cmux_history::chat::{
+    FULL_BYTES, INPUT_BYTES, TOOL_RESULT_CHARS, ToolNames, find_entry, parse_line, structured_input,
+};
 use cmux_proto::view::{ChatEntry, ChatKind, ChatRole, TokenUsage};
 
 const SESSION: &str = include_str!("fixtures/session.jsonl");
@@ -30,6 +32,9 @@ fn line(kind: &str) -> &'static str {
         "ai_title",
         "last_prompt",
         "clear",
+        "thinking_text",
+        "edit_call",
+        "edit_error",
     ]
     .iter()
     .position(|k| *k == kind)
@@ -153,6 +158,9 @@ fn the_whole_session_in_one_read() {
             ChatKind::Text,
             ChatKind::Text,
             ChatKind::Text,
+            ChatKind::Thinking,
+            ChatKind::ToolCall,
+            ChatKind::ToolResult,
         ]
     );
     assert_eq!(
@@ -166,14 +174,20 @@ fn the_whole_session_in_one_read() {
             .unwrap()
             .1
     };
-    let (a, b, c) = (usage("thinking"), usage("assistant"), usage("assistant_2"));
+    // So does msg_D across the thinking and the Edit line.
+    let (a, b, c, d) = (
+        usage("thinking"),
+        usage("assistant"),
+        usage("assistant_2"),
+        usage("thinking_text"),
+    );
     assert_eq!(
         r.tokens,
         TokenUsage {
-            input: a.input + b.input + c.input,
-            output: a.output + b.output + c.output,
-            cache_read: a.cache_read + b.cache_read + c.cache_read,
-            cache_write: a.cache_write + b.cache_write + c.cache_write,
+            input: a.input + b.input + c.input + d.input,
+            output: a.output + b.output + c.output + d.output,
+            cache_read: a.cache_read + b.cache_read + c.cache_read + d.cache_read,
+            cache_write: a.cache_write + b.cache_write + c.cache_write + d.cache_write,
         }
     );
 }
@@ -231,4 +245,174 @@ fn read_new_follows_a_growing_file() {
     let got = r.read_new().unwrap();
     assert_eq!(got.len(), 1);
     assert!(got[0].text.starts_with("[cmux] 2 new messages"));
+}
+
+#[test]
+fn results_pair_with_their_call_by_id() {
+    let mut tools = ToolNames::new();
+    let call = parse_line(line("tool_use"), &mut tools).entries;
+    let result = parse_line(line("tool_result"), &mut tools).entries;
+    assert_eq!(call[0].call_id.as_deref(), Some("toolu_A"));
+    assert_eq!(result[0].call_id, call[0].call_id);
+    // The id is there even when the call was never read.
+    assert_eq!(parse("tool_result")[0].call_id.as_deref(), Some("toolu_A"));
+    // Text and thinking have none.
+    assert_eq!(parse("user")[0].call_id, None);
+    assert_eq!(parse("thinking_text")[0].call_id, None);
+    // Two calls in flight: each result finds its own.
+    let edit = parse_line(line("edit_call"), &mut tools).entries;
+    let err = parse_line(line("edit_error"), &mut tools).entries;
+    assert_eq!(edit[0].call_id.as_deref(), Some("toolu_B"));
+    assert_eq!(err[0].call_id.as_deref(), Some("toolu_B"));
+    assert_eq!(err[0].tool.as_ref().unwrap().name, "Edit");
+    // A result does not repeat the call's structured input.
+    assert_eq!(err[0].tool.as_ref().unwrap().input, None);
+}
+
+#[test]
+fn error_results_are_flagged() {
+    let err = parse("edit_error");
+    assert_eq!(err.len(), 1);
+    assert_eq!(err[0].kind, ChatKind::ToolResult);
+    assert!(err[0].is_error);
+    assert!(err[0].text.contains("String to replace not found"));
+    // `"is_error": false` and no flag at all are both not an error.
+    assert!(!parse("tool_result")[0].is_error);
+    assert!(!parse("edit_call")[0].is_error);
+}
+
+#[test]
+fn thinking_with_text_is_an_entry() {
+    let t = parse("thinking_text");
+    assert_eq!(t.len(), 1);
+    assert_eq!(
+        (t[0].role, t[0].kind),
+        (ChatRole::Assistant, ChatKind::Thinking)
+    );
+    assert!(
+        t[0].text
+            .starts_with("The flake needs a per-test temp dir.")
+    );
+    assert_eq!(t[0].full_len, None);
+    // Thinking is not the turn's last text.
+    let mut r = TranscriptReader::new("/x");
+    r.feed(format!("{}\n{}\n", line("assistant"), line("thinking_text")).as_bytes());
+    assert!(r.last_text.as_deref().unwrap().starts_with("All 40"));
+}
+
+#[test]
+fn assistant_text_names_its_model() {
+    assert_eq!(
+        parse("assistant")[0].model.as_deref(),
+        Some("claude-opus-5-5")
+    );
+    assert_eq!(parse("user")[0].model, None);
+    assert_eq!(parse("tool_use")[0].model, None);
+    assert_eq!(parse("thinking_text")[0].model, None);
+}
+
+#[test]
+fn edit_calls_carry_their_structured_input() {
+    let e = parse("edit_call");
+    assert_eq!(e.len(), 1);
+    assert_eq!(e[0].text, "/work/demo/src/parser.rs");
+    let tool = e[0].tool.as_ref().unwrap();
+    assert_eq!(tool.name, "Edit");
+    assert_eq!(
+        tool.input,
+        Some(serde_json::json!({
+            "file_path": "/work/demo/src/parser.rs",
+            "old_string": "let dir = shared_tmp();",
+            "new_string": "let dir = tempfile::tempdir()?;",
+        }))
+    );
+    // Bash keeps its command and description.
+    let bash = parse("tool_use");
+    assert_eq!(
+        bash[0].tool.as_ref().unwrap().input,
+        Some(serde_json::json!({
+            "command": "cargo test -p parser 2>&1 | tail -40",
+            "description": "Run the parser tests",
+        }))
+    );
+}
+
+#[test]
+fn structured_input_is_bounded() {
+    let big = "é".repeat(INPUT_BYTES);
+    let v = structured_input(
+        "Write",
+        &serde_json::json!({"file_path": "/a", "content": big, "mode": "x"}),
+    )
+    .unwrap();
+    let content = v["content"].as_str().unwrap();
+    assert!(content.len() <= INPUT_BYTES && content.len() > INPUT_BYTES - 4);
+    assert_eq!(v["truncated"], true);
+    assert_eq!(v["file_path"], "/a");
+    assert!(v.get("mode").is_none());
+    // Lists keep only the fields a view draws.
+    let v = structured_input(
+        "MultiEdit",
+        &serde_json::json!({"file_path": "/a", "edits": [
+            {"old_string": "a", "new_string": "b", "extra": 1}]}),
+    )
+    .unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({"file_path": "/a", "edits": [{"old_string": "a", "new_string": "b"}]})
+    );
+    let v = structured_input(
+        "Read",
+        &serde_json::json!({"file_path": "/a", "offset": 10}),
+    )
+    .unwrap();
+    assert_eq!(v, serde_json::json!({"file_path": "/a", "offset": 10}));
+    // Unknown and MCP tools have none.
+    assert_eq!(
+        structured_input("mcp__x__y", &serde_json::json!({"a": 1})),
+        None
+    );
+}
+
+#[test]
+fn cut_results_say_their_full_length_and_can_be_read_whole() {
+    let result = parse("tool_result");
+    let r = &result[0];
+    assert_eq!(r.text.chars().count(), TOOL_RESULT_CHARS);
+    // 40 lines of `test parser::case_NNN ... ok`, 39 newlines between them.
+    let whole = 40 * "test parser::case_000 ... ok".len() + 39;
+    assert_eq!(r.full_len, Some(whole as u32));
+    // Short texts are not cut and have no length.
+    assert_eq!(parse("edit_error")[0].full_len, None);
+    assert_eq!(parse("user")[0].full_len, None);
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.jsonl");
+    std::fs::write(&path, SESSION).unwrap();
+    let full = find_entry(&path, &r.uuid).unwrap().unwrap();
+    assert_eq!(full.text.chars().count(), whole);
+    assert!(full.text.ends_with("case_039 ... ok"));
+    assert_eq!(full.full_len, None);
+    // The call read earlier in the file names the tool.
+    assert_eq!(full.tool.as_ref().unwrap().name, "Bash");
+    assert_eq!(full.call_id.as_deref(), Some("toolu_A"));
+    // Unknown uuids find nothing.
+    assert_eq!(find_entry(&path, "nope").unwrap(), None);
+    assert_eq!(find_entry(&path, &format!("{}#1", r.uuid)).unwrap(), None);
+}
+
+#[test]
+fn whole_entries_stop_at_a_megabyte() {
+    let text = "x".repeat(FULL_BYTES + 10);
+    let line = serde_json::json!({
+        "type": "user", "uuid": "big", "timestamp": "2026-10-18T09:00:00.000Z",
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t", "content": text}]},
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.jsonl");
+    std::fs::write(&path, format!("{line}\n")).unwrap();
+    let e = find_entry(&path, "big").unwrap().unwrap();
+    assert_eq!(e.text.len(), FULL_BYTES);
+    assert_eq!(e.full_len, Some((FULL_BYTES + 10) as u32));
 }
