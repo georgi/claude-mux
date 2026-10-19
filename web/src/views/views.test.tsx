@@ -2,12 +2,14 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChatEntry, ItemKind } from "../api/types";
-import { agent, entry, fakeApi, item, PLAN, state } from "../fixtures";
+import { SidebarProvider } from "@/components/ui/sidebar";
+import { agent, entry, fakeApi, item, PLAN, plan, state, task } from "../fixtures";
 import type { Nav } from "../needs";
 import { ChatLog, Composer } from "./Chat";
 import { PendingRequest, pendingFor } from "./chat/Pending";
 import { NeedsYou } from "./NeedsYou";
 import { Pairing } from "./Pairing";
+import { Tree } from "./Tree";
 
 afterEach(cleanup);
 
@@ -424,5 +426,96 @@ describe("Pairing", () => {
     expect(pair.disabled).toBe(true);
     fireEvent.change(code, { target: { value: "ABCD1234" } });
     expect(pair.disabled).toBe(false);
+  });
+});
+
+describe("Tree", () => {
+  const view = state({
+    plans: [plan({ tasks: ["T-0001"], agents: [`${PLAN}/executor`, `${PLAN}/T-0001`, `${PLAN}/T-0001/tests`] })],
+    tasks: [task("T-0001", { title: "Add pagination" })],
+    agents: [agent("executor"), agent("T-0001"), agent("T-0001/tests")],
+  });
+  const setup = (readOnly = false) => {
+    const opened: [string, string | null][] = [];
+    const plans: string[] = [];
+    render(
+      <SidebarProvider>
+        <Tree
+          view={view}
+          selected={null}
+          api={fakeApi()}
+          readOnly={readOnly}
+          onOpenAgent={(a, mode) => opened.push([a, mode])}
+          onOpenTerm={() => {}}
+          onPlan={(p) => plans.push(p)}
+        />
+      </SidebarProvider>,
+    );
+    return { opened, plans };
+  };
+  const item = (name: string) => screen.getByRole("treeitem", { name });
+  const focused = () => document.activeElement?.getAttribute("aria-label");
+
+  it("is a tree of treeitems with levels and expanded state", () => {
+    setup();
+    expect(screen.getByRole("tree", { name: "Agents and plans" })).toBeTruthy();
+    expect(screen.getAllByRole("treeitem").map((t) => [t.getAttribute("aria-label"), t.getAttribute("aria-level")])).toEqual([
+      ["demo", "1"],
+      ["executor", "2"],
+      ["T-0001 Add pagination", "2"],
+      ["tests", "3"],
+    ]);
+    expect(item("demo").getAttribute("aria-expanded")).toBe("true");
+    expect(item("executor").hasAttribute("aria-expanded")).toBe(false);
+    // Roving tabindex: one row is in the tab order.
+    expect(screen.getAllByRole("treeitem").filter((t) => t.tabIndex === 0)).toHaveLength(1);
+  });
+
+  it("moves with the arrow keys, collapses, expands and opens on Enter", async () => {
+    const { opened, plans } = setup();
+    item("demo").focus();
+    fireEvent.keyDown(item("demo"), { key: "ArrowDown" });
+    expect(focused()).toBe("executor");
+    expect(item("executor").tabIndex).toBe(0);
+    fireEvent.keyDown(item("executor"), { key: "ArrowDown" });
+    expect(focused()).toBe("T-0001 Add pagination");
+    fireEvent.keyDown(item("T-0001 Add pagination"), { key: "ArrowLeft" });
+    await waitFor(() => expect(item("T-0001 Add pagination").getAttribute("aria-expanded")).toBe("false"));
+    expect(screen.queryByRole("treeitem", { name: "tests" })).toBeNull();
+    fireEvent.keyDown(item("T-0001 Add pagination"), { key: "ArrowRight" });
+    await waitFor(() => expect(screen.getByRole("treeitem", { name: "tests" })).toBeTruthy());
+    fireEvent.keyDown(item("T-0001 Add pagination"), { key: "ArrowRight" });
+    expect(focused()).toBe("tests");
+    fireEvent.keyDown(item("tests"), { key: "ArrowLeft" });
+    expect(focused()).toBe("T-0001 Add pagination");
+    fireEvent.keyDown(item("T-0001 Add pagination"), { key: "Enter" });
+    expect(opened).toEqual([[`${PLAN}/T-0001`, null]]);
+    fireEvent.keyDown(item("T-0001 Add pagination"), { key: "Home" });
+    expect(focused()).toBe("demo");
+    fireEvent.keyDown(item("demo"), { key: "Enter" });
+    expect(plans).toEqual([PLAN]);
+  });
+
+  it("filters with parents kept, and Esc clears", () => {
+    setup();
+    const filter = screen.getByLabelText("Filter the tree") as HTMLInputElement;
+    fireEvent.change(filter, { target: { value: "tests" } });
+    expect(screen.getAllByRole("treeitem").map((t) => t.getAttribute("aria-label"))).toEqual([
+      "demo",
+      "T-0001 Add pagination",
+      "tests",
+    ]);
+    fireEvent.keyDown(filter, { key: "Escape" });
+    expect(filter.value).toBe("");
+    expect(screen.getAllByRole("treeitem")).toHaveLength(4);
+  });
+
+  it("hides Stop and Resume on a read-only device", async () => {
+    setup(true);
+    item("executor").focus();
+    fireEvent.keyDown(item("executor"), { key: "F10", shiftKey: true });
+    const menu = await screen.findByRole("menu");
+    const labels = [...menu.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent);
+    expect(labels).toEqual(["Open chat", "Copy path"]);
   });
 });

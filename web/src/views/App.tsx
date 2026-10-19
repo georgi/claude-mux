@@ -243,7 +243,10 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
               <Tree
                 view={v}
                 selected={selected}
-                onOpen={(r) => (r.agent ? nav.openAgent(r.agent) : r.term !== undefined && go({ view: "term", term: r.term }))}
+                api={api}
+                readOnly={readOnly}
+                onOpenAgent={(agent, mode) => go({ view: "agent", agent, mode })}
+                onOpenTerm={(term) => go({ view: "term", term })}
                 onPlan={nav.openPlan}
               />
             ) : (
