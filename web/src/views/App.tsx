@@ -20,7 +20,7 @@ import { type Nav, pending } from "../needs";
 import { formatRoute, parseRoute, type Route } from "../route";
 import { Store } from "../store";
 import { AgentPane } from "./AgentPane";
-import { NeedsYou } from "./NeedsYou";
+import { NeedsYou, useAttention } from "./NeedsYou";
 import { Keyboard } from "./shell/command";
 import { crumbsFor, Header } from "./shell/header";
 import { Live } from "./shell/live";
@@ -161,6 +161,7 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
   const v = m.view;
   const readOnly = m.scope === "read";
   const count = v ? pending(v).length : 0;
+  useAttention(v, route.view === "needs" || (route.view === "home" && phone), () => go({ view: "needs" }));
   const selected = route.view === "agent" ? route.agent : route.view === "term" ? `term-${route.term}` : null;
 
   const body = () => {
