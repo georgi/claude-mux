@@ -36,8 +36,8 @@ function Loading() {
 
 // Board and Settings are routes, not the first screen.
 const BoardImpl = lazy(() => import("./Board").then((m) => ({ default: m.Board })));
-const PlanListImpl = lazy(() => import("./Board").then((m) => ({ default: m.PlanList })));
-const NewPlanImpl = lazy(() => import("./Board").then((m) => ({ default: m.NewPlan })));
+const PlanListImpl = lazy(() => import("./board/plan-list").then((m) => ({ default: m.PlanList })));
+const NewPlanImpl = lazy(() => import("./board/new-plan").then((m) => ({ default: m.NewPlan })));
 const SettingsImpl = lazy(() => import("./Settings").then((m) => ({ default: m.Settings })));
 
 export function Board(props: ComponentProps<typeof BoardImpl>) {

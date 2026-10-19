@@ -199,7 +199,14 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
       case "board":
         return <Board view={v} plan={route.plan} api={api} readOnly={readOnly} onOpenAgent={nav.openAgent} />;
       case "new":
-        return <NewPlan api={api} readOnly={readOnly} onCreated={(plan) => go({ view: "board", plan })} />;
+        return (
+          <NewPlan
+            api={api}
+            readOnly={readOnly}
+            onCreated={(plan) => go({ view: "board", plan })}
+            onTerminal={(term) => go({ view: "term", term })}
+          />
+        );
       case "settings":
         return <Settings api={api} readOnly={readOnly} />;
       case "plans":

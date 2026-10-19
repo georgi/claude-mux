@@ -5,6 +5,8 @@ import type {
   AddRepoReq,
   AnswerReq,
   CreatePlanReq,
+  CreateTaskReq,
+  CreateTerminalReq,
   Created,
   DevicesResp,
   ErrorBody,
@@ -18,6 +20,7 @@ import type {
   SpawnTaskReq,
   StatusResp,
   TaskDetail,
+  TerminalView,
   TranscriptResp,
   VapidResp,
 } from "./types";
@@ -115,10 +118,13 @@ export interface Api {
   plan(plan: string, action: "accept" | "pause" | "resume" | "cancel"): Promise<void>;
   createPlan(req: CreatePlanReq): Promise<Created>;
   planBody(plan: string): Promise<PlanBody>;
+  putPlanBody(plan: string, body: PlanBody): Promise<void>;
+  createTask(plan: string, req: CreateTaskReq): Promise<Created>;
   task(plan: string, task: string): Promise<TaskDetail>;
   patchTask(plan: string, task: string, req: PatchTaskReq): Promise<TaskDetail>;
   spawnTask(plan: string, task: string, req: SpawnTaskReq): Promise<void>;
   transcript(agent: string, after?: string): Promise<TranscriptResp>;
+  createTerminal(req: CreateTerminalReq): Promise<TerminalView>;
   repos(): Promise<ReposResp>;
   addRepo(req: AddRepoReq): Promise<RepoInfo>;
   devices(): Promise<DevicesResp>;
@@ -148,6 +154,10 @@ export const api: Api = {
   },
   createPlan: (req) => json(once("POST", "/v1/plans", req)),
   planBody: (plan) => json(call("GET", `/v1/plans/${seg(plan)}/body`)),
+  async putPlanBody(plan, body) {
+    await once("PUT", `/v1/plans/${seg(plan)}/body`, body);
+  },
+  createTask: (plan, req) => json(once("POST", `/v1/plans/${seg(plan)}/tasks`, req)),
   task: (plan, task) => json(call("GET", `/v1/tasks/${seg(plan)}/${seg(task)}`)),
   patchTask: (plan, task, req) => json(once("PATCH", `/v1/tasks/${seg(plan)}/${seg(task)}`, req)),
   async spawnTask(plan, task, req) {
@@ -155,6 +165,7 @@ export const api: Api = {
   },
   transcript: (agent, after) =>
     json(call("GET", `/v1/agents/${seg(agent)}/transcript${after ? `?after=${seg(after)}` : ""}`)),
+  createTerminal: (req) => json(once("POST", "/v1/terminals", req)),
   repos: () => json(call("GET", "/v1/repos")),
   addRepo: (req) => json(once("POST", "/v1/repos", req)),
   devices: () => json(call("GET", "/v1/devices")),
