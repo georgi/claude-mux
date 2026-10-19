@@ -24,6 +24,7 @@ import { Store } from "../store";
 import { AgentPane } from "./AgentPane";
 import { NeedsYou } from "./NeedsYou";
 import { Pairing } from "./Pairing";
+import { Keyboard } from "./shell/command";
 import { Header } from "./shell/header";
 import { Live } from "./shell/live";
 import { PhoneTabs, type Tab } from "./shell/phone-tabs";
@@ -292,6 +293,7 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
         </div>
         {phone && <PhoneTabs tab={tab} count={count} go={(t) => go({ view: t })} />}
       </SidebarInset>
+      <Keyboard view={v} route={route} readOnly={readOnly} api={api} nav={nav} go={go} onSignOut={signOut} />
     </SidebarProvider>
   );
 }
