@@ -146,3 +146,30 @@ export function fakeApi(over: Partial<Api> = {}): Api & { calls: Call[] } {
   } as Api;
   return Object.assign({ ...base, ...over }, { calls });
 }
+
+/**
+ * A long conversation of `n` entries, a minute apart over several days:
+ * prompts, thinking, Markdown replies and tool calls with results.
+ */
+export function longChat(n = 2000, start = Date.UTC(2026, 9, 14)): ChatEntry[] {
+  const out: ChatEntry[] = [];
+  for (let i = 0; out.length < n; i++) {
+    const ts = start + out.length * 60_000 * 5;
+    const k = i % 6;
+    if (k === 0) out.push(entry(`u${i}`, { role: "user", text: `Prompt ${i}: fix the pagination in /users`, ts }));
+    else if (k === 1) out.push(entry(`t${i}`, { kind: "thinking", text: "The cursor is off by one.", ts }));
+    else if (k === 2 || k === 3) {
+      const id = `call${i}`;
+      out.push(entry(`c${i}`, { kind: "tool_call", text: "", call_id: id, tool: { name: "Bash", summary: "cargo test" }, ts }));
+      out.push(entry(`r${i}`, { role: "user", kind: "tool_result", text: "test result: ok", call_id: id, tool: { name: "Bash", summary: "" }, ts: ts + 1000 }));
+    } else
+      out.push(
+        entry(`a${i}`, {
+          text: `## Step ${i}\n\nRan **cargo test** and fixed \`next_cursor\`:\n\n- one\n- two\n\n\`\`\`rust\nfn main() {}\n\`\`\``,
+          model: "claude-opus-5-5",
+          ts,
+        }),
+      );
+  }
+  return out.slice(0, n);
+}

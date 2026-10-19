@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Api } from "@/api/http";
-import type { AgentView, ChatEntry, StateView } from "@/api/types";
+import type { Activity, AgentView, ChatEntry, StateView } from "@/api/types";
 import type { Conn } from "@/conn";
 import { useModel, useSpinner } from "@/hooks";
 import { KEYS, withCtrl } from "@/keys";
@@ -9,7 +9,7 @@ import type { Store } from "@/store";
 import { agentGlyph } from "@/tree";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ChatLog, Composer } from "./Chat";
+import { ChatLog, Composer, queuedMessages } from "./Chat";
 import { PendingRequest, pendingFor } from "./chat/Pending";
 import type { ToolContext } from "./chat/tools/parts";
 import { TermView } from "./lazy";
@@ -26,17 +26,6 @@ interface Props {
   readOnly?: boolean;
   onMode: (mode: AgentMode) => void;
   onOpenAgent: (agent: string) => void;
-}
-
-/** Messages queued for `agent` and not delivered yet (the `✉N` count). */
-export function queuedFor(v: StateView, agent: string): number {
-  return v.items.filter(
-    (i) =>
-      typeof i.to === "object" &&
-      i.to.agent === agent &&
-      i.status === "pending" &&
-      (i.kind === "user_message" || i.kind === "steer"),
-  ).length;
 }
 
 /** The task agent and its sub-agents, as tabs; the executor alone. */
@@ -102,14 +91,16 @@ export function AgentPane({ view, agent, mode, phone, conn, store, api, readOnly
           agent={agent.id}
           conn={conn}
           entries={m.chats[agent.id]}
+          activity={agent.activity}
+          idleSince={agent.idle_since}
           tools={{ agent: agent.id, api, agents: view.agents, cwd: agent.cwd, onOpenAgent }}
         >
           {pendingFor(view, agent.id).map((n) => (
-            <PendingRequest key={n.item.id} need={n} api={api} />
+            <PendingRequest key={n.item.id} need={n} api={api} readOnly={readOnly} />
           ))}
         </ChatPane>
       )}
-      <Composer agent={agent.id} api={api} queued={queuedFor(view, agent.id)} readOnly={readOnly} />
+      <Composer agent={agent.id} api={api} queued={queuedMessages(view, agent.id)} readOnly={readOnly} />
     </section>
   );
 }
@@ -118,12 +109,16 @@ function ChatPane({
   agent,
   conn,
   entries,
+  activity,
+  idleSince,
   tools,
   children,
 }: {
   agent: string;
   conn: Conn;
   entries: ChatEntry[] | undefined;
+  activity: Activity;
+  idleSince: number | null;
   tools: ToolContext;
   children: React.ReactNode[];
 }) {
@@ -132,7 +127,7 @@ function ChatPane({
     return () => conn.unsubChat(agent);
   }, [agent, conn]);
   return (
-    <ChatLog entries={entries} tools={tools}>
+    <ChatLog entries={entries} tools={tools} activity={activity} idleSince={idleSince}>
       {children.length > 0 && <div className="flex flex-col gap-2">{children}</div>}
     </ChatLog>
   );

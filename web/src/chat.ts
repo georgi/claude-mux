@@ -25,10 +25,19 @@ export type ChatRow =
       kind: "user" | "assistant";
       key: string;
       text: string;
+      /** When the entry arrived, in ms. */
+      ts: number;
       /** The model that wrote an assistant text, when known. */
       model?: string;
     }
-  | { kind: "thinking"; key: string; text: string }
+  | {
+      kind: "thinking";
+      key: string;
+      text: string;
+      ts: number;
+      /** Until the next entry, in ms; absent while the thinking is the latest entry. */
+      ms?: number;
+    }
   | {
       kind: "tool";
       key: string;
@@ -83,11 +92,17 @@ function callOf(rows: ChatRow[], e: ChatEntry): ToolRow | undefined {
 /** One row per prompt, text and tool call. A result folds into its call. */
 export function chatRows(entries: ChatEntry[], opts: RowOptions = {}): ChatRow[] {
   const rows: ChatRow[] = [];
+  // The thinking that waits for the next entry to know how long it took.
+  let thought: Extract<ChatRow, { kind: "thinking" }> | undefined;
   for (const e of entries) {
+    if (thought) {
+      thought.ms = Math.max(0, e.ts - thought.ts);
+      thought = undefined;
+    }
     if (e.kind === "text") {
-      rows.push({ kind: e.role, key: e.uuid, text: e.text, ...(e.model ? { model: e.model } : {}) });
+      rows.push({ kind: e.role, key: e.uuid, text: e.text, ts: e.ts, ...(e.model ? { model: e.model } : {}) });
     } else if (e.kind === "thinking") {
-      if (opts.thinking) rows.push({ kind: "thinking", key: e.uuid, text: e.text });
+      if (opts.thinking) rows.push((thought = { kind: "thinking", key: e.uuid, text: e.text, ts: e.ts }));
     } else if (e.kind === "tool_call") {
       rows.push({
         kind: "tool",
@@ -222,4 +237,117 @@ export function lastToolKey(rows: ChatRow[], name: string): string | undefined {
     if (r.kind === "tool" && r.name === name) return r.key;
   }
   return undefined;
+}
+
+/** A run of the log under one header: a prompt, or everything Claude did until the next prompt. */
+export interface Turn {
+  kind: "user" | "assistant";
+  /** The first item's key. */
+  key: string;
+  items: LogItem[];
+  /** When the turn started, in ms. */
+  ts: number;
+  /** The model of the turn's first reply, when known. */
+  model?: string;
+  /** The turn's text: the prompt, or Claude's replies joined. */
+  text: string;
+  /**
+   * Changes when anything shown in the turn changes. Rows are rebuilt on each
+   * batch, so the view compares this, not the objects.
+   */
+  sig: string;
+}
+
+function itemTs(i: LogItem): number {
+  return i.kind === "group" ? i.rows[0].ts : i.ts;
+}
+
+function rowSig(r: ChatRow): string {
+  if (r.kind === "tool") return `${r.key}:${r.result === null ? "-" : r.result.length}:${r.isError ? 1 : 0}:${r.resultLen ?? ""}`;
+  if (r.kind === "thinking") return `${r.key}:${r.text.length}:${r.ms ?? ""}`;
+  return `${r.key}:${r.text.length}`;
+}
+
+/** Folds log items into turns: each prompt alone, and each run of Claude's items together. */
+export function turnsOf(items: LogItem[]): Turn[] {
+  const out: Turn[] = [];
+  let cur: Turn | undefined;
+  for (const i of items) {
+    if (i.kind === "user") {
+      cur = undefined;
+      out.push({ kind: "user", key: i.key, items: [i], ts: i.ts, text: i.text, sig: rowSig(i) });
+      continue;
+    }
+    if (!cur) {
+      cur = { kind: "assistant", key: i.key, items: [], ts: itemTs(i), text: "", sig: "" };
+      out.push(cur);
+    }
+    cur.items.push(i);
+    if (i.kind === "assistant") {
+      cur.text = cur.text ? `${cur.text}\n\n${i.text}` : i.text;
+      cur.model ??= i.model;
+    }
+    cur.sig += `|${i.kind === "group" ? i.rows.map(rowSig).join(",") : rowSig(i)}`;
+  }
+  return out;
+}
+
+const dayFmt = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" });
+const dayYearFmt = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+
+/** The local calendar day of `ts`, as a key: two times on one day share it. */
+export function dayKey(ts: number): string {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+/** "Today", "Yesterday", "Mon, Oct 19", or with the year when it differs from now. */
+export function dayLabel(ts: number, now: number): string {
+  if (dayKey(ts) === dayKey(now)) return "Today";
+  const y = new Date(now);
+  y.setDate(y.getDate() - 1);
+  if (dayKey(ts) === dayKey(y.getTime())) return "Yesterday";
+  return (new Date(ts).getFullYear() === new Date(now).getFullYear() ? dayFmt : dayYearFmt).format(ts);
+}
+
+/** Markdown as plain text, for "Copy text": no markup characters, links as their words. */
+export function plainText(md: string): string {
+  return md
+    .replace(/^```[^\n]*\n?/gm, "")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*>\s?/gm, "")
+    .replace(/(\*\*|__)(.+?)\1/g, "$2")
+    .replace(/(^|[^*\w])[*_]([^*_\n]+)[*_]/g, "$1$2")
+    .replace(/`([^`]+)`/g, "$1")
+    .trim();
+}
+
+/** `text` as a Markdown quote, ready for the composer. */
+export function quoted(text: string): string {
+  return `${text
+    .trim()
+    .split("\n")
+    .map((l) => (l ? `> ${l}` : ">"))
+    .join("\n")}\n\n`;
+}
+
+/** The Claude Code commands the composer suggests after a leading `/`. */
+export const SLASH_COMMANDS: { name: string; description: string }[] = [
+  { name: "/compact", description: "Summarize the conversation to free context" },
+  { name: "/clear", description: "Start a new conversation" },
+  { name: "/cost", description: "Show the tokens and cost so far" },
+  { name: "/model", description: "Change the model" },
+  { name: "/review", description: "Review a pull request" },
+  { name: "/init", description: "Write a CLAUDE.md for the repository" },
+];
+
+/**
+ * The commands that match a draft that is only a leading `/word`, or `null`
+ * when the draft is not a command being typed.
+ */
+export function slashMatches(draft: string): typeof SLASH_COMMANDS | null {
+  const m = /^(\/\S*)$/.exec(draft);
+  if (!m) return null;
+  return SLASH_COMMANDS.filter((c) => c.name.startsWith(m[1]));
 }

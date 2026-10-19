@@ -5,6 +5,7 @@ import type { ChatEntry, ItemKind } from "../api/types";
 import { agent, entry, fakeApi, item, PLAN, state } from "../fixtures";
 import type { Nav } from "../needs";
 import { ChatLog, Composer } from "./Chat";
+import { PendingRequest, pendingFor } from "./chat/Pending";
 import { NeedsYou } from "./NeedsYou";
 import { Pairing } from "./Pairing";
 
@@ -166,18 +167,164 @@ describe("tool cards", () => {
 });
 
 describe("Composer", () => {
-  it("queues on Enter and steers on the Steer button", async () => {
+  afterEach(() => localStorage.clear());
+
+  it("queues on Enter and steers with the Steer toggle or Cmd+Enter", async () => {
     const api = fakeApi();
-    render(<Composer agent={`${PLAN}/T-0002`} api={api} queued={1} />);
-    expect(screen.getByText("1 queued")).toBeTruthy();
+    render(<Composer agent={`${PLAN}/T-0002`} api={api} queued={[{ id: 1, text: "also add tests", steer: false }]} />);
+    const queue = screen.getByRole("region", { name: "Queued messages" });
+    expect(queue.textContent).toContain("1 queued");
+    expect(queue.textContent).toContain("also add tests");
     const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
-    fireEvent.input(box, { target: { value: "use cursors" } });
+    fireEvent.change(box, { target: { value: "use cursors" } });
     fireEvent.keyDown(box, { key: "Enter" });
     await waitFor(() => expect(api.calls).toEqual([["message", `${PLAN}/T-0002`, "use cursors", false]]));
     await waitFor(() => expect(box.value).toBe(""));
-    fireEvent.input(box, { target: { value: "stop, wrong branch" } });
+    fireEvent.change(box, { target: { value: "stop, wrong branch" } });
     fireEvent.click(screen.getByRole("button", { name: "Steer: interrupt the agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Steer now" }));
     await waitFor(() => expect(api.calls[1]).toEqual(["message", `${PLAN}/T-0002`, "stop, wrong branch", true]));
+    await waitFor(() => expect(box.value).toBe(""));
+    fireEvent.change(box, { target: { value: "now" } });
+    fireEvent.keyDown(box, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(api.calls[2]).toEqual(["message", `${PLAN}/T-0002`, "now", true]));
+  });
+
+  it("keeps a draft per agent and restores it on return", async () => {
+    const a = `${PLAN}/T-0001`;
+    const b = `${PLAN}/T-0002`;
+    const api = fakeApi();
+    const { rerender, unmount } = render(<Composer agent={a} api={api} queued={[]} />);
+    const box = () => screen.getByLabelText("Message") as HTMLTextAreaElement;
+    fireEvent.change(box(), { target: { value: "half a thought for A" } });
+    rerender(<Composer agent={b} api={api} queued={[]} />);
+    expect(box().value).toBe("");
+    fireEvent.change(box(), { target: { value: "B's draft" } });
+    rerender(<Composer agent={a} api={api} queued={[]} />);
+    expect(box().value).toBe("half a thought for A");
+    // A reload keeps it too.
+    unmount();
+    render(<Composer agent={b} api={api} queued={[]} />);
+    expect(box().value).toBe("B's draft");
+    // Sending clears it.
+    fireEvent.keyDown(box(), { key: "Enter" });
+    await waitFor(() => expect(box().value).toBe(""));
+    expect(localStorage.getItem(`cmux.draft.${b}`)).toBeNull();
+  });
+
+  it("suggests slash commands, filters them as you type, and completes on Tab", async () => {
+    render(<Composer agent={`${PLAN}/T-0002`} api={fakeApi()} queued={[]} />);
+    const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "/" } });
+    const list = await screen.findByRole("listbox", { name: "Commands" });
+    expect(list.querySelectorAll('[role="option"]')).toHaveLength(6);
+    fireEvent.change(box, { target: { value: "/co" } });
+    await waitFor(() =>
+      expect(screen.getAllByRole("option").map((o) => o.textContent?.split(/\s/)[0])).toEqual(["compactSummarize", "costShow"]),
+    );
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(screen.getByRole("option", { selected: true }).textContent).toContain("cost");
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect(box.value).toBe("/cost ");
+    await waitFor(() => expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull());
+    // Not at the start: no list.
+    fireEvent.change(box, { target: { value: "run /co" } });
+    expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull();
+  });
+
+  it("says why it is disabled on a read-only device", () => {
+    render(<Composer agent={`${PLAN}/T-0002`} api={fakeApi()} queued={[]} readOnly />);
+    expect((screen.getByLabelText("Message") as HTMLTextAreaElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Send at the next turn" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("chat rhythm", () => {
+  const day = (d: number, h: number) => new Date(2025, 9, d, h).getTime();
+
+  it("puts a day line where the date changes and one header over Claude's turn", () => {
+    render(
+      <ChatLog
+        entries={[
+          entry("u1", { role: "user", text: "Start", ts: day(18, 9) }),
+          entry("a1", { text: "Started.", ts: day(18, 9) + 1000, model: "claude-opus-5-5" }),
+          entry("a2", { text: "Still going.", ts: day(18, 9) + 2000 }),
+          entry("u2", { role: "user", text: "Next day", ts: day(19, 10) }),
+          entry("a3", { text: "Good morning.", ts: day(19, 10) + 1000 }),
+        ]}
+      />,
+    );
+    const lines = screen.getAllByRole("separator").map((s) => s.getAttribute("aria-label"));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe("Sat, Oct 18, 2025");
+    expect(lines[1]).toBe("Sun, Oct 19, 2025");
+    // a1 and a2 form one turn with one header.
+    expect(screen.getAllByText("Claude")).toHaveLength(2);
+    expect(screen.getByText("opus-5-5")).toBeTruthy();
+    // Each turn carries its time, with the absolute time for a tooltip.
+    expect(document.querySelectorAll("time")).toHaveLength(4);
+  });
+
+  it("folds thinking by default under \"Thought for Ns\"", async () => {
+    render(
+      <ChatLog
+        entries={[
+          entry("t", { kind: "thinking", text: "Maybe the cache is stale.", ts: 0 }),
+          entry("a", { text: "Clearing the cache.", ts: 4000 }),
+        ]}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: /Thought for 4s/ });
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Maybe the cache is stale.")).toBeNull();
+    fireEvent.click(trigger);
+    await waitFor(() => expect(screen.getByText("Maybe the cache is stale.")).toBeTruthy());
+  });
+
+  it("shows what the agent does under the log", () => {
+    const { rerender } = render(<ChatLog entries={[entry("a", { text: "Hi" })]} activity="working" />);
+    expect(screen.getByRole("status", { name: "Agent activity" }).textContent).toBe("Working…");
+    rerender(<ChatLog entries={[entry("a", { text: "Hi" })]} activity="needs_permission" />);
+    expect(screen.getByRole("status", { name: "Agent activity" }).textContent).toBe("Waiting for permission");
+    rerender(<ChatLog entries={[entry("a", { text: "Hi" })]} activity="idle" idleSince={Date.now() - 4 * 60_000} />);
+    expect(screen.getByRole("status", { name: "Agent activity" }).textContent).toBe("Idle 4m");
+  });
+
+  it("offers copy and quote actions; quote fills the composer", async () => {
+    const a = `${PLAN}/T-0002`;
+    render(
+      <>
+        <ChatLog tools={{ agent: a }} entries={[entry("x", { text: "Use **cursors**." })]} />
+        <Composer agent={a} api={fakeApi()} queued={[]} />
+      </>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Quote in reply" }));
+    await waitFor(() => expect((screen.getByLabelText("Message") as HTMLTextAreaElement).value).toBe("> Use **cursors**.\n\n"));
+    expect(screen.getByRole("button", { name: "Copy text" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy as Markdown" })).toBeTruthy();
+  });
+});
+
+describe("PendingRequest", () => {
+  it("shows a permission as a confirmation with its input as code", async () => {
+    const api = fakeApi();
+    const v = state({ agents: [agent("T-0004")], items: [item(5, { kind: perm, from: `${PLAN}/T-0004` })] });
+    render(<PendingRequest need={pendingFor(v, `${PLAN}/T-0004`)[0]} api={api} />);
+    const card = screen.getByRole("group", { name: "Allow Bash?" });
+    expect(card.querySelector('[data-slot="code-block"]')?.textContent).toBe("cargo test -p perms");
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["Deny", "Always", "Allow"]);
+    fireEvent.click(screen.getByRole("button", { name: "Always" }));
+    await waitFor(() => expect(api.calls[0]?.slice(0, 3)).toEqual(["answer", 5, { action: "allow_always", text: null }]));
+  });
+
+  it("sends a reply to a question with Cmd+Enter", async () => {
+    const api = fakeApi();
+    const v = state({ agents: [agent("T-0004")], items: [item(6, { from: `${PLAN}/T-0004` })] });
+    render(<PendingRequest need={pendingFor(v, `${PLAN}/T-0004`)[0]} api={api} />);
+    const box = screen.getByLabelText("Reply");
+    fireEvent.change(box, { target: { value: "postgres" } });
+    fireEvent.keyDown(box, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(api.calls[0]?.slice(0, 3)).toEqual(["answer", 6, { action: "reply", text: "postgres" }]));
   });
 });
 

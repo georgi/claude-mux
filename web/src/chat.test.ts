@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type ChatRow, chatRows, formatDuration, groupRows, KEEP, lastToolKey, mergeEntries, toolKind } from "./chat";
+import { type ChatRow, chatRows, dayLabel, formatDuration, groupRows, KEEP, lastToolKey, mergeEntries, plainText, quoted, slashMatches, toolKind, turnsOf } from "./chat";
 import { entry } from "./fixtures";
 
 describe("mergeEntries", () => {
@@ -31,11 +31,11 @@ describe("chatRows", () => {
       entry("a2", { text: "Done." }),
     ]);
     expect(rows).toEqual([
-      { kind: "user", key: "u", text: "Add pagination" },
-      { kind: "assistant", key: "a", text: "On it." },
+      { kind: "user", key: "u", text: "Add pagination", ts: 1000 },
+      { kind: "assistant", key: "a", text: "On it.", ts: 1000 },
       { kind: "tool", key: "c1", name: "Bash", summary: "git push", result: "pushed", isError: false, resultKey: "r1", ts: 1000, endTs: 1000 },
       { kind: "tool", key: "c2", name: "Read", summary: "src/a.rs", result: "fn a()", isError: false, resultKey: "r2", ts: 1000, endTs: 1000 },
-      { kind: "assistant", key: "a2", text: "Done." },
+      { kind: "assistant", key: "a2", text: "Done.", ts: 1000 },
     ]);
   });
 
@@ -87,8 +87,8 @@ describe("chatRows", () => {
     ];
     expect(chatRows(entries).map((r) => r.kind)).toEqual(["assistant", "tool"]);
     const rows = chatRows(entries, { thinking: true });
-    expect(rows[0]).toEqual({ kind: "thinking", key: "t", text: "hmm" });
-    expect(rows[1]).toEqual({ kind: "assistant", key: "a", text: "Edit it.", model: "claude-opus-5-5" });
+    expect(rows[0]).toEqual({ kind: "thinking", key: "t", text: "hmm", ts: 1000, ms: 0 });
+    expect(rows[1]).toEqual({ kind: "assistant", key: "a", text: "Edit it.", ts: 1000, model: "claude-opus-5-5" });
     expect(rows[2].kind === "tool" && rows[2].input).toEqual(input);
   });
 });
@@ -104,7 +104,7 @@ describe("groupRows", () => {
     ts,
     ...(endTs === null ? {} : { endTs }),
   });
-  const text = (key: string): ChatRow => ({ kind: "assistant", key, text: key });
+  const text = (key: string): ChatRow => ({ kind: "assistant", key, text: key, ts: 0 });
   const shape = (rows: ChatRow[]) =>
     groupRows(rows).map((i) => (i.kind === "group" ? `[${i.rows.map((r) => r.key).join(" ")}]` : i.key));
 
@@ -132,7 +132,7 @@ describe("groupRows", () => {
   });
 
   it("keeps thinking inside a run and marks a run with an open call as running", () => {
-    const think: ChatRow = { kind: "thinking", key: "th", text: "hmm" };
+    const think: ChatRow = { kind: "thinking", key: "th", text: "hmm", ts: 0 };
     const items = groupRows([tool("t1", 0), think, tool("t2", 5000), tool("t3", 9000, null)]);
     expect(items).toHaveLength(1);
     const g = items[0];
@@ -161,5 +161,59 @@ describe("toolKind", () => {
     expect(toolKind("Task")).toBe("agent");
     expect(toolKind("WebFetch")).toBe("web");
     expect(toolKind("mcp__x__y")).toBe("other");
+  });
+});
+
+describe("turns", () => {
+  it("folds Claude's items between prompts into one turn", () => {
+    const rows = chatRows(
+      [
+        entry("u", { role: "user", text: "Fix it", ts: 1 }),
+        entry("t", { kind: "thinking", text: "hmm", ts: 2 }),
+        entry("a", { text: "Looking.", ts: 4_002, model: "m" }),
+        entry("c", { kind: "tool_call", text: "", tool: { name: "Read", summary: "a" }, ts: 5_000 }),
+        entry("a2", { text: "Fixed.", ts: 6_000 }),
+        entry("u2", { role: "user", text: "Thanks", ts: 7_000 }),
+      ],
+      { thinking: true },
+    );
+    // The thinking lasts until the next entry.
+    expect(rows[1].kind === "thinking" && rows[1].ms).toBe(4_000);
+    const turns = turnsOf(groupRows(rows));
+    expect(turns.map((t) => [t.kind, t.key, t.items.length, t.text, t.model])).toEqual([
+      ["user", "u", 1, "Fix it", undefined],
+      ["assistant", "t", 4, "Looking.\n\nFixed.", "m"],
+      ["user", "u2", 1, "Thanks", undefined],
+    ]);
+    // A result that lands changes the turn's signature.
+    const done = turnsOf(groupRows(chatRows([...rowsEntries(), entry("r", { role: "user", kind: "tool_result", text: "ok" })])));
+    expect(done[0].sig).not.toBe(turnsOf(groupRows(chatRows(rowsEntries())))[0].sig);
+  });
+
+  function rowsEntries() {
+    return [entry("c", { kind: "tool_call", text: "", tool: { name: "Bash", summary: "ls" } })];
+  }
+
+  it("labels days relative to now", () => {
+    const now = new Date(2026, 9, 20, 12).getTime();
+    expect(dayLabel(new Date(2026, 9, 20, 1).getTime(), now)).toBe("Today");
+    expect(dayLabel(new Date(2026, 9, 19, 23).getTime(), now)).toBe("Yesterday");
+    expect(dayLabel(new Date(2026, 9, 12).getTime(), now)).toBe("Mon, Oct 12");
+    expect(dayLabel(new Date(2025, 9, 12).getTime(), now)).toBe("Sun, Oct 12, 2025");
+  });
+
+  it("strips markdown for plain text and quotes for the composer", () => {
+    expect(plainText("## Done\nRan **cargo test** and `npm test`, see [the PR](https://x).")).toBe(
+      "Done\nRan cargo test and npm test, see the PR.",
+    );
+    expect(quoted("a\n\nb")).toBe("> a\n>\n> b\n\n");
+  });
+
+  it("suggests slash commands only for a leading /word", () => {
+    expect(slashMatches("/co")?.map((c) => c.name)).toEqual(["/compact", "/cost"]);
+    expect(slashMatches("/")).toHaveLength(6);
+    expect(slashMatches("/compact now")).toBeNull();
+    expect(slashMatches("see /co")).toBeNull();
+    expect(slashMatches("/zz")).toEqual([]);
   });
 });

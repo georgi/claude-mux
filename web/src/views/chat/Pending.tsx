@@ -4,10 +4,13 @@ import type { Api } from "@/api/http";
 import type { StateView } from "@/api/types";
 import { describe, perform, type ActionId, type Need, type Nav } from "@/needs";
 import { Button } from "@/components/ui/button";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "@/components/ui/item";
+import { CodeBlock, CodeBlockContent, CodeBlockLine } from "@/components/ui/code-block";
+import { Kbd } from "@/components/ui/kbd";
 import { Textarea } from "@/components/ui/textarea";
 
 const NO_NAV: Nav = { openAgent() {}, openPlan() {}, openUrl() {} };
+
+const MOD = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? "⌘" : "Ctrl";
 
 /** Pending permission requests and questions that `agent` raised for a person. */
 export function pendingFor(v: StateView, agent: string): Need[] {
@@ -23,12 +26,17 @@ export function pendingFor(v: StateView, agent: string): Need[] {
     .map((i) => describe(v, i));
 }
 
-/** One inline request in the Confirmation pattern: Allow / Always / Deny, or a reply. */
-export function PendingRequest({ need, api }: { need: Need; api: Api }) {
+/**
+ * One inline request in the Confirmation pattern: the tool and its input as
+ * code with Allow / Always / Deny, or a question with a reply box.
+ */
+export function PendingRequest({ need, api, readOnly }: { need: Need; api: Api; readOnly?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [text, setText] = useState("");
-  const question = typeof need.item.kind !== "object";
+  const kind = need.item.kind;
+  const tool = typeof kind === "object" ? kind.permission.tool : null;
+  const off = busy || readOnly;
 
   const run = async (id: ActionId, t = "") => {
     setBusy(true);
@@ -40,54 +48,85 @@ export function PendingRequest({ need, api }: { need: Need; api: Api }) {
       setBusy(false);
     }
   };
+  const reply = () => {
+    if (text.trim() && !off) void run("reply", text);
+  };
 
   return (
-    <Item variant="outline" size="sm" role="group" aria-label={need.title} className="flex-wrap">
-      <ItemMedia variant="icon">{question ? <MessageCircleQuestionIcon /> : <ShieldQuestionIcon />}</ItemMedia>
-      <ItemContent className="min-w-0">
-        <ItemTitle>{need.title}</ItemTitle>
-        <ItemDescription className="font-mono break-all">{need.detail}</ItemDescription>
-      </ItemContent>
-      {question ? (
+    <section
+      role="group"
+      aria-label={need.title}
+      className="flex min-w-0 flex-col gap-3 rounded-xl border border-status-needs/40 bg-card p-3 text-sm shadow-xs"
+    >
+      <header className="flex items-center gap-2">
+        {tool ? (
+          <ShieldQuestionIcon className="size-4 text-status-needs" aria-hidden="true" />
+        ) : (
+          <MessageCircleQuestionIcon className="size-4 text-status-needs" aria-hidden="true" />
+        )}
+        <h3 className="font-medium">{need.title}</h3>
+        {tool && <span className="ml-auto font-mono text-xs text-muted-foreground">{tool}</span>}
+      </header>
+      {tool ? (
+        need.detail && (
+          <CodeBlock size="sm">
+            <CodeBlockContent wrap aria-label={`${tool} input`}>
+              {need.detail.split("\n").map((l, i) => (
+                <CodeBlockLine key={i}>{l}</CodeBlockLine>
+              ))}
+            </CodeBlockContent>
+          </CodeBlock>
+        )
+      ) : (
+        <p className="whitespace-pre-wrap">{need.item.body}</p>
+      )}
+      {tool ? (
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button size="sm" variant="outline" disabled={off} onClick={() => void run("deny")}>
+            Deny
+          </Button>
+          <Button size="sm" variant="outline" disabled={off} onClick={() => void run("allow_always")}>
+            Always
+          </Button>
+          <Button size="sm" disabled={off} onClick={() => void run("allow")}>
+            Allow
+          </Button>
+        </div>
+      ) : (
         <form
-          className="flex w-full flex-col gap-2"
+          className="flex flex-col gap-2"
           onSubmit={(e) => {
             e.preventDefault();
-            if (text.trim()) void run("reply", text);
+            reply();
           }}
         >
           <Textarea
             aria-label="Reply"
             rows={2}
             value={text}
+            disabled={readOnly}
             onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                reply();
+              }
+            }}
             placeholder="Your answer…"
             className="field-sizing-content max-h-40"
           />
-          <ItemActions className="justify-end">
-            <Button type="submit" size="sm" disabled={busy || !text.trim()}>
-              Reply
+          <div className="flex justify-end">
+            <Button type="submit" size="sm" disabled={off || !text.trim()}>
+              Reply <Kbd className="bg-primary-foreground/15 text-primary-foreground">{MOD}↵</Kbd>
             </Button>
-          </ItemActions>
+          </div>
         </form>
-      ) : (
-        <ItemActions>
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => void run("deny")}>
-            Deny
-          </Button>
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => void run("allow_always")}>
-            Always
-          </Button>
-          <Button size="sm" disabled={busy} onClick={() => void run("allow")}>
-            Allow
-          </Button>
-        </ItemActions>
       )}
       {error && (
-        <p role="alert" className="w-full text-xs text-destructive">
+        <p role="alert" className="text-xs text-destructive">
           {error}
         </p>
       )}
-    </Item>
+    </section>
   );
 }
