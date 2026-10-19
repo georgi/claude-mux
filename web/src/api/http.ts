@@ -9,11 +9,15 @@ import type {
   DevicesResp,
   ErrorBody,
   PairCompleteResp,
+  PatchTaskReq,
+  PlanBody,
   PushSubscribeReq,
   RepoInfo,
   ReposResp,
   SettingsResp,
+  SpawnTaskReq,
   StatusResp,
+  TaskDetail,
   TranscriptResp,
   VapidResp,
 } from "./types";
@@ -110,6 +114,10 @@ export interface Api {
   resumeAgent(agent: string): Promise<void>;
   plan(plan: string, action: "accept" | "pause" | "resume" | "cancel"): Promise<void>;
   createPlan(req: CreatePlanReq): Promise<Created>;
+  planBody(plan: string): Promise<PlanBody>;
+  task(plan: string, task: string): Promise<TaskDetail>;
+  patchTask(plan: string, task: string, req: PatchTaskReq): Promise<TaskDetail>;
+  spawnTask(plan: string, task: string, req: SpawnTaskReq): Promise<void>;
   transcript(agent: string, after?: string): Promise<TranscriptResp>;
   repos(): Promise<ReposResp>;
   addRepo(req: AddRepoReq): Promise<RepoInfo>;
@@ -139,6 +147,12 @@ export const api: Api = {
     await once("POST", `/v1/plans/${seg(plan)}/${action}`);
   },
   createPlan: (req) => json(once("POST", "/v1/plans", req)),
+  planBody: (plan) => json(call("GET", `/v1/plans/${seg(plan)}/body`)),
+  task: (plan, task) => json(call("GET", `/v1/tasks/${seg(plan)}/${seg(task)}`)),
+  patchTask: (plan, task, req) => json(once("PATCH", `/v1/tasks/${seg(plan)}/${seg(task)}`, req)),
+  async spawnTask(plan, task, req) {
+    await once("POST", `/v1/tasks/${seg(plan)}/${seg(task)}/spawn`, req);
+  },
   transcript: (agent, after) =>
     json(call("GET", `/v1/agents/${seg(agent)}/transcript${after ? `?after=${seg(after)}` : ""}`)),
   repos: () => json(call("GET", "/v1/repos")),

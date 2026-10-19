@@ -1,10 +1,9 @@
-import { CheckCircle2Icon, GitBranchIcon, GitPullRequestIcon, PauseIcon, PlayIcon, PlusIcon } from "lucide-react";
+import { ColumnsIcon, ListIcon, NetworkIcon, PlusIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { Api } from "../api/http";
-import type { CiMark as Ci, PlanView, RepoInfo, StateView, TaskView } from "../api/types";
+import type { PlanView, RepoInfo, StateView, TaskState, TaskView } from "../api/types";
 import { useSpinner } from "../hooks";
-import { agentGlyph } from "../tree";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -14,9 +13,12 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle }
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
-import { ciStatus } from "@/lib/status";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { TaskGraph } from "./board/graph";
+import { PlanHeader } from "./board/plan-header";
 import { errText, PlanBadge, TASK_ORDER, TaskBadge } from "./board/state";
-import { StatusIcon } from "./shell/status";
+import { TaskCard, TaskRow } from "./board/task-card";
+import { TaskSheet } from "./board/task-sheet";
 
 interface BoardProps {
   view: StateView;
@@ -26,134 +28,111 @@ interface BoardProps {
   onOpenAgent: (agent: string) => void;
 }
 
-function waits(t: TaskView, tasks: TaskView[]): string {
-  const open = t.deps.filter((d) => tasks.find((x) => x.id === d)?.state !== "merged");
-  return open.length ? `waits ${open.join(", ")}` : "";
+export type BoardView = "columns" | "list" | "graph";
+const VIEWS: BoardView[] = ["columns", "list", "graph"];
+
+/** Columns in the order work flows; the first ones show even when empty. */
+const COLUMNS: TaskState[] = ["todo", "in_progress", "testing", "failing", "blocked", "passing", "merged", "cancelled"];
+const ALWAYS: TaskState[] = ["todo", "in_progress", "testing", "passing", "merged"];
+
+const viewKey = (plan: string) => `cmux.board.view.${plan}`;
+
+/** The board view last picked for `plan`, kept in this browser. */
+function useBoardView(plan: string): [BoardView, (v: BoardView) => void] {
+  const read = (): BoardView => {
+    try {
+      const v = localStorage.getItem(viewKey(plan));
+      return VIEWS.includes(v as BoardView) ? (v as BoardView) : "columns";
+    } catch {
+      return "columns";
+    }
+  };
+  const [state, setState] = useState(() => ({ plan, v: read() }));
+  // A different plan reads its own choice.
+  const v = state.plan === plan ? state.v : read();
+  if (state.plan !== plan) setState({ plan, v });
+  const set = (next: BoardView) => {
+    setState({ plan, v: next });
+    try {
+      localStorage.setItem(viewKey(plan), next);
+    } catch {
+      // Private mode: the choice lasts for this page only.
+    }
+  };
+  return [v, set];
 }
 
-function CiMark({ ci }: { ci: Ci | null | undefined }) {
-  return ci ? <StatusIcon status={ciStatus(ci)} /> : null;
-}
-
-function TaskCard({ t, tasks, view, spin, onOpenAgent }: { t: TaskView; tasks: TaskView[]; view: StateView; spin: string; onOpenAgent: (a: string) => void }) {
-  const a = t.agent ? view.agents.find((x) => x.id === t.agent) : undefined;
-  const subs = a ? view.agents.filter((x) => x.parent === a.id) : [];
-  const wait = t.state === "todo" ? waits(t, tasks) : "";
-  const pct = t.criteria_total ? Math.round((t.criteria_done / t.criteria_total) * 100) : 0;
+function Columns({ tasks, view, onOpen }: { tasks: TaskView[]; view: StateView; onOpen: (t: string) => void }) {
   return (
-    <Card size="sm" data-task={t.id}>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          {a ? <span aria-hidden className="font-mono">{agentGlyph(a, spin)}</span> : null}
-          <code className="text-xs text-muted-foreground">{t.id}</code>
-          <span className="min-w-0 flex-1 truncate">{t.title}</span>
-        </CardTitle>
-        <CardDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <TaskBadge state={t.state} />
-          {t.branch && (
-            <span className="inline-flex items-center gap-1 font-mono text-xs">
-              <GitBranchIcon className="size-3" aria-hidden />
-              {t.branch}
-            </span>
-          )}
-          {t.pr && (
-            <a
-              className="inline-flex items-center gap-1 text-xs underline-offset-4 hover:underline"
-              href={t.pr.url}
-              target="_blank"
-              rel="noreferrer"
-            >
-              <GitPullRequestIcon className="size-3" aria-hidden />#{t.pr.number}
-              <CiMark ci={t.pr.ci} />
-              <span className="sr-only">(opens GitHub)</span>
-            </a>
-          )}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-2">
-        {t.criteria_total > 0 && (
-          <Progress value={pct} aria-label={`${t.criteria_done} of ${t.criteria_total} criteria`}>
-            <span className="text-xs text-muted-foreground">
-              {t.criteria_done}/{t.criteria_total} criteria
-            </span>
-          </Progress>
-        )}
-        {wait && <p className="text-xs text-muted-foreground">{wait}</p>}
-        {subs.length > 0 && (
-          <p className="truncate font-mono text-xs text-muted-foreground">
-            {subs.map((s) => `${agentGlyph(s, spin)} ${s.path.slice(s.path.indexOf("/") + 1)}`).join("  ")}
-          </p>
-        )}
-        {a && (
-          <Button variant="outline" size="sm" className="self-start" onClick={() => onOpenAgent(a.id)}>
-            Open agent
-          </Button>
-        )}
-      </CardContent>
-    </Card>
+    <div className="-mx-4 overflow-x-auto px-4 pb-2" role="region" aria-label="Task columns" tabIndex={0}>
+      <div className="flex w-max gap-3">
+        {COLUMNS.map((state) => {
+          const group = tasks.filter((t) => t.state === state);
+          if (!group.length && !ALWAYS.includes(state)) return null;
+          return (
+            <div key={state} className="flex w-72 shrink-0 flex-col gap-2 rounded-xl bg-muted/40 p-2" data-column={state}>
+              <h3 className="flex items-center gap-2 px-1 text-sm font-medium">
+                <TaskBadge state={state} />
+                <span className="text-muted-foreground tabular-nums">{group.length}</span>
+              </h3>
+              {group.map((t) => (
+                <TaskCard key={t.id} t={t} tasks={tasks} view={view} onOpen={onOpen} />
+              ))}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
-/** One plan's tasks, grouped by state (UI design 3.6), with the plan's controls. */
+function List({ tasks, view, onOpen }: { tasks: TaskView[]; view: StateView; onOpen: (t: string) => void }) {
+  const sorted = TASK_ORDER.flatMap((s) => tasks.filter((t) => t.state === s));
+  return (
+    <ItemGroup className="gap-0 divide-y rounded-xl border" aria-label="Tasks">
+      {sorted.map((t) => (
+        <TaskRow key={t.id} t={t} tasks={tasks} view={view} onOpen={onOpen} />
+      ))}
+    </ItemGroup>
+  );
+}
+
+/** One plan's tasks as columns, a list or a dependency graph (UI design 3.6), with the plan's controls. */
 export function Board({ view, plan, api, readOnly, onOpenAgent }: BoardProps) {
   const p = view.plans.find((x) => x.id === plan);
   const spin = useSpinner(view.agents.some((a) => a.activity === "working"));
-  const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useBoardView(plan);
+  const [open, setOpen] = useState<string | null>(null);
   if (!p) return <p className="p-4 text-sm text-muted-foreground">No plan {plan}.</p>;
   const tasks = p.tasks.map((id) => view.tasks.find((t) => t.plan === p.id && t.id === id)).filter((t): t is TaskView => !!t);
   const executor = view.agents.find((a) => a.id === `${p.id}/executor`);
-  const can = !readOnly && !busy;
-  const merged = tasks.filter((t) => t.state === "merged").length;
-  const act = (what: "accept" | "resume" | "pause", done: string) => {
-    setBusy(true);
-    api
-      .plan(p.id, what)
-      .then(() => toast.success(done))
-      .catch((e: unknown) => toast.error(errText(e)))
-      .finally(() => setBusy(false));
-  };
   return (
-    <section className="mx-auto flex w-full max-w-5xl flex-col gap-4 p-4">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex flex-wrap items-center gap-2 text-lg">
-            <span className="min-w-0 break-words">{p.title}</span>
-            <PlanBadge state={p.state} paused={p.paused} />
-          </CardTitle>
-          <CardDescription className="break-words">
-            <code>{p.id}</code> · {p.repos.map((r) => r.path).join(", ")}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <Progress value={tasks.length ? Math.round((merged / tasks.length) * 100) : 0} aria-label="Plan progress">
-            <span className="text-sm">
-              {merged}/{tasks.length} merged
-            </span>
-          </Progress>
-          <div className="flex flex-wrap gap-2">
-            {(p.state === "draft" || p.state === "proposed") && (
-              <Button disabled={!can} onClick={() => act("accept", "Plan accepted")}>
-                <CheckCircle2Icon /> Accept plan
-              </Button>
-            )}
-            {p.state === "accepted" &&
-              (p.paused ? (
-                <Button disabled={!can} onClick={() => act("resume", "Plan resumed")}>
-                  <PlayIcon /> Resume
-                </Button>
-              ) : (
-                <Button variant="outline" disabled={!can} onClick={() => act("pause", "Plan paused")}>
-                  <PauseIcon /> Pause
-                </Button>
-              ))}
-            {executor && (
-              <Button variant="secondary" onClick={() => onOpenAgent(executor.id)}>
-                <span aria-hidden className="font-mono">◆{agentGlyph(executor, spin)}</span> Executor
-              </Button>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+    <section className="mx-auto flex w-full max-w-7xl min-w-0 flex-col gap-4 p-4">
+      <PlanHeader p={p} tasks={tasks} executor={executor} spin={spin} api={api} readOnly={readOnly} onOpenAgent={onOpenAgent}>
+        {tasks.length > 0 && (
+          <ToggleGroup
+            variant="outline"
+            size="sm"
+            spacing={0}
+            aria-label="Board view"
+            value={[mode]}
+            onValueChange={(v: unknown[]) => {
+              const next = v[0] as BoardView | undefined;
+              if (next) setMode(next);
+            }}
+          >
+            <ToggleGroupItem value="columns" aria-label="Columns">
+              <ColumnsIcon /> <span className="hidden sm:inline">Columns</span>
+            </ToggleGroupItem>
+            <ToggleGroupItem value="list" aria-label="List">
+              <ListIcon /> <span className="hidden sm:inline">List</span>
+            </ToggleGroupItem>
+            <ToggleGroupItem value="graph" aria-label="Graph">
+              <NetworkIcon /> <span className="hidden sm:inline">Graph</span>
+            </ToggleGroupItem>
+          </ToggleGroup>
+        )}
+      </PlanHeader>
 
       {tasks.length === 0 ? (
         <Empty>
@@ -162,25 +141,26 @@ export function Board({ view, plan, api, readOnly, onOpenAgent }: BoardProps) {
             <EmptyDescription>The executor adds tasks as the plan takes shape.</EmptyDescription>
           </EmptyHeader>
         </Empty>
+      ) : mode === "graph" ? (
+        <TaskGraph tasks={tasks} onOpen={setOpen} />
+      ) : mode === "list" ? (
+        <List tasks={tasks} view={view} onOpen={setOpen} />
       ) : (
-        TASK_ORDER.map((state) => {
-          const group = tasks.filter((t) => t.state === state);
-          if (!group.length) return null;
-          return (
-            <div key={state} className="flex flex-col gap-2">
-              <h3 className="flex items-center gap-2 text-sm font-medium">
-                <TaskBadge state={state} />
-                <span className="text-muted-foreground">{group.length}</span>
-              </h3>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {group.map((t) => (
-                  <TaskCard key={t.id} t={t} tasks={tasks} view={view} spin={spin} onOpenAgent={onOpenAgent} />
-                ))}
-              </div>
-            </div>
-          );
-        })
+        <Columns tasks={tasks} view={view} onOpen={setOpen} />
       )}
+
+      <TaskSheet
+        view={view}
+        plan={p.id}
+        task={open}
+        api={api}
+        readOnly={readOnly}
+        onClose={() => setOpen(null)}
+        onOpenAgent={(a) => {
+          setOpen(null);
+          onOpenAgent(a);
+        }}
+      />
     </section>
   );
 }
