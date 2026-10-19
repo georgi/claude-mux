@@ -1,25 +1,13 @@
-import { useEffect, useRef, useState } from "react";
-import {
-  ArrowUpIcon,
-  ChevronsUpIcon,
-  FileTextIcon,
-  GlobeIcon,
-  LoaderCircleIcon,
-  MailIcon,
-  MessageSquareIcon,
-  SearchIcon,
-  TerminalIcon,
-  UsersIcon,
-  WrenchIcon,
-  CircleCheckIcon,
-  FileSearchIcon,
-} from "lucide-react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { ArrowUpIcon, ChevronsUpIcon, MailIcon, MessageSquareIcon } from "lucide-react";
 import type { Api } from "@/api/http";
 import type { ChatEntry } from "@/api/types";
-import { chatRows, toolKind, type ChatRow, type ToolKind } from "@/chat";
+import { chatRows, groupRows, lastToolKey, type ChatRow, type ToolRow as Row } from "@/chat";
 import { Markdown } from "./lazy";
+import { ToolGroupView } from "./chat/tools/Group";
+import { Generic } from "./chat/tools/Generic";
+import { hasCard, type ToolContext } from "./chat/tools/parts";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
-import { CodeBlock, CodeBlockContent, CodeBlockCopyButton } from "@/components/ui/code-block";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupText, InputGroupTextarea } from "@/components/ui/input-group";
 import { Message, MessageContent } from "@/components/ui/message";
@@ -33,68 +21,48 @@ import {
 } from "@/components/ui/message-scroller";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import {
-  Trace,
-  TraceCollapsible,
-  TraceCollapsibleContent,
-  TraceCollapsibleTrigger,
-  TraceDescription,
-  TraceIcon,
-  TraceLine,
-  TraceTitle,
-} from "@/components/ui/trace";
 
 interface ChatProps {
   /** `undefined` while the first batch is on its way. */
   entries: ChatEntry[] | undefined;
+  /** Whose chat this is, for the tool cards' actions (full output, open a sub-agent). */
+  tools?: ToolContext;
   /** Rendered as the last item, for example a pending permission request. */
   children?: React.ReactNode;
 }
 
-const ICONS: Record<ToolKind, React.ComponentType<{ className?: string }>> = {
-  shell: TerminalIcon,
-  file: FileTextIcon,
-  read: FileSearchIcon,
-  search: SearchIcon,
-  agent: UsersIcon,
-  web: GlobeIcon,
-  other: WrenchIcon,
-};
+// The tool cards load with the first row that has a structured input. Until
+// then, and for rows from an older server, the summary line shows.
+const ToolView = lazy(() => import("./chat/tools").then((m) => ({ default: m.ToolView })));
 
-/** Long output clamps to the last lines; the block scrolls inside itself. */
-const CLAMP = "max-h-64";
-
-function ToolRow({ row }: { row: Extract<ChatRow, { kind: "tool" }> }) {
-  const Icon = ICONS[toolKind(row.name)];
-  const running = row.result === null;
-  const line = (
-    <TraceLine status={running ? "running" : undefined}>
-      <TraceIcon>{running ? <LoaderCircleIcon className="animate-spin" /> : <Icon />}</TraceIcon>
-      <TraceTitle>
-        <span className="font-medium">{row.name}</span> <span className="font-mono text-xs">{row.summary}</span>
-      </TraceTitle>
-      {!running && (
-        <TraceDescription>
-          <CircleCheckIcon className="size-3.5" aria-label="Done" />
-        </TraceDescription>
-      )}
-    </TraceLine>
-  );
-  if (running || !row.result) return <Trace>{line}</Trace>;
+function ToolRow({ row, tools, open }: { row: Row; tools?: ToolContext; open?: boolean }) {
+  const p = { agent: "", ...tools, row, open };
+  if (!hasCard(row)) return <Generic {...p} />;
   return (
-    <Trace>
-      <TraceCollapsible>
-        <TraceCollapsibleTrigger aria-label={`${row.name} output`}>{line}</TraceCollapsibleTrigger>
-        <TraceCollapsibleContent>
-          <CodeBlock size="sm">
-            <CodeBlockCopyButton value={row.result} className="absolute end-1 top-1 z-10 bg-background" />
-            <CodeBlockContent wrap={toolKind(row.name) !== "shell"} className={CLAMP}>
-              {row.result}
-            </CodeBlockContent>
-          </CodeBlock>
-        </TraceCollapsibleContent>
-      </TraceCollapsible>
-    </Trace>
+    <Suspense fallback={<Generic {...p} />}>
+      <ToolView {...p} />
+    </Suspense>
+  );
+}
+
+function Row({ row, tools, open }: { row: ChatRow; tools?: ToolContext; open: boolean }) {
+  if (row.kind === "tool") return <ToolRow row={row} tools={tools} open={open} />;
+  if (row.kind === "user")
+    return (
+      <Message align="end">
+        <MessageContent>
+          <Bubble align="end" variant="muted">
+            <BubbleContent className="whitespace-pre-wrap wrap-break-word">{row.text}</BubbleContent>
+          </Bubble>
+        </MessageContent>
+      </Message>
+    );
+  return (
+    <Message>
+      <MessageContent>
+        <Markdown>{row.text}</Markdown>
+      </MessageContent>
+    </Message>
   );
 }
 
@@ -114,9 +82,11 @@ function ChatSkeleton() {
  * tool call with its output folded. It sticks to the bottom unless you have
  * scrolled up to read; a button jumps back to the latest entry.
  */
-export function ChatLog({ entries, children }: ChatProps) {
+export function ChatLog({ entries, tools, children }: ChatProps) {
   if (entries === undefined) return <ChatSkeleton />;
   const rows = chatRows(entries);
+  // Only the latest todo list opens by itself.
+  const todo = lastToolKey(rows, "TodoWrite");
   if (rows.length === 0 && !children) {
     return (
       <Empty>
@@ -135,24 +105,14 @@ export function ChatLog({ entries, children }: ChatProps) {
       <MessageScroller className="min-h-0 flex-1">
         <MessageScrollerViewport role="log" aria-label="Conversation">
           <MessageScrollerContent className="gap-4 px-3 py-3">
-            {rows.map((r) => (
+            {groupRows(rows).map((r) => (
               <MessageScrollerItem key={r.key} messageId={r.key}>
-                {r.kind === "tool" ? (
-                  <ToolRow row={r} />
-                ) : r.kind === "user" ? (
-                  <Message align="end">
-                    <MessageContent>
-                      <Bubble align="end" variant="muted">
-                        <BubbleContent className="whitespace-pre-wrap wrap-break-word">{r.text}</BubbleContent>
-                      </Bubble>
-                    </MessageContent>
-                  </Message>
+                {r.kind === "group" ? (
+                  <ToolGroupView group={r}>
+                    {r.rows.map((t) => t.kind === "tool" && <ToolRow key={t.key} row={t} tools={tools} open={t.key === todo} />)}
+                  </ToolGroupView>
                 ) : (
-                  <Message>
-                    <MessageContent>
-                      <Markdown>{r.text}</Markdown>
-                    </MessageContent>
-                  </Message>
+                  <Row row={r} tools={tools} open={r.key === todo} />
                 )}
               </MessageScrollerItem>
             ))}

@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ChatLog, Composer } from "./Chat";
 import { PendingRequest, pendingFor } from "./chat/Pending";
+import type { ToolContext } from "./chat/tools/parts";
 import { TermView } from "./lazy";
 
 interface Props {
@@ -97,7 +98,12 @@ export function AgentPane({ view, agent, mode, phone, conn, store, api, readOnly
       {current === "terminal" && agent.term !== null ? (
         <PhoneTerm term={agent.term} title={agent.id} phone={phone} conn={conn} store={store} readOnly={readOnly} />
       ) : (
-        <ChatPane agent={agent.id} conn={conn} entries={m.chats[agent.id]}>
+        <ChatPane
+          agent={agent.id}
+          conn={conn}
+          entries={m.chats[agent.id]}
+          tools={{ agent: agent.id, api, agents: view.agents, cwd: agent.cwd, onOpenAgent }}
+        >
           {pendingFor(view, agent.id).map((n) => (
             <PendingRequest key={n.item.id} need={n} api={api} />
           ))}
@@ -112,11 +118,13 @@ function ChatPane({
   agent,
   conn,
   entries,
+  tools,
   children,
 }: {
   agent: string;
   conn: Conn;
   entries: ChatEntry[] | undefined;
+  tools: ToolContext;
   children: React.ReactNode[];
 }) {
   useEffect(() => {
@@ -124,7 +132,7 @@ function ChatPane({
     return () => conn.unsubChat(agent);
   }, [agent, conn]);
   return (
-    <ChatLog entries={entries}>
+    <ChatLog entries={entries} tools={tools}>
       {children.length > 0 && <div className="flex flex-col gap-2">{children}</div>}
     </ChatLog>
   );

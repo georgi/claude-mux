@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import type { ItemKind } from "../api/types";
+import type { ChatEntry, ItemKind } from "../api/types";
 import { agent, entry, fakeApi, item, PLAN, state } from "../fixtures";
 import type { Nav } from "../needs";
 import { ChatLog, Composer } from "./Chat";
@@ -70,6 +70,98 @@ describe("ChatLog", () => {
     unmount();
     render(<ChatLog entries={[]} />);
     expect(screen.getByText("No messages yet")).toBeTruthy();
+  });
+});
+
+describe("tool cards", () => {
+  const call = (uuid: string, name: string, input: Record<string, unknown>, summary = name) =>
+    entry(uuid, { kind: "tool_call", text: "", tool: { name, summary, input: input as never }, call_id: `id-${uuid}`, ts: 0 });
+  const result = (uuid: string, name: string, text: string, over: Partial<ChatEntry> = {}) =>
+    entry(`r-${uuid}`, { role: "user", kind: "tool_result", text, tool: { name, summary: "" }, call_id: `id-${uuid}`, ...over });
+
+  it("shows a failed Bash call in red, with its error output as an alert and the full output on demand", async () => {
+    const api = fakeApi({ entry: async () => entry("full", { text: "error: linker failed\nfull tail" }) });
+    render(
+      <ChatLog
+        tools={{ agent: `${PLAN}/T-0003`, api }}
+        entries={[
+          call("b", "Bash", { command: "cargo build", description: "Build the workspace" }),
+          result("b", "Bash", "error: linker failed\n  at main (src/main.rs:3:1)", { is_error: true, full_len: 5000 }),
+        ]}
+      />,
+    );
+    expect(await screen.findByText("Build the workspace")).toBeTruthy();
+    expect(screen.getByText("$ cargo build")).toBeTruthy();
+    expect(screen.getByLabelText("Error")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Bash output" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("error: linker failed");
+    fireEvent.click(screen.getByRole("button", { name: /Show full output/ }));
+    await waitFor(() => expect(screen.getByText("full tail")).toBeTruthy());
+  });
+
+  it("shows an Edit with its +/- counts and the diff", async () => {
+    render(
+      <ChatLog
+        tools={{ agent: "a", cwd: "/repo" }}
+        entries={[
+          call("e", "Edit", { file_path: "/repo/src/chat.ts", old_string: "a\nb\nc", new_string: "a\nB\nB2\nc" }),
+          result("e", "Edit", "The file was updated."),
+        ]}
+      />,
+    );
+    const counts = await screen.findByLabelText("2 added, 1 removed");
+    expect(counts.textContent).toBe("+2 −1");
+    expect(screen.getByText("chat.ts")).toBeTruthy();
+    expect(screen.getByText("src/")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Edit output" }));
+    await waitFor(() => expect(screen.getByLabelText("Changes to /repo/src/chat.ts")).toBeTruthy());
+    expect(document.querySelectorAll('[data-op="+"]')).toHaveLength(2);
+    expect(document.querySelectorAll('[data-op="-"]')).toHaveLength(1);
+  });
+
+  it("shows a Task with its sub-agent's state and a button that opens it", async () => {
+    const opened: string[] = [];
+    const parent = `${PLAN}/T-0003`;
+    const sub = { ...agent("T-0003/lint"), level: "sub" as const, parent, activity: "working" as const };
+    render(
+      <ChatLog
+        tools={{ agent: parent, agents: [agent("T-0003"), sub], onOpenAgent: (id) => opened.push(id) }}
+        entries={[call("t", "Task", { description: "Run lint on the web app", subagent_type: "general-purpose" })]}
+      />,
+    );
+    expect(await screen.findByText("Run lint on the web app")).toBeTruthy();
+    expect(screen.getByText("general-purpose")).toBeTruthy();
+    expect(screen.getByText("Working")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open agent lint" }));
+    expect(opened).toEqual([sub.id]);
+  });
+
+  it("opens only the latest todo list, and folds three tool calls into one step group", async () => {
+    const todos = (s: string) => ({ todos: [{ content: `Write ${s}`, status: "completed" }, { content: "Test", status: "in_progress", activeForm: "Testing" }] });
+    render(
+      <ChatLog
+        entries={[
+          call("t1", "TodoWrite", todos("old")),
+          result("t1", "TodoWrite", "ok"),
+          entry("x", { text: "Next." }),
+          call("g1", "Read", { file_path: "/a.ts" }),
+          call("g2", "Grep", { pattern: "foo" }),
+          call("t2", "TodoWrite", todos("new")),
+          result("t2", "TodoWrite", "ok"),
+        ]}
+      />,
+    );
+    // The group still runs (two calls have no result), so it stays open.
+    expect(await screen.findByText(/^Working · 3 steps/)).toBeTruthy();
+    expect(await screen.findByText("Write new")).toBeTruthy();
+    expect(screen.queryByText("Write old")).toBeNull();
+  });
+
+  it("falls back to the summary line without structured input", () => {
+    render(<ChatLog entries={[entry("c", { kind: "tool_call", text: "", tool: { name: "Edit", summary: "src/a.rs" } })]} />);
+    expect(screen.getByText("Edit")).toBeTruthy();
+    expect(screen.getByText("src/a.rs")).toBeTruthy();
   });
 });
 
