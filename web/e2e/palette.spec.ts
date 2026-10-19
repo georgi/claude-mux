@@ -49,7 +49,7 @@ test("the palette opens an agent and ? lists the shortcuts", async ({ page }) =>
   // `c` switches to chat; `?` lists every binding.
   await page.locator("main").first().click({ position: { x: 5, y: 5 } });
   await page.keyboard.press("c");
-  await expect(page.getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("group", { name: "View" }).getByRole("button", { name: "Chat" })).toHaveAttribute("aria-pressed", "true");
   await page.locator("main").first().click({ position: { x: 5, y: 5 } });
   await page.keyboard.press("?");
   const sheet = page.getByRole("dialog", { name: "Keyboard shortcuts" });

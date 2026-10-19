@@ -1,10 +1,8 @@
-import { FlagIcon, PlusIcon, SquareMousePointerIcon } from "lucide-react";
+import { PlusIcon, SquareMousePointerIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Sidebar,
   SidebarContent,
@@ -25,8 +23,9 @@ import { AgentPane } from "./AgentPane";
 import { NeedsYou } from "./NeedsYou";
 import { Pairing } from "./Pairing";
 import { Keyboard } from "./shell/command";
-import { Header } from "./shell/header";
+import { crumbsFor, Header } from "./shell/header";
 import { Live } from "./shell/live";
+import { NeedsLayout } from "./shell/needs-aside";
 import { PhoneTabs, type Tab } from "./shell/phone-tabs";
 import { Board, NewPlan, PlanList, Settings, TermView } from "./lazy";
 import { Tree } from "./Tree";
@@ -266,6 +265,7 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
       <SidebarInset className="min-w-0 overflow-hidden">
         <Header
           m={m}
+          crumbs={crumbsFor(v, route)}
           seen={seen.current}
           phone={phone}
           wide={wide}
@@ -276,21 +276,15 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
           onSettings={() => go({ view: "settings" })}
           onSignOut={signOut}
         />
-        <div className="flex min-h-0 flex-1">
-          <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">{body()}</main>
-          {wide && !phone && (
-            <aside aria-label="Needs you" className="flex w-80 shrink-0 flex-col border-l">
-              <h2 className="flex h-10 shrink-0 items-center gap-2 border-b px-3 text-sm font-medium">
-                <FlagIcon className="size-4 text-muted-foreground" />
-                Needs you
-                {count > 0 && <Badge>{count}</Badge>}
-              </h2>
-              <ScrollArea className="min-h-0 flex-1">
-                {v ? <NeedsYou view={v} api={api} nav={nav} readOnly={readOnly} /> : <Loading />}
-              </ScrollArea>
-            </aside>
-          )}
-        </div>
+        {wide && !phone ? (
+          <NeedsLayout count={count} main={body()}>
+            {v ? <NeedsYou view={v} api={api} nav={nav} readOnly={readOnly} /> : <Loading />}
+          </NeedsLayout>
+        ) : (
+          <div className="flex min-h-0 flex-1">
+            <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">{body()}</main>
+          </div>
+        )}
         {phone && <PhoneTabs tab={tab} count={count} go={(t) => go({ view: t })} />}
       </SidebarInset>
       <Keyboard view={v} route={route} readOnly={readOnly} api={api} nav={nav} go={go} onSignOut={signOut} />

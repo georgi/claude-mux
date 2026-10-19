@@ -69,7 +69,7 @@ test("pair, open an agent, type into its terminal, approve its permission", asyn
   await expect(needs).toContainText("Nothing needs you.");
 
   // The chat shows the same turn.
-  await page.getByRole("tab", { name: "Chat" }).click();
+  await page.getByRole("group", { name: "View" }).getByRole("button", { name: "Chat" }).click();
   await expect(page.getByRole("log", { name: "Conversation" })).toContainText("Tests ran.");
   await expect(page.getByRole("log", { name: "Conversation" })).toContainText("run the tests");
 });
@@ -96,12 +96,12 @@ test.describe("on a phone", () => {
     await page.getByRole("button", { name: "Executor", exact: true }).click();
 
     // Chat is the default agent view on a phone.
-    await expect(page.getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("group", { name: "View" }).getByRole("button", { name: "Chat" })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByRole("log", { name: "Conversation" })).toContainText("Ready to plan.");
     if (shots) await page.screenshot({ path: `${shots}/phone-chat.png` });
 
     // The key bar types into the terminal.
-    await page.getByRole("tab", { name: "Terminal" }).click();
+    await page.getByRole("group", { name: "View" }).getByRole("button", { name: "Terminal" }).click();
     const keys = page.getByRole("toolbar", { name: "Terminal keys" });
     for (const k of ["Esc", "Tab", "Ctrl", "↑", "↓", "←", "→"]) await expect(keys.getByRole("button", { name: k, exact: true })).toBeVisible();
     await keys.getByRole("button", { name: "2", exact: true }).click();
