@@ -933,17 +933,35 @@ impl App {
         let Some(w) = self.windows.get(self.active) else {
             return;
         };
-        let reqs: Vec<Request> = w
+        let main = w.panes.first().and_then(|p| p.agent.clone());
+        let terms: Vec<Request> = w
             .panes
             .iter()
-            .enumerate()
-            .filter_map(|(i, p)| match (&p.agent, p.remote_term()) {
-                (Some(a), _) if i == 0 => Some(Pending::Stop(a.clone()).request()),
+            .filter_map(|p| match (&p.agent, p.remote_term()) {
                 (None, Some(t)) => Some(Request::close_terminal(t.term)),
                 _ => None,
             })
             .collect();
-        for req in reqs {
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        if let Some(a) = main {
+            let finished = r.mirror.sv.agent(&a).is_none_or(|v| {
+                matches!(
+                    v.life,
+                    cmux_proto::view::Life::Exited { .. } | cmux_proto::view::Life::Stopped
+                )
+            });
+            if finished {
+                // Nothing to stop: hide the window instead.
+                r.view.closed.insert(a.to_string());
+                r.view_dirty = true;
+                self.rebuild();
+            } else {
+                self.dispatch(Pending::Stop(a).request());
+            }
+        }
+        for req in terms {
             self.dispatch(req);
         }
     }

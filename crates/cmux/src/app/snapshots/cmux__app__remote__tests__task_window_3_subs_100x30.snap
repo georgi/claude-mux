@@ -2,7 +2,7 @@
 source: crates/cmux/src/app/remote_tests.rs
 expression: draw_task_window(3).1
 ---
- test ● auth-refactor ▸   1 ⚑ execu…  2 ● T-000…  3 ⠹ T-0… ⊞4  4 ⚑ T-000…  5 ▸ zsh  6 ▸ lazyg…      
+ test ● auth-refactor ▸   1 ⚑ executor  2 ⠹ T-000… ⊞4  3 ⚑ T-0004 p…  4 ▸ zsh  5 ▸ lazygit          
 ┌ plans ─────────────────────┐ ⠹ T-0002  /home/me/api                  │ ⠹ tests  /home/me/api      
 │▾◆ auth-refactor    accepted│                                         │                            
 │   ⚑ ◆ executor             │                                         │                            

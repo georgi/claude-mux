@@ -6,13 +6,15 @@
 //!
 //! - a plan is a **workspace**; its executor is the pinned first window;
 //! - a task that has an agent is a **window**, in plan order; the task's agent
-//!   is the main pane and its sub-agents are the other panes, in spawn order;
+//!   is the main pane and its sub-agents are the other panes, in spawn order.
+//!   The window goes once the task is merged or cancelled and its agent has
+//!   finished;
 //! - terminals that belong to no agent (shells, lazygit) are windows of their
 //!   own, after the tasks, in every workspace.
 //!
 //! [`ServerView`] is what the user decided and the server cannot know: the
 //! current workspace and window, window names, layout preset, zoom, and which
-//! finished sub-agents were closed. It is saved in `view-<server>.toml`.
+//! finished agents were closed. It is saved in `view-<server>.toml`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -223,7 +225,10 @@ pub fn derive(sv: &StateView, view: &ServerView) -> Derived {
             let agents: Vec<&AgentView> =
                 plan.agents.iter().filter_map(|id| sv.agent(id)).collect();
 
-            if let Some(exec) = agents.iter().find(|a| a.level == Level::Executor) {
+            if let Some(exec) = agents
+                .iter()
+                .find(|a| a.level == Level::Executor && !closed(view, a))
+            {
                 let key = WindowKey::Executor(plan.id.clone());
                 windows.push(WindowSpec {
                     title: view
@@ -243,6 +248,12 @@ pub fn derive(sv: &StateView, view: &ServerView) -> Derived {
                     continue; // not started: no window yet
                 };
                 let mut panes = vec![pane_of(main)];
+                // A finished task agent's window goes when the user closes it,
+                // or by itself once the task is merged or cancelled.
+                let task_done = matches!(task.state, TaskState::Merged | TaskState::Cancelled);
+                if closed(view, main) || (panes[0].finished && task_done) {
+                    continue;
+                }
                 let task_over = matches!(
                     task.state,
                     TaskState::Merged | TaskState::Cancelled | TaskState::Passing
@@ -279,6 +290,11 @@ pub fn derive(sv: &StateView, view: &ServerView) -> Derived {
         .collect();
 
     Derived { workspaces, loose }
+}
+
+/// A finished agent the user closed. Its window or pane is not shown.
+fn closed(view: &ServerView, a: &AgentView) -> bool {
+    pane_of(a).finished && view.closed.contains(&a.id.to_string())
 }
 
 fn pane_of(a: &AgentView) -> PaneSpec {
@@ -321,7 +337,7 @@ pub struct ServerView {
     pub window: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tree_hidden: bool,
-    /// Agent ids of finished sub-agents the user closed.
+    /// Agent ids of finished agents the user closed.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub closed: BTreeSet<String>,
     /// Keyed by [`WindowKey::encode`].
@@ -399,19 +415,12 @@ mod tests {
         let ws = d.workspace(&fixture::plan_id()).unwrap();
         let titles: Vec<&str> = ws.windows.iter().map(|w| w.title.as_str()).collect();
         // Executor pinned first; tasks with an agent in plan order (T-0003,
-        // T-0005, T-0006 have none); loose terminals last.
+        // T-0005, T-0006 have none; T-0001 is merged); loose terminals last.
         assert_eq!(
             titles,
-            [
-                "executor",
-                "T-0001 schema",
-                "T-0002 api",
-                "T-0004 perms",
-                "zsh",
-                "lazygit"
-            ]
+            ["executor", "T-0002 api", "T-0004 perms", "zsh", "lazygit"]
         );
-        let t2 = &ws.windows[2];
+        let t2 = &ws.windows[1];
         assert_eq!(t2.task_state, Some(TaskState::Testing));
         let panes: Vec<String> = t2.panes.iter().map(PaneSpec::key).collect();
         assert_eq!(panes.len(), 3);
@@ -449,7 +458,7 @@ mod tests {
         view.closed.insert(docs.to_string());
         view.closed.insert(tests.to_string());
         let d = derive(&sv, &view);
-        let t2 = &d.workspace(&plan).unwrap().windows[2];
+        let t2 = &d.workspace(&plan).unwrap().windows[1];
         assert_eq!(t2.panes.len(), 3);
 
         // Once it exits, closing it hides it.
@@ -461,13 +470,50 @@ mod tests {
             change: ChangeView::Agent(a),
         });
         let d2 = derive(&sv2, &view);
-        let t2 = &d2.workspace(&plan).unwrap().windows[2];
+        let t2 = &d2.workspace(&plan).unwrap().windows[1];
         assert_eq!(t2.panes.len(), 2);
         // Without the close it stays, dimmed.
         let d3 = derive(&sv2, &ServerView::default());
-        let t2 = &d3.workspace(&plan).unwrap().windows[2];
+        let t2 = &d3.workspace(&plan).unwrap().windows[1];
         assert_eq!(t2.panes.len(), 3);
         assert!(t2.panes[2].finished);
+    }
+
+    #[test]
+    fn finished_task_windows_go_when_merged_or_closed() {
+        let plan = fixture::plan_id();
+        let titles = |d: &Derived| -> Vec<String> {
+            let ws = d.workspace(&plan).unwrap();
+            ws.windows.iter().map(|w| w.title.clone()).collect()
+        };
+        // T-0001 is merged and its agent has exited: no window.
+        let sv = fixture::state();
+        let d = derive(&sv, &ServerView::default());
+        assert!(!titles(&d).contains(&"T-0001 schema".to_string()));
+
+        // Not merged yet: it stays, dimmed.
+        let mut sv2 = sv.clone();
+        let mut t = sv2.task(&plan, TaskId::new(1)).unwrap().clone();
+        t.state = TaskState::Testing;
+        sv2.apply(&cmux_proto::view::DeltaView {
+            rev: 8,
+            change: ChangeView::Task(t),
+        });
+        let d = derive(&sv2, &ServerView::default());
+        assert_eq!(titles(&d)[1], "T-0001 schema");
+        assert!(d.workspace(&plan).unwrap().windows[1].panes[0].finished);
+
+        // Closed by the user: it goes. A running task agent stays.
+        let mut view = ServerView::default();
+        for task in ["T-0001", "T-0002"] {
+            view.closed
+                .insert(AgentId::new(plan.clone(), task.parse().unwrap()).to_string());
+        }
+        let d = derive(&sv2, &view);
+        assert_eq!(
+            titles(&d),
+            ["executor", "T-0002 api", "T-0004 perms", "zsh", "lazygit"]
+        );
     }
 
     #[test]
@@ -478,7 +524,7 @@ mod tests {
         view.window_mut(&WindowKey::Task(plan.clone(), TaskId::new(2)))
             .name = Some("backend".into());
         let d = derive(&sv, &view);
-        assert_eq!(d.workspace(&plan).unwrap().windows[2].title, "backend");
+        assert_eq!(d.workspace(&plan).unwrap().windows[1].title, "backend");
 
         // Nothing chosen: the first plan's executor.
         let (p, k) = d.current(&ServerView::default());

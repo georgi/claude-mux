@@ -170,18 +170,11 @@ fn windows_are_built_from_the_mirror() {
     let rig = Rig::new(120, 30);
     assert_eq!(
         rig.names(),
-        [
-            "executor",
-            "T-0001 schema",
-            "T-0002 api",
-            "T-0004 perms",
-            "zsh",
-            "lazygit"
-        ]
+        ["executor", "T-0002 api", "T-0004 perms", "zsh", "lazygit"]
     );
     let r = rig.app.remote.as_ref().unwrap();
     assert_eq!(r.plan.as_ref(), Some(&plan()));
-    let t2 = &rig.app.windows[2];
+    let t2 = &rig.app.windows[1];
     let labels: Vec<String> = t2.panes.iter().map(|p| p.name()).collect();
     assert_eq!(labels, ["T-0002", "tests", "docs"]);
     assert!(t2.panes.iter().all(|p| p.remote_term().is_some()));
@@ -189,17 +182,17 @@ fn windows_are_built_from_the_mirror() {
     assert_eq!(t2.layout.leaves().len(), 3);
     // Terminals of the other windows are subscribed too.
     assert_eq!(
-        rig.app.windows[4].panes[0].kind,
+        rig.app.windows[3].panes[0].kind,
         Kind::Command("zsh".into())
     );
     // A state change keeps the window the user is on.
     let mut rig = rig;
-    rig.app.select_window(3);
+    rig.app.select_window(2);
     let mut sv = state_with_terms();
     sv.rev += 1;
     rig.app
         .handle(Event::Stream(StreamEvent::State(Box::new(sv))));
-    assert_eq!(rig.app.active, 3);
+    assert_eq!(rig.app.active, 2);
 }
 
 #[test]
@@ -212,7 +205,7 @@ fn a_new_agent_appears_and_a_gone_terminal_disappears() {
     rig.app
         .handle(Event::Stream(StreamEvent::State(Box::new(sv))));
     assert!(!rig.names().iter().any(|n| n.contains("T-0004")));
-    assert_eq!(rig.names().len(), 5);
+    assert_eq!(rig.names().len(), 4);
 }
 
 #[test]
@@ -428,7 +421,7 @@ fn rest_errors_show_in_the_status_line() {
 #[test]
 fn new_windows_and_splits_post_terminals() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(4); // zsh
+    rig.app.select_window(3); // zsh
     rig.prefix(b"c");
     let calls = rig.take_calls();
     let Call::Post(path, body) = &calls[0] else {
@@ -451,7 +444,7 @@ fn new_windows_and_splits_post_terminals() {
 #[test]
 fn a_split_becomes_a_pane_of_the_window() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(4); // zsh
+    rig.app.select_window(3); // zsh
     let reply = json!({"id": 30, "kind": "shell", "agent": null, "cwd": "/home/me",
         "rows": 24, "cols": 80, "size_owner": null, "title": null});
     *rig.rest.reply.lock().unwrap() = Some(Ok(reply));
@@ -478,7 +471,7 @@ fn a_split_becomes_a_pane_of_the_window() {
     rig.app
         .handle(Event::Stream(StreamEvent::State(Box::new(sv))));
     // It is a second pane of the zsh window, not a window of its own.
-    assert_eq!(rig.app.windows.len(), 6);
+    assert_eq!(rig.app.windows.len(), 5);
     let w = &rig.app.windows[rig.app.active];
     assert_eq!(w.name(), "zsh");
     assert_eq!(w.panes.len(), 2);
@@ -488,7 +481,7 @@ fn a_split_becomes_a_pane_of_the_window() {
 #[test]
 fn closing_a_loose_terminal_deletes_it() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(4);
+    rig.app.select_window(3);
     rig.prefix(b"x");
     rig.keys(b"y");
     assert_eq!(rig.take_calls(), [Call::Delete("/v1/terminals/1".into())]);
@@ -497,7 +490,7 @@ fn closing_a_loose_terminal_deletes_it() {
 #[test]
 fn stopping_a_pane_with_an_agent_stops_the_agent() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2); // T-0002
+    rig.app.select_window(1); // T-0002
     rig.prefix(b"x");
     rig.keys(b"y");
     assert_eq!(
@@ -512,7 +505,7 @@ fn stopping_a_pane_with_an_agent_stops_the_agent() {
 #[test]
 fn prefix_tab_toggles_tree_focus_and_keys_follow() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2);
+    rig.app.select_window(1);
     rig.prefix(b"\t");
     assert!(matches!(rig.app.mode, Mode::Tree));
     // The selection starts at the pane's agent.
@@ -540,8 +533,8 @@ fn prefix_tab_toggles_tree_focus_and_keys_follow() {
 #[test]
 fn prefix_equals_takes_the_terminal_size() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2);
-    let term = rig.app.windows[2].pane().remote_term().unwrap().term;
+    rig.app.select_window(1);
+    let term = rig.app.windows[1].pane().remote_term().unwrap().term;
     let _ = rig.cmds.try_iter().count();
     rig.prefix(b"=");
     let cmds: Vec<Cmd> = rig.cmds.try_iter().collect();
@@ -557,7 +550,7 @@ fn prefix_equals_takes_the_terminal_size() {
 fn focusing_a_pane_focuses_its_terminal() {
     let mut rig = Rig::new(120, 30);
     let _ = rig.cmds.try_iter().count();
-    rig.app.select_window(4);
+    rig.app.select_window(3);
     rig.keys(b""); // any input runs the focus sync
     rig.app.after_input();
     let cmds: Vec<Cmd> = rig.cmds.try_iter().collect();
@@ -567,7 +560,7 @@ fn focusing_a_pane_focuses_its_terminal() {
 #[test]
 fn draws_the_tree_tabs_connection_dot_and_size_marks() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2);
+    rig.app.select_window(1);
     let screen = rig.draw(120, 30);
     assert!(screen.contains("test ● auth-refactor ▸"), "{screen}");
     assert!(screen.contains("T-0002 api"));
@@ -687,8 +680,8 @@ fn the_view_state_is_saved_and_restored() {
     app.handle(Event::Stream(StreamEvent::State(Box::new(
         state_with_terms(),
     ))));
-    app.select_window(3);
-    app.windows[3].custom_name = None;
+    app.select_window(2);
+    app.windows[2].custom_name = None;
     app.rename_remote("perms!");
     app.shutdown();
     let saved = std::fs::read_to_string(&path).unwrap();
@@ -702,7 +695,7 @@ fn the_view_state_is_saved_and_restored() {
         state_with_terms(),
     ))));
     assert_eq!(app.windows[app.active].name(), "perms!");
-    assert_eq!(app.active, 3);
+    assert_eq!(app.active, 2);
 }
 
 #[test]
@@ -957,7 +950,7 @@ fn a_failed_delete_after_a_loose_terminal_exits_stays_quiet() {
     assert_eq!(rig.take_calls(), [Call::Delete("/v1/terminals/1".into())]);
     assert!(rig.app.message.is_none());
     // A deliberate close still reports its failure.
-    rig.app.select_window(4);
+    rig.app.select_window(3);
     rig.prefix(b"x");
     rig.keys(b"y");
     assert!(rig.app.message.is_some());
@@ -999,8 +992,8 @@ fn task_window_with_subs(n: usize) -> StateView {
 
 fn draw_task_window(n: usize) -> (Rig, String) {
     let mut rig = Rig::with_state(100, 30, task_window_with_subs(n));
-    rig.app.select_window(2);
-    assert_eq!(rig.app.windows[2].panes.len(), n + 1);
+    rig.app.select_window(1);
+    assert_eq!(rig.app.windows[1].panes.len(), n + 1);
     let screen = rig.draw(100, 30);
     (rig, screen)
 }
