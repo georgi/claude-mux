@@ -1,28 +1,11 @@
 import { FlagIcon, PanelRightCloseIcon } from "lucide-react";
 import { useRef, useState } from "react";
-import { type LayoutStorage, type PanelImperativeHandle, useDefaultLayout } from "react-resizable-panels";
+import { type PanelImperativeHandle, useDefaultLayout } from "react-resizable-panels";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
-
-/** localStorage that a private window or blocked site data cannot break. */
-export const safeStorage: LayoutStorage = {
-  getItem: (k) => {
-    try {
-      return localStorage.getItem(k);
-    } catch {
-      return null;
-    }
-  },
-  setItem: (k, v) => {
-    try {
-      localStorage.setItem(k, v);
-    } catch {
-      // The layout lasts for this page only.
-    }
-  },
-};
+import { safeStorage } from "@/lib/storage";
 
 const RAIL = 48;
 

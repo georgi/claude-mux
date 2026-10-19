@@ -68,3 +68,33 @@ export function Settings(props: ComponentProps<typeof SettingsImpl>) {
     </Suspense>
   );
 }
+
+// The resizable panels are desktop-only: the needs-you column and Split.
+const NeedsLayoutImpl = lazy(() => import("./shell/needs-aside").then((m) => ({ default: m.NeedsLayout })));
+const SplitViewImpl = lazy(() => import("./SplitView").then((m) => ({ default: m.SplitView })));
+
+export function NeedsLayout(props: ComponentProps<typeof NeedsLayoutImpl>) {
+  return (
+    <Suspense fallback={<Loading />}>
+      <NeedsLayoutImpl {...props} />
+    </Suspense>
+  );
+}
+export function SplitView(props: ComponentProps<typeof SplitViewImpl>) {
+  return (
+    <Suspense fallback={<Loading />}>
+      <SplitViewImpl {...props} />
+    </Suspense>
+  );
+}
+
+// Only an unpaired browser sees it; input-otp stays out of the main chunk.
+const PairingImpl = lazy(() => import("./Pairing").then((m) => ({ default: m.Pairing })));
+
+export function Pairing(props: ComponentProps<typeof PairingImpl>) {
+  return (
+    <Suspense fallback={<Loading />}>
+      <PairingImpl {...props} />
+    </Suspense>
+  );
+}

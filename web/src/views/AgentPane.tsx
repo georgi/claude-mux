@@ -26,17 +26,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { agentStatus, ciStatus, type Status } from "@/lib/status";
+import { safeStorage } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 import { ChatLog, Composer, queuedMessages } from "./Chat";
 import { PendingRequest, pendingFor } from "./chat/Pending";
 import { copyText } from "./chat/Turn";
 import type { ToolContext } from "./chat/tools/parts";
-import { TermView } from "./lazy";
+import { SplitView, TermView } from "./lazy";
 import { ContextMeter } from "./shell/context-meter";
-import { safeStorage } from "./shell/needs-aside";
 import { STATUS_TEXT, StatusIcon } from "./shell/status";
 
 interface Props {
@@ -227,15 +226,10 @@ export function AgentPane({ view, agent, mode, phone, conn, store, api, readOnly
       </header>
       {tabs.length > 1 && <AgentTabs tabs={tabs} current={agent.id} onOpen={onOpenAgent} />}
       {current === "split" && agent.term !== null ? (
-        <ResizablePanelGroup id="cmux.layout.split" orientation="horizontal" className="min-h-0 flex-1">
-          <ResizablePanel id="chat" minSize="25" className="flex min-h-0 min-w-0 flex-col">
-            {chat}
-          </ResizablePanel>
-          <ResizableHandle withHandle />
-          <ResizablePanel id="terminal" minSize="25" className="flex min-h-0 min-w-0 flex-col">
-            <PhoneTerm term={agent.term} title={agent.id} phone={false} conn={conn} store={store} readOnly={readOnly} />
-          </ResizablePanel>
-        </ResizablePanelGroup>
+        <SplitView
+          chat={chat}
+          term={<PhoneTerm term={agent.term} title={agent.id} phone={false} conn={conn} store={store} readOnly={readOnly} />}
+        />
       ) : current === "terminal" && agent.term !== null ? (
         <PhoneTerm term={agent.term} title={agent.id} phone={phone} conn={conn} store={store} readOnly={readOnly} />
       ) : (

@@ -21,13 +21,11 @@ import { formatRoute, parseRoute, type Route } from "../route";
 import { Store } from "../store";
 import { AgentPane } from "./AgentPane";
 import { NeedsYou } from "./NeedsYou";
-import { Pairing } from "./Pairing";
 import { Keyboard } from "./shell/command";
 import { crumbsFor, Header } from "./shell/header";
 import { Live } from "./shell/live";
-import { NeedsLayout } from "./shell/needs-aside";
 import { PhoneTabs, type Tab } from "./shell/phone-tabs";
-import { Board, NewPlan, PlanList, Settings, TermView } from "./lazy";
+import { Board, NeedsLayout, NewPlan, Pairing, PlanList, Settings, TermView } from "./lazy";
 import { Tree } from "./Tree";
 
 type Phase = "checking" | "pair" | "app";
