@@ -15,6 +15,5 @@
     "baseUrl": ".",
     "paths": { "@/*": ["src/*"] }
   },
-  "include": ["src"],
-  "exclude": ["src/views-old"]
+  "include": ["src"]
 }

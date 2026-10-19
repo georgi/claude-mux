@@ -1,8 +1,8 @@
-import { CheckCircle2Icon, GitBranchIcon, GitPullRequestIcon, PauseIcon, PlayIcon, PlusIcon, XCircleIcon } from "lucide-react";
+import { CheckCircle2Icon, GitBranchIcon, GitPullRequestIcon, PauseIcon, PlayIcon, PlusIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { Api } from "../api/http";
-import type { PlanView, RepoInfo, StateView, TaskView } from "../api/types";
+import type { CiMark as Ci, PlanView, RepoInfo, StateView, TaskView } from "../api/types";
 import { useSpinner } from "../hooks";
 import { agentGlyph } from "../tree";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +14,9 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle }
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
+import { ciStatus } from "@/lib/status";
 import { errText, PlanBadge, TASK_ORDER, TaskBadge } from "./board/state";
+import { StatusIcon } from "./shell/status";
 
 interface BoardProps {
   view: StateView;
@@ -29,10 +31,8 @@ function waits(t: TaskView, tasks: TaskView[]): string {
   return open.length ? `waits ${open.join(", ")}` : "";
 }
 
-function CiMark({ ci }: { ci: string | null | undefined }) {
-  if (ci === "failing") return <XCircleIcon className="size-3.5 text-destructive" aria-label="CI failing" />;
-  if (ci === "passing") return <CheckCircle2Icon className="size-3.5 text-primary" aria-label="CI passing" />;
-  return null;
+function CiMark({ ci }: { ci: Ci | null | undefined }) {
+  return ci ? <StatusIcon status={ciStatus(ci)} /> : null;
 }
 
 function TaskCard({ t, tasks, view, spin, onOpenAgent }: { t: TaskView; tasks: TaskView[]; view: StateView; spin: string; onOpenAgent: (a: string) => void }) {

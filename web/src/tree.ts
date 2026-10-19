@@ -2,11 +2,13 @@
 // parent, then loose terminals. A pure function of the store's view.
 
 import type { AgentView, StateView, TaskView, TermId } from "./api/types";
+import { agentStatus, planStatus, type Status, TERMINAL_STATUS } from "./lib/status";
 
 export interface Row {
   key: string;
   depth: number;
   glyph: string;
+  status: Status;
   label: string;
   /** Short trailing info: task state, PR number. */
   detail: string;
@@ -53,6 +55,7 @@ export function buildTree(v: StateView, spin?: string): Row[] {
       key: p.id,
       depth: 0,
       glyph: p.state === "done" ? "✓" : p.state === "accepted" ? "◆" : "○",
+      status: planStatus(p.state, p.paused),
       label: p.title,
       detail: p.paused ? "paused" : p.state,
       dim: p.state === "done" || p.state === "cancelled",
@@ -66,6 +69,7 @@ export function buildTree(v: StateView, spin?: string): Row[] {
         key: a.id,
         depth,
         glyph: agentGlyph(a, spin),
+        status: agentStatus(a),
         label: t && a.level === "task" ? `${name} ${t.title}` : name,
         detail: a.level === "task" ? taskDetail(t) : "",
         agent: a.id,
@@ -87,6 +91,7 @@ export function buildTree(v: StateView, spin?: string): Row[] {
       key: `term-${id}`,
       depth: 0,
       glyph: "▸",
+      status: TERMINAL_STATUS,
       label: t.title ?? kind,
       detail: "",
       term: id,

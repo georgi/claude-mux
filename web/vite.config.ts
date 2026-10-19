@@ -29,6 +29,6 @@ export default defineConfig({
   },
   test: {
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
-    exclude: ["src/views-old/**", "node_modules/**"],
+    exclude: ["node_modules/**"],
   },
 });

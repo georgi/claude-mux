@@ -60,7 +60,7 @@ export function Tree({ view, selected, onOpen, onPlan }: Props) {
                   className={r.dim ? "opacity-60" : undefined}
                   style={{ paddingLeft: `${0.5 + r.depth * 0.75}rem` }}
                 >
-                  <StatusIcon glyph={r.glyph} />
+                  <StatusIcon status={r.status} />
                   <span className={isPlan ? "truncate font-medium" : "truncate"}>{r.label}</span>
                   {r.detail && <span className="ml-auto shrink-0 text-xs text-muted-foreground">{r.detail}</span>}
                 </SidebarMenuButton>

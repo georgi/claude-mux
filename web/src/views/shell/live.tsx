@@ -2,14 +2,12 @@ import { ActivityIcon } from "lucide-react";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Item, ItemContent, ItemGroup, ItemMedia, ItemTitle, ItemDescription } from "@/components/ui/item";
 import type { StateView } from "../../api/types";
-import { useSpinner } from "../../hooks";
-import { agentGlyph } from "../../tree";
+import { agentStatus } from "@/lib/status";
 import { StatusIcon } from "./status";
 
 /** The phone's Live tab: agents running now, working ones first. */
 export function Live({ view, onOpen }: { view: StateView; onOpen: (agent: string) => void }) {
   const live = view.agents.filter((a) => a.life === "running" || a.life === "starting");
-  const spin = useSpinner(live.some((a) => a.activity === "working"));
   const rank = (a: (typeof live)[number]) => (a.activity === "needs_permission" ? 0 : a.activity === "working" ? 1 : 2);
   const plans = new Map(view.plans.map((p) => [p.id, p.title]));
   if (live.length === 0)
@@ -36,7 +34,7 @@ export function Live({ view, onOpen }: { view: StateView; onOpen: (agent: string
             className="hover:bg-muted"
           >
             <ItemMedia>
-              <StatusIcon glyph={agentGlyph(a, spin)} />
+              <StatusIcon status={agentStatus(a)} />
             </ItemMedia>
             <ItemContent>
               <ItemTitle className="break-all">{a.path}</ItemTitle>

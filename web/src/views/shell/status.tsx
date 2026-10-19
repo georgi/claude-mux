@@ -1,68 +1,79 @@
 import {
+  BanIcon,
   CheckIcon,
+  CircleCheckIcon,
+  CircleDashedIcon,
+  CircleDotIcon,
   CircleHelpIcon,
   CircleIcon,
+  CircleSlashIcon,
+  CircleXIcon,
   DiamondIcon,
+  FilePenIcon,
   FlagIcon,
-  Loader2Icon,
+  FlaskConicalIcon,
+  GitMergeIcon,
+  LoaderCircleIcon,
+  PauseIcon,
   SquareIcon,
   SquareTerminalIcon,
   TriangleAlertIcon,
   XIcon,
+  type LucideIcon,
 } from "lucide-react";
-import { cn } from "cn";
+import { cn } from "@/lib/utils";
+import type { Status, StatusIconName, StatusToken } from "@/lib/status";
 
-const LABELS: Record<string, string> = {
-  "✓": "Done",
-  "✗": "Failed",
-  "■": "Stopped",
-  "○": "Not started",
-  "!": "Stalled",
-  "⚑": "Needs permission",
-  "◆": "Idle",
-  "?": "Unknown",
-  "▸": "Terminal",
+const ICONS: Record<StatusIconName, LucideIcon> = {
+  Ban: BanIcon,
+  Check: CheckIcon,
+  Circle: CircleIcon,
+  CircleCheck: CircleCheckIcon,
+  CircleDashed: CircleDashedIcon,
+  CircleDot: CircleDotIcon,
+  CircleHelp: CircleHelpIcon,
+  CircleSlash: CircleSlashIcon,
+  CircleX: CircleXIcon,
+  Diamond: DiamondIcon,
+  FilePen: FilePenIcon,
+  FlaskConical: FlaskConicalIcon,
+  Flag: FlagIcon,
+  GitMerge: GitMergeIcon,
+  LoaderCircle: LoaderCircleIcon,
+  Pause: PauseIcon,
+  Square: SquareIcon,
+  SquareTerminal: SquareTerminalIcon,
+  TriangleAlert: TriangleAlertIcon,
+  X: XIcon,
 };
 
-/** Small status icon for a glyph from src/tree.ts. Colors are theme tokens. */
-export function StatusIcon({ glyph, className }: { glyph: string; className?: string }) {
-  const working = /^[⠀-⣿]$/.test(glyph);
-  const label = working ? "Working" : (LABELS[glyph] ?? "Unknown");
-  const cls = cn("size-3.5 shrink-0", className);
-  let icon: React.ReactNode;
-  if (working) icon = <Loader2Icon className={cn(cls, "animate-spin text-primary")} />;
-  else
-    switch (glyph) {
-      case "✓":
-        icon = <CheckIcon className={cn(cls, "text-foreground")} />;
-        break;
-      case "✗":
-        icon = <XIcon className={cn(cls, "text-destructive")} />;
-        break;
-      case "■":
-        icon = <SquareIcon className={cn(cls, "text-muted-foreground")} />;
-        break;
-      case "○":
-        icon = <CircleIcon className={cn(cls, "text-muted-foreground")} />;
-        break;
-      case "!":
-        icon = <TriangleAlertIcon className={cn(cls, "text-destructive")} />;
-        break;
-      case "⚑":
-        icon = <FlagIcon className={cn(cls, "text-primary")} />;
-        break;
-      case "◆":
-        icon = <DiamondIcon className={cn(cls, "text-muted-foreground")} />;
-        break;
-      case "▸":
-        icon = <SquareTerminalIcon className={cn(cls, "text-muted-foreground")} />;
-        break;
-      default:
-        icon = <CircleHelpIcon className={cn(cls, "text-muted-foreground")} />;
-    }
+/** Text color class per token. Literal strings, so Tailwind finds them. */
+export const STATUS_TEXT: Record<StatusToken, string> = {
+  working: "text-status-working",
+  idle: "text-status-idle",
+  needs: "text-status-needs",
+  stalled: "text-status-stalled",
+  failing: "text-status-failing",
+  passing: "text-status-passing",
+  merged: "text-status-merged",
+  blocked: "text-status-blocked",
+  cancelled: "text-status-cancelled",
+};
+
+/** Small status icon in the status color, labelled for screen readers. */
+export function StatusIcon({ status, className }: { status: Status; className?: string }) {
+  const Icon = ICONS[status.icon];
   return (
-    <span role="img" aria-label={label} title={label} className="inline-flex">
-      {icon}
+    <span role="img" aria-label={status.label} title={status.label} className="inline-flex">
+      <Icon
+        aria-hidden
+        className={cn(
+          "size-3.5 shrink-0",
+          STATUS_TEXT[status.token],
+          status.icon === "LoaderCircle" && "animate-spin",
+          className,
+        )}
+      />
     </span>
   );
 }
