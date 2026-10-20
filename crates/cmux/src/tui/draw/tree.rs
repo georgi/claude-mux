@@ -16,6 +16,8 @@ use cmux_proto::view::StateView;
 /// Below this many terminal columns the tree collapses to the strip.
 pub const FULL_MIN_COLS: u16 = 100;
 pub const STRIP_WIDTH: u16 = 3;
+/// The narrowest full tree the user can resize to.
+pub const MIN_WIDTH: u16 = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TreeMode {

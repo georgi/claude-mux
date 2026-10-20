@@ -28,7 +28,7 @@ test.afterEach(async ({}, info) => {
 async function pair(page: import("@playwright/test").Page) {
   await page.goto(`${server.url}/pair?code=${await server.pairCode()}`);
   await page.getByRole("button", { name: "Pair" }).click();
-  await expect(page.locator(".dot.open")).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Connected" })).toBeVisible();
 }
 
 const shots = process.env.E2E_SHOTS;
@@ -38,17 +38,18 @@ test("pair, open an agent, type into its terminal, approve its permission", asyn
   await pair(page);
 
   // A plan on a repository added by its path on the server.
-  await page.getByRole("button", { name: "New plan" }).click();
+  await page.locator("header").first().getByRole("button", { name: "New plan" }).click();
   await page.getByLabel("Title").fill("e2e plan");
   await page.getByLabel("Repository URL or path").fill(server.repo);
   await page.getByRole("button", { name: "Add", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: server.repo })).toBeChecked();
+  await expect(page.getByRole("list", { name: "Picked repositories" })).toContainText(server.repo);
   await page.getByLabel("First message for the executor").fill("Plan a small change.");
   await page.getByRole("button", { name: "Create plan" }).click();
 
   // The board opens; open the executor from it.
-  await expect(page.getByRole("heading", { name: "e2e plan" })).toBeVisible();
-  await page.getByRole("button", { name: /executor/ }).click();
+  await expect(page.getByRole("progressbar", { name: "Plan progress" })).toBeVisible();
+  await expect(page.getByText("e2e plan").first()).toBeVisible();
+  await page.getByRole("button", { name: "Executor", exact: true }).click();
   const screen = page.locator(".xterm-rows");
   await expect(screen).toContainText("TOOLS:");
 
@@ -59,17 +60,51 @@ test("pair, open an agent, type into its terminal, approve its permission", asyn
   await expect(screen).toContainText("ECHO run the tests");
 
   // The permission lands in needs-you; Allow lets the agent go on.
-  const card = page.locator(".needs-col .need", { hasText: "Allow Bash?" });
+  const needs = page.getByRole("complementary", { name: "Needs you" });
+  const card = needs.getByRole("listitem").filter({ hasText: "Allow Bash?" });
   await expect(card).toContainText("cargo test -p e2e");
   if (shots) await page.screenshot({ path: `${shots}/desktop-permission.png` });
   await card.getByRole("button", { name: "Allow", exact: true }).click();
   await expect(screen).toContainText("PERM allow");
-  await expect(page.locator(".needs-col")).toContainText("Nothing needs you.");
+  await expect(needs).toContainText("Nothing needs you");
 
   // The chat shows the same turn.
-  await page.getByRole("tab", { name: "Chat" }).click();
+  await page.getByRole("group", { name: "View" }).getByRole("button", { name: "Chat" }).click();
   await expect(page.getByRole("log", { name: "Conversation" })).toContainText("Tests ran.");
-  await expect(page.locator(".chat-msg.user").last()).toContainText("run the tests");
+  await expect(page.getByRole("log", { name: "Conversation" })).toContainText("run the tests");
+});
+
+test("approve a permission from the inbox with the a key", async ({ page }) => {
+  await pair(page);
+  const h = { "X-Cmux": "1" };
+  await page.request.post(`${server.url}/v1/repos`, { headers: h, data: { path: server.repo } });
+  const r = await page.request.post(`${server.url}/v1/plans`, {
+    headers: h,
+    data: { title: "inbox plan", repos: [{ path: server.repo, base_branch: null }], request: "Plan it." },
+  });
+  expect(r.status()).toBe(201);
+  const { id } = (await r.json()) as { id: string };
+
+  // Ask the executor for a permission from its terminal.
+  await page.goto(`${server.url}/#/agent/${encodeURIComponent(`${id}/executor`)}/terminal`);
+  const screen = page.locator(".xterm-rows");
+  await expect(screen).toContainText("TOOLS:");
+  await page.locator(".xterm-host").click();
+  await page.keyboard.type("run the tests");
+  await page.keyboard.press("Enter");
+
+  // The card lands in the inbox, grouped under its plan; focus it and press a.
+  const needs = page.getByRole("complementary", { name: "Needs you" });
+  const card = needs.getByRole("list", { name: "inbox plan" }).getByRole("listitem").filter({ hasText: "Allow Bash?" });
+  await expect(card).toContainText("cargo test -p e2e");
+  await expect(page).toHaveTitle("(1) cmux");
+  await card.focus();
+  await expect(card.locator("kbd").first()).toBeVisible();
+  if (shots) await page.screenshot({ path: `${shots}/desktop-inbox-focused.png` });
+  await page.keyboard.press("a");
+  await expect(needs).toContainText("Nothing needs you");
+  await expect(screen).toContainText("PERM allow");
+  await expect(page).toHaveTitle("cmux");
 });
 
 test.describe("on a phone", () => {
@@ -87,19 +122,19 @@ test.describe("on a phone", () => {
 
     const tabs = page.getByRole("navigation", { name: "Sections" });
     await expect(tabs).toBeVisible();
-    await expect(page.locator(".side")).toHaveCount(0);
+    await expect(page.getByRole("navigation", { name: "Agents and plans" })).toBeHidden();
     await tabs.getByRole("button", { name: "Plans" }).click();
     await page.getByRole("button", { name: /phone plan/ }).click();
     if (shots) await page.screenshot({ path: `${shots}/phone-board.png` });
-    await page.getByRole("button", { name: /executor/ }).click();
+    await page.getByRole("button", { name: "Executor", exact: true }).click();
 
     // Chat is the default agent view on a phone.
-    await expect(page.getByRole("tab", { name: "Chat" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("group", { name: "View" }).getByRole("button", { name: "Chat" })).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByRole("log", { name: "Conversation" })).toContainText("Ready to plan.");
     if (shots) await page.screenshot({ path: `${shots}/phone-chat.png` });
 
     // The key bar types into the terminal.
-    await page.getByRole("tab", { name: "Terminal" }).click();
+    await page.getByRole("group", { name: "View" }).getByRole("button", { name: "Terminal" }).click();
     const keys = page.getByRole("toolbar", { name: "Terminal keys" });
     for (const k of ["Esc", "Tab", "Ctrl", "↑", "↓", "←", "→"]) await expect(keys.getByRole("button", { name: k, exact: true })).toBeVisible();
     await keys.getByRole("button", { name: "2", exact: true }).click();

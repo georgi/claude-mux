@@ -1,8 +1,8 @@
 // Where the app is, kept in the URL hash so reload and back work:
 // `#/agent/<id>/chat`, `#/term/3`, `#/board/<plan>`, `#/new`, `#/settings`,
-// and the phone tabs `#/needs`, `#/plans`, `#/live`.
+// and the phone tabs `#/needs`, `#/agents`, `#/plans`, `#/live`.
 
-export type AgentMode = "terminal" | "chat";
+export type AgentMode = "terminal" | "chat" | "split";
 
 export type Route =
   | { view: "home" }
@@ -12,6 +12,7 @@ export type Route =
   | { view: "new" }
   | { view: "settings" }
   | { view: "needs" }
+  | { view: "agents" }
   | { view: "plans" }
   | { view: "live" };
 
@@ -21,7 +22,7 @@ export function parseRoute(hash: string): Route {
     case "agent": {
       // Agent ids hold a `/`: everything up to an optional mode is the id.
       const last = parts[parts.length - 1];
-      const mode = last === "chat" || last === "terminal" ? last : null;
+      const mode = last === "chat" || last === "terminal" || last === "split" ? last : null;
       const id = parts.slice(1, mode ? -1 : undefined).join("/");
       return id ? { view: "agent", agent: id, mode } : { view: "home" };
     }
@@ -34,6 +35,7 @@ export function parseRoute(hash: string): Route {
     case "new":
     case "settings":
     case "needs":
+    case "agents":
     case "plans":
     case "live":
       return { view: parts[0] };

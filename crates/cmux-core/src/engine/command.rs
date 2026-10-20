@@ -303,6 +303,9 @@ pub enum RunnerEvent {
     },
     Exited {
         agent: AgentId,
+        /// The terminal of the process that exited: a replaced process's late
+        /// exit must not end its successor.
+        term: TermId,
         code: Option<i32>,
     },
     Pr {

@@ -131,20 +131,49 @@ export type ChatEntry = {
  */
 uuid: string, ts: number, role: ChatRole, kind: ChatKind, 
 /**
- * The text, the tool's input summary (`tool_call`), or the tool's output
- * cut to 400 chars (`tool_result`).
+ * The text, the thinking, the tool's input (`tool_call`), or the tool's
+ * output (`tool_result`). Tool input and output are cut to 400 chars;
+ * `full_len` then says how long they were.
  */
-text: string, tool?: ChatTool, };
+text: string, tool?: ChatTool, 
+/**
+ * The `tool_use` id on a `tool_call` and on the `tool_result` that
+ * answers it.
+ */
+call_id?: string, 
+/**
+ * A `tool_result` that Claude marked as an error.
+ */
+is_error: boolean, 
+/**
+ * The length of the uncut `text` in chars, when `text` was cut.
+ * `GET /agents/:id/transcript/:uuid` returns the entry uncut.
+ */
+full_len?: number, 
+/**
+ * The model that wrote an assistant `text`, when the line names it.
+ */
+model?: string, };
 
 export type ChatRole = "user" | "assistant";
 
-export type ChatKind = "text" | "tool_call" | "tool_result";
+export type ChatKind = "text" | "thinking" | "tool_call" | "tool_result";
 
 export type ChatTool = { name: string, 
 /**
  * The input on one line, at most 60 chars.
  */
-summary: string, };
+summary: string, 
+/**
+ * On a `tool_call` of a known tool, its input as an object with only
+ * the fields a view draws: `Bash` {command, description}, `Edit`
+ * {file_path, old_string, new_string}, `MultiEdit` {file_path, edits},
+ * `Write` {file_path, content}, `Read` {file_path, offset, limit},
+ * `Grep`/`Glob` {pattern, path}, `WebFetch` {url}, `WebSearch` {query},
+ * `Task` {description, subagent_type}, `TodoWrite` {todos}. Each string
+ * is cut to 20 KB; the object then has `"truncated": true`.
+ */
+input?: JsonValue, };
 
 export type DeltaView = { rev: number, change: ChangeView, };
 

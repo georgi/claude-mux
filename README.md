@@ -184,13 +184,14 @@ Every key in [Keys](#keys) works on a server, with these differences:
 - `x` and `&` stop the agent or the sessions in the pane or tab (asks first).
 - `prefix s` lists the sessions on the server.
 - `prefix =` takes over the terminal's size from another client.
+- `prefix <` and `>` narrow and widen the plan tree. Tabs follow the plan order.
 - One server per cmux. For another, run `cmux -s NAME` in a second terminal.
 
 Each Claude that `cmuxd` starts runs in `auto` permission mode with Remote Control on, unless a level in `config.toml` sets another mode.
 
 ## Plans
 
-A plan is a workspace, a task is a tab and a sub-agent is a pane. The plan tree sits on the left. `prefix Tab` focuses it: `jk` moves, `Enter` opens, `Esc` goes back.
+A plan is a workspace, a task is a tab and a sub-agent is a pane. The plan tree sits on the left. `prefix Tab` or a click focuses it: `jk` moves, `Enter` opens, `Esc` goes back. Drag its right border, or push `<` and `>` in the tree, to resize it. `prefix B` hides and shows it, and `prefix P` goes to the next plan.
 
 To make a plan, open a Claude session with `prefix c` and ask for one, for example "plan a retry layer for the API client". The server gives each Claude session the cmux plan tools: `create_plan`, `create_task`, `update_task`, `get_plan`, `get_task`, `list_plans` and `accept_plan`. Claude writes the plan and its tasks as a draft, and no agent starts. Review the plan in the tree, then push `A` to accept it, or tell Claude to start it. Then the executor starts the tasks: one agent per task, in a git worktree on the branch `claude/T-000N`. Task agents may start sub-agents for separable work.
 
@@ -199,7 +200,7 @@ To make a plan, open a Claude session with `prefix c` and ask for one, for examp
 | `A` (in the tree)    | Accept the plan and start it, or accept a task                                                          |
 | `prefix m`           | Message the focused agent. `Enter` queues it for the end of the turn, `Alt-Enter` steers now           |
 | `prefix v`           | Board view of the plan: cards in columns by state                                                       |
-| `prefix e` / `u`     | Go to the plan's executor / up one level                                                                |
+| `prefix e` / `u`     | Go to the plan's executor / up one level (sub-agent → task → executor)                                                                |
 | `prefix a`           | Needs-you overlay: `y` allow (or accept a plan), `Y` allow always, `n` deny (or send a plan back), `r` reply to a question, `d` dismiss, `Enter` jump to the agent |
 | `prefix M-a` / `M-A` | Next / previous item that needs you                                                                     |
 
@@ -208,6 +209,10 @@ In the tree the other keys act on the selected node: `S` pause or resume a plan,
 **Needs you** items are permission requests, questions from agents (`ask_user`), plans ready for review, stalled agents (no progress for 15 minutes, marked `⚠`), agents that exited without a report, and PRs with red CI after the third failure. `cmuxd` never kills a stalled agent by itself.
 
 **GitHub**: `cmuxd` polls `gh pr view` for each task's PR (every 60 s, every 15 s for a task in `testing`) and moves the task when the PR merges or CI turns red or green. If `gh` is missing or logged out, PR tracking is off and `GET /v1/status` says why.
+
+A task agent can start sub-agents for separable work with `spawn_subagent`, up to 2 per task. Sub-agents share the task's worktree and appear as panes stacked to the right of the task agent in the task window. A finished sub-agent stays dimmed until you close it or the task is done. Sub-agents may not `git push`, and nobody may check out the base branch in a task worktree. A PreToolUse guard refuses both.
+
+Questions go to the agent that can answer them. `ask_parent` asks the agent that started you, and `answer_child` answers one of your agents. `ask_user` asks you, and only for decisions a human must make. It lands in the needs-you overlay (`prefix a`), where `r` replies. A question expires after 60 minutes, and the asker is told.
 
 ## The web app
 
@@ -261,6 +266,8 @@ cmux attach [<agent>]                        Open the TUI on that agent
 
 cmux uses the tmux default key table. A tab is a tmux window, and a tab can hold several panes. Press the prefix (default `Ctrl-b`), then a key. `Ctrl-b Ctrl-b` sends a literal `Ctrl-b` to Claude.
 
+A printable two-page [cheatsheet](docs/cheatsheet.pdf) lists every key, the Ghostty bindings and the mouse actions.
+
 | Key            | tmux command         | Action                                           |
 |----------------|----------------------|--------------------------------------------------|
 | `c`            | `new-window`         | New Claude session in the current directory      |
@@ -287,7 +294,7 @@ cmux uses the tmux default key table. A tab is a tmux window, and a tab can hold
 | `x`            | `kill-pane`          | Stop the session in this pane (asks first)       |
 | `&`            | `kill-window`        | Stop all sessions in this tab (asks first)       |
 | `[` / `PgUp`   | `copy-mode`          | Scroll back through output                       |
-| `<` / `>`      |                      | Move the tab                                     |
+| `<` / `>`      |                      | Move the tab (with a server: narrow / widen the plan tree) |
 | `:`            | `command-prompt`     | Run a command                                    |
 | `i`            | `display-message`    | Show pid and session id                          |
 | `d`            | `detach-client`      | Quit (with a server: detach, agents keep running) |
@@ -433,6 +440,7 @@ keybind = cmd+w=text:\x02x
 keybind = cmd+shift+w=text:\x02d
 keybind = cmd+shift+[=text:\x02p
 keybind = cmd+shift+]=text:\x02n
+# Move the tab (with a server: narrow / widen the plan tree)
 keybind = cmd+shift+left=text:\x02<
 keybind = cmd+shift+right=text:\x02>
 keybind = cmd+r=text:\x02,
@@ -450,8 +458,9 @@ keybind = cmd+ctrl+j=text:\x02\x1b[1;3B
 keybind = cmd+ctrl+k=text:\x02\x1b[1;3A
 keybind = cmd+ctrl+l=text:\x02\x1b[1;3C
 keybind = cmd+shift+enter=text:\x02z
-# Plans (server mode): focus the plan tree, or go back to the pane
+# Plans (server mode): focus the plan tree or go back, hide / show the tree
 keybind = cmd+b=text:\x02\t
+keybind = cmd+shift+b=text:\x02B
 # Shell, lazygit, new session in another directory, session picker, tabs with an alert
 keybind = cmd+shift+t=text:\x02t
 keybind = cmd+g=text:\x02g
@@ -472,7 +481,7 @@ keybind = shift+enter=text:\n
 | `Cmd-Shift-t` / `Cmd-g`         | New shell / lazygit                       |
 | `Cmd-Shift-[` / `Cmd-Shift-]`   | Previous / next tab                       |
 | `Cmd-j` / `Cmd-Shift-j`         | Next / previous tab with an alert         |
-| `Cmd-Shift-←` / `Cmd-Shift-→`   | Move the tab                              |
+| `Cmd-Shift-←` / `Cmd-Shift-→`   | Move the tab (server: resize the tree)    |
 | `Cmd-r`                         | Rename the tab                            |
 | `Cmd-s`                         | List the open tabs                        |
 | `Cmd-Shift-c`                   | Scroll back through output                |
@@ -481,6 +490,7 @@ keybind = shift+enter=text:\n
 | `Cmd-Ctrl-h` `j` `k` `l`        | Resize the pane by 5 cells                |
 | `Cmd-Shift-Enter`               | Zoom the pane                             |
 | `Cmd-b`                         | Focus the plan tree, or go back (server)  |
+| `Cmd-Shift-b`                   | Hide / show the plan tree (server)        |
 | `Cmd-w` / `Cmd-Shift-w`         | Stop the pane's session / quit cmux       |
 
 The bindings send `Ctrl-b` (`\x02`). If you use another prefix, change `\x02` to the matching control byte, for example `\x01` for `Ctrl-a`. The bindings apply to every Ghostty window, also when cmux does not run. Put them in a separate file and load it with `config-file` if you want to switch them on and off.

@@ -413,7 +413,7 @@ async fn start_agent(
     rt.transcripts.report_turn(&handle, &agent).await;
     // The terminal stays in the hub with its final screen until the engine
     // drops its record or too many pile up (see `forget_gone_terminals`).
-    handle.send(Command::Runner(RunnerEvent::Exited { agent, code }));
+    handle.send(Command::Runner(RunnerEvent::Exited { agent, term, code }));
     let _ = handle.query(move |st| rt.forget_gone_terminals(st)).await;
 }
 

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use cmux_core::glyph::Glyph;
 use cmux_proto::api::{NewTerminalKind, ProjectsResp};
-use cmux_proto::view::{AgentId, PlanId, TermId, TermKind, TerminalView};
+use cmux_proto::view::{AgentId, Level, Life, PlanId, TermId, TermKind, TerminalView};
 use ratatui::layout::{Position, Rect};
 use serde_json::Value;
 
@@ -26,7 +26,7 @@ use crate::history::SessionInfo;
 use crate::keys::{Key, Mouse};
 use crate::layout::{Axis, Node as LayoutNode, PRESETS};
 use crate::pane::{Kind, Pane, SpawnSpec};
-use crate::tui::draw::tree::{TreeMode, tree_mode, tree_width};
+use crate::tui::draw::tree::{MIN_WIDTH, TreeMode, tree_mode, tree_width};
 use crate::tui::hit::{self, TreeHit};
 use crate::tui::intent::{self, TreeIntent};
 use crate::tui::nav::{self, Move};
@@ -71,7 +71,11 @@ pub struct RemoteState {
     /// The key of each of `App::windows`.
     pub keys: Vec<WindowKey>,
     window_ids: HashMap<WindowKey, u64>,
+    /// Pane ids by terminal, to find the pane of a terminal's output.
     pane_ids: HashMap<TermId, u64>,
+    /// Pane ids by agent: an agent that comes back on a new terminal keeps
+    /// its pane in the window and its focus.
+    agent_pane_ids: HashMap<AgentId, u64>,
     pub form: Option<ActiveForm>,
     form_from_inbox: bool,
     pub pending: Option<Pending>,
@@ -84,6 +88,8 @@ pub struct RemoteState {
     focused: Option<TermId>,
     announced: HashSet<TermId>,
     last_click: Option<(Instant, Node)>,
+    /// The mouse drags the right border of the tree.
+    tree_drag: bool,
     seen_state: bool,
     /// The server is cmuxd on this machine (Unix socket): our paths are its paths.
     local_server: bool,
@@ -119,6 +125,7 @@ impl RemoteState {
             keys: Vec::new(),
             window_ids: HashMap::new(),
             pane_ids: HashMap::new(),
+            agent_pane_ids: HashMap::new(),
             form: None,
             form_from_inbox: false,
             pending: None,
@@ -128,6 +135,7 @@ impl RemoteState {
             focused: None,
             announced: HashSet::new(),
             last_click: None,
+            tree_drag: false,
             seen_state: false,
             local_server: false,
             open_on_start: None,
@@ -176,8 +184,28 @@ impl RemoteState {
     pub fn tree_cols(&self, cols: u16) -> u16 {
         if self.view.tree_hidden {
             0
+        } else if tree_mode(cols) == TreeMode::Full {
+            self.full_tree_width(cols)
         } else {
             tree_width(cols).min(cols.saturating_sub(10))
+        }
+    }
+
+    /// Columns of the full tree: the user's width, else the default.
+    fn full_tree_width(&self, cols: u16) -> u16 {
+        let max = (cols / 2).max(MIN_WIDTH);
+        self.view
+            .tree_width
+            .map_or_else(|| tree_width(cols.max(100)), |w| w.clamp(MIN_WIDTH, max))
+            .min(cols.saturating_sub(10))
+    }
+
+    /// Set the width of the full tree for a screen `cols` wide.
+    pub fn set_tree_width(&mut self, w: u16, cols: u16) {
+        let w = w.clamp(MIN_WIDTH, (cols / 2).max(MIN_WIDTH));
+        if self.view.tree_width != Some(w) {
+            self.view.tree_width = Some(w);
+            self.view_dirty = true;
         }
     }
 
@@ -201,7 +229,7 @@ impl RemoteState {
     pub fn overlay_rect(&self, full: Rect) -> Option<Rect> {
         let in_flow_full = !self.view.tree_hidden && tree_mode(full.width) == TreeMode::Full;
         (!in_flow_full).then(|| Rect {
-            width: (full.width / 5).clamp(30, 40).min(full.width),
+            width: self.full_tree_width(full.width.max(1)).min(full.width),
             ..full
         })
     }
@@ -599,11 +627,19 @@ impl App {
             let mut built = Vec::new();
             for ps in &panes {
                 let term = ps.term.expect("filtered");
-                let pid = *r.pane_ids.entry(term).or_insert_with(|| {
-                    let id = self.next_id;
-                    self.next_id += 1;
-                    id
-                });
+                let pid = match &ps.agent {
+                    Some(a) => *r.agent_pane_ids.entry(a.clone()).or_insert_with(|| {
+                        let id = self.next_id;
+                        self.next_id += 1;
+                        id
+                    }),
+                    None => *r.pane_ids.entry(term).or_insert_with(|| {
+                        let id = self.next_id;
+                        self.next_id += 1;
+                        id
+                    }),
+                };
+                r.pane_ids.insert(term, pid);
                 let mut pane = old_panes.remove(&term).unwrap_or_else(|| {
                     let rt = RemoteTerm::new(
                         r.handle.clone(),
@@ -656,6 +692,7 @@ impl App {
         // Panes whose terminal is gone are dropped here (the Drop unsubscribes).
         drop(old_panes);
         r.pane_ids.retain(|t, _| sv.terminal(*t).is_some());
+        r.agent_pane_ids.retain(|a, _| sv.agent(a).is_some());
         r.window_ids.retain(|k, _| keys.contains(k));
         r.announced.retain(|t| sv.terminal(*t).is_some());
         r.view.prune(&derived);
@@ -781,7 +818,12 @@ impl App {
                 (Some(p.clone()), first, None)
             }
             Node::Executor(p) => (Some(p.clone()), WindowKey::Executor(p.clone()), None),
-            Node::Task(p, t) => (Some(p.clone()), WindowKey::Task(p.clone(), *t), None),
+            // The task row is the task's own agent, not one of its sub-agents.
+            Node::Task(p, t) => (
+                Some(p.clone()),
+                WindowKey::Task(p.clone(), *t),
+                node.agent(sv),
+            ),
             Node::Sub(a) => {
                 let Some(t) = a.path().task_id() else {
                     return false;
@@ -800,7 +842,6 @@ impl App {
                 (r.plan.clone(), first, None)
             }
         };
-        let _ = sv;
         self.rebuild_to(Some((plan, key.clone())));
         let Some(idx) = self
             .remote
@@ -822,7 +863,10 @@ impl App {
                 .find(|p| p.agent.as_ref() == Some(&a))
                 .map(|p| p.id)
         {
-            w.zoomed = false;
+            // Only a jump to another pane leaves the zoom.
+            if w.active != id {
+                w.zoomed = false;
+            }
             w.focus(id);
             self.relayout();
         }
@@ -906,11 +950,15 @@ impl App {
         };
         match (agent, term) {
             (Some(a), _) => {
+                // A sub-agent that reported is done though its process may
+                // linger; a task agent that reported goes on (PR, CI) and only
+                // an ended process is done.
                 let finished = r.mirror.sv.agent(&a).is_none_or(|v| {
-                    matches!(
-                        v.life,
-                        cmux_proto::view::Life::Exited { .. } | cmux_proto::view::Life::Stopped
-                    )
+                    if v.level == Level::Sub {
+                        crate::tui::marks::agent_done(v)
+                    } else {
+                        matches!(v.life, Life::Exited { .. } | Life::Stopped)
+                    }
                 });
                 if finished {
                     r.view.closed.insert(a.to_string());
@@ -1056,13 +1104,27 @@ impl App {
             }
             Key::Char('=') => self.take_size(),
             Key::Char('S') => self.flash("one server per cmux; start another with cmux -s NAME"),
-            Key::Char('<') | Key::Char('>') => {
-                self.flash("windows follow the plan order on a server")
-            }
+            Key::Char('<') => self.resize_tree(-2),
+            Key::Char('>') => self.resize_tree(2),
             Key::Char('!') => self.flash("panes follow the server's agents"),
             _ => return false,
         }
         true
+    }
+
+    /// Make the full tree `delta` columns wider (or narrower).
+    fn resize_tree(&mut self, delta: i32) {
+        let cols = self.screen_body().width;
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        if r.view.tree_hidden || tree_mode(cols) != TreeMode::Full {
+            self.flash("the tree is too narrow to resize here");
+            return;
+        }
+        let w = (i32::from(r.tree_cols(cols)) + delta).max(0) as u16;
+        r.set_tree_width(w, cols);
+        self.relayout();
     }
 
     fn go_up(&mut self) {
@@ -1073,7 +1135,12 @@ impl App {
         else {
             return;
         };
-        match Node::for_agent(&a).parent() {
+        let here = Node::for_agent(&a);
+        match here.parent() {
+            // A task goes up to the executor; the executor is the top.
+            Some(Node::Plan(_)) if matches!(here, Node::Executor(_)) => {
+                self.flash("already at the top");
+            }
             Some(Node::Plan(p)) => {
                 self.show_node(&Node::Executor(p));
             }
@@ -1123,6 +1190,11 @@ impl App {
 
     /// A tree-focus key, also used by the board for the selected task.
     pub(super) fn tree_key(&mut self, k: Key) {
+        match k {
+            Key::Char('<') => return self.resize_tree(-2),
+            Key::Char('>') => return self.resize_tree(2),
+            _ => {}
+        }
         let intent = {
             let Some(r) = self.remote.as_mut() else {
                 return;
@@ -1323,6 +1395,18 @@ impl App {
         let full = self.screen_body();
         let pane_area = self.body_area();
         let (col, row) = (m.col, m.row);
+        // A tree border drag holds the mouse until the button is released.
+        if let Some(r) = self.remote.as_mut()
+            && r.tree_drag
+        {
+            if m.release {
+                r.tree_drag = false;
+            } else if m.is_motion() {
+                r.set_tree_width(col.saturating_sub(full.x) + 1, full.width);
+                self.relayout();
+            }
+            return true;
+        }
         match self.mode {
             Mode::Form => return true,
             Mode::Inbox => {
@@ -1377,6 +1461,7 @@ impl App {
     }
 
     fn tree_mouse(&mut self, m: Mouse, rect: Rect, mode: TreeMode) {
+        let full = self.screen_body();
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -1386,6 +1471,11 @@ impl App {
             return;
         }
         if !m.is_left_press() {
+            return;
+        }
+        // The right border of the in-flow full tree resizes it.
+        if mode == TreeMode::Full && m.col + 1 == rect.right() && r.tree_rect(full) == Some(rect) {
+            r.tree_drag = true;
             return;
         }
         let hit = hit::tree_hit(rect, mode, &r.mirror.sv, &r.vs, m.col, m.row);
@@ -1411,7 +1501,8 @@ impl App {
                 }
             }
             Some(TreeHit::NeedsSummary) => self.open_inbox(),
-            None => {}
+            // A click anywhere else gives the tree the focus.
+            None => self.set_tree_focus(true),
         }
     }
 }
@@ -1509,6 +1600,9 @@ fn pane_key(p: &Pane) -> Option<String> {
 /// so the client does not guess. `None` while it runs without a report.
 pub fn outcome(a: &cmux_proto::view::AgentView) -> Option<(&'static str, &'static str)> {
     use cmux_proto::view::{Life, ReportStatus};
+    if !crate::tui::marks::agent_done(a) {
+        return None;
+    }
     match (a.report.as_ref().filter(|r| !r.implicit), &a.life) {
         (Some(r), _) => Some(match r.status {
             ReportStatus::Success => ("✓", "reported success"),
@@ -1525,11 +1619,13 @@ pub fn outcome(a: &cmux_proto::view::AgentView) -> Option<(&'static str, &'stati
 fn describe_pane(pane: &mut Pane, spec: &PaneSpec, sv: &cmux_proto::view::StateView) {
     let term = spec.term.and_then(|t| sv.terminal(t));
     pane.agent = spec.agent.clone();
+    pane.dim = false;
     pane.label = spec.agent.as_ref().map(agent_label);
     pane.finished = spec.finished;
     if let Some(a) = spec.agent.as_ref().and_then(|a| sv.agent(a)) {
         pane.kind = Kind::Claude;
         pane.cwd = a.cwd.clone();
+        pane.dim = spec.level == Some(Level::Sub) && spec.finished;
     } else if let Some(t) = term {
         pane.kind = pane_kind(&t.kind);
         pane.cwd = t.cwd.clone();

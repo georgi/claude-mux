@@ -593,7 +593,7 @@ fn narrow_screens_show_the_strip_and_prefix_tab_the_full_tree() {
     rig.prefix(b"\t");
     let screen = rig.draw(80, 24);
     assert!(screen.contains("plans"), "the full tree overlay:\n{screen}");
-    assert!(screen.contains("T-0002"), "{screen}");
+    assert!(screen.contains("▾⠹ api"), "{screen}");
     // The overlay does not move the panes.
     assert_eq!(rig.app.body_area().x, 3);
     rig.keys(b"\x1b");
@@ -660,6 +660,51 @@ fn mouse_clicks_select_rows_and_double_clicks_focus_the_pane() {
     // The second click on the same row focuses the pane.
     rig.keys(click.as_bytes());
     assert!(matches!(rig.app.mode, Mode::Normal));
+}
+
+#[test]
+fn a_click_on_an_empty_part_of_the_tree_focuses_it() {
+    let mut rig = Rig::new(120, 30);
+    assert!(matches!(rig.app.mode, Mode::Normal));
+    let full = rig.app.screen_body();
+    let r = rig.app.remote.as_ref().unwrap();
+    let (rect, mode) = r.tree_place(full, false).unwrap();
+    let (x, y) = (rect.x + 1..rect.right() - 1)
+        .flat_map(|x| (rect.y + 1..rect.bottom() - 1).map(move |y| (x, y)))
+        .find(|(x, y)| crate::tui::hit::tree_hit(rect, mode, &r.mirror.sv, &r.vs, *x, *y).is_none())
+        .expect("an empty cell in the tree");
+    rig.keys(format!("\x1b[<0;{};{}M\x1b[<0;{};{}m", x + 1, y + 1, x + 1, y + 1).as_bytes());
+    assert!(matches!(rig.app.mode, Mode::Tree));
+}
+
+#[test]
+fn the_tree_border_drags_and_angle_keys_resize_the_tree() {
+    let mut rig = Rig::new(120, 30);
+    assert_eq!(rig.app.body_area().x, 30);
+    // Press on the right border, drag to column 45, release.
+    rig.keys(b"\x1b[<0;30;10M\x1b[<32;45;10M\x1b[<0;45;10m");
+    assert_eq!(rig.app.body_area().x, 45);
+    let r = rig.app.remote.as_ref().unwrap();
+    assert_eq!(r.view.tree_width, Some(45));
+    assert!(!matches!(rig.app.mode, Mode::Tree), "a drag does not focus");
+    // Motion after the release does not resize.
+    rig.keys(b"\x1b[<32;50;10M");
+    assert_eq!(rig.app.body_area().x, 45);
+    // prefix < and > change it by two columns.
+    rig.prefix(b"<");
+    assert_eq!(rig.app.body_area().x, 43);
+    rig.prefix(b">");
+    rig.prefix(b">");
+    assert_eq!(rig.app.body_area().x, 47);
+    // In the tree, < and > work without the prefix.
+    rig.app.set_tree_focus(true);
+    rig.keys(b"<");
+    assert_eq!(rig.app.body_area().x, 45);
+    // The width stays inside its limits.
+    rig.keys(b"\x1b[<0;45;10M\x1b[<32;2;10M\x1b[<0;2;10m");
+    assert_eq!(rig.app.body_area().x, crate::tui::draw::tree::MIN_WIDTH);
+    rig.keys(b"\x1b[<0;16;10M\x1b[<32;119;10M\x1b[<0;119;10m");
+    assert_eq!(rig.app.body_area().x, 60);
 }
 
 #[test]
@@ -954,6 +999,530 @@ fn a_failed_delete_after_a_loose_terminal_exits_stays_quiet() {
     rig.prefix(b"x");
     rig.keys(b"y");
     assert!(rig.app.message.is_some());
+}
+
+// ---- sub-agents and questions (step 9) ---------------------------------------
+
+/// The fixture with `names` as the only sub-agents of T-0002, each with a
+/// terminal, and `tweak` applied to the state.
+fn state_with_subs(names: &[&str]) -> StateView {
+    let mut sv = state_with_terms();
+    let task = t2();
+    let old: Vec<AgentId> = sv
+        .agents
+        .iter()
+        .filter(|a| a.level == cmux_proto::view::Level::Sub)
+        .map(|a| a.id.clone())
+        .collect();
+    sv.agents.retain(|a| !old.contains(&a.id));
+    sv.terminals
+        .retain(|t| t.agent.as_ref().is_none_or(|a| !old.contains(a)));
+    let template = sv
+        .agent(&AgentId::new(plan(), AgentPath::Task(task)))
+        .cloned();
+    let mut template = template.unwrap();
+    let main_id = template.id.clone();
+    for (i, name) in names.iter().enumerate() {
+        let path = AgentPath::sub(task, name).unwrap();
+        let id = AgentId::new(plan(), path.clone());
+        let term = TermId(40 + i as u32);
+        template.id = id.clone();
+        template.level = path.level();
+        template.parent = Some(main_id.clone());
+        template.path = path;
+        template.term = Some(term);
+        template.report = None;
+        sv.agents.push(template.clone());
+        sv.terminals.push(TerminalView {
+            id: term,
+            kind: TermKind::Claude,
+            agent: Some(id),
+            cwd: "/home/me/api".into(),
+            rows: 24,
+            cols: 80,
+            size_owner: None,
+            title: None,
+        });
+    }
+    let main = sv.plans.iter_mut().find(|p| p.id == plan()).unwrap();
+    main.agents.retain(|a| !old.contains(a));
+    main.agents.extend(
+        names
+            .iter()
+            .map(|n| AgentId::new(plan(), AgentPath::sub(task, n).unwrap())),
+    );
+    sv.items
+        .retain(|i| i.from.as_ref().is_none_or(|a| !old.contains(a)));
+    sv
+}
+
+impl Rig {
+    fn set_state(&mut self, mut sv: StateView) {
+        sv.rev = self.app.remote.as_ref().unwrap().mirror.sv.rev + 1;
+        self.app
+            .handle(Event::Stream(StreamEvent::State(Box::new(sv))));
+    }
+
+    /// The pane bodies of the shown window, by pane name, as (x, y, w, h).
+    fn pane_rects(&self) -> Vec<(String, ratatui::layout::Rect)> {
+        let w = &self.app.windows[self.app.active];
+        let area = self.app.body_area();
+        w.layout
+            .layout(area)
+            .into_iter()
+            .map(|(id, r)| (w.get(id).unwrap().name(), r))
+            .collect()
+    }
+
+    fn active_agent(&self) -> Option<String> {
+        let w = &self.app.windows[self.app.active];
+        w.pane().agent.as_ref().map(ToString::to_string)
+    }
+}
+
+#[test]
+fn sub_agents_stack_beside_the_task_agent_in_a_main_vertical() {
+    let mut rig = Rig::new(120, 30);
+    rig.app.select_window(1);
+    let names = ["tests", "docs", "lint"];
+    for n in 1..=3 {
+        rig.set_state(state_with_subs(&names[..n]));
+        assert_eq!(rig.app.windows[rig.app.active].name(), "T-0002 api");
+        let rects = rig.pane_rects();
+        assert_eq!(rects.len(), n + 1, "{rects:?}");
+        let (main_name, main) = &rects[0];
+        assert_eq!(main_name, "T-0002");
+        let area = rig.app.body_area();
+        // Main is the whole left column.
+        assert_eq!((main.x, main.y, main.height), (area.x, area.y, area.height));
+        assert!(main.width > 0 && main.right() < area.right());
+        // Sub-agents are stacked in the right column, in spawn order.
+        let mut y = area.y;
+        for (i, (name, r)) in rects[1..].iter().enumerate() {
+            assert_eq!(name, names[i]);
+            assert!(r.x > main.x + main.width - 1 && r.right() == area.right());
+            assert_eq!(r.y, y, "{name} follows the one above");
+            y = r.bottom();
+        }
+        assert_eq!(y, area.bottom(), "the stack fills the column");
+    }
+    // A sub-agent leaves (its terminal is gone): the rest stay main-vertical.
+    rig.set_state(state_with_subs(&names[..2]));
+    let rects = rig.pane_rects();
+    assert_eq!(rects.len(), 3);
+    assert!(rects[1].1.x > rects[0].1.x && rects[1].1.x == rects[2].1.x);
+}
+
+#[test]
+fn a_user_chosen_layout_is_kept_until_a_sub_agent_joins() {
+    let mut rig = Rig::new(120, 30);
+    rig.app.select_window(1);
+    rig.set_state(state_with_subs(&["tests"]));
+    // The user picks even-vertical (prefix M-2 is the preset key; set it directly).
+    {
+        let w = &mut rig.app.windows[1];
+        let ids = w.layout.leaves();
+        w.layout = crate::layout::Node::preset("even-vertical", &ids).unwrap();
+        w.preset = Some(1);
+    }
+    // The same panes: the layout stays.
+    let before = rig.pane_rects();
+    rig.set_state(state_with_subs(&["tests"]));
+    assert_eq!(rig.pane_rects(), before);
+    // A new sub-agent re-applies the user's preset, not main-vertical.
+    rig.set_state(state_with_subs(&["tests", "docs"]));
+    let rects = rig.pane_rects();
+    assert_eq!(rects.len(), 3);
+    assert!(rects.iter().all(|(_, r)| r.x == rects[0].1.x), "{rects:?}");
+}
+
+#[test]
+fn a_finished_sub_agent_is_drawn_dimmed_with_its_report() {
+    let mut rig = Rig::new(120, 30);
+    rig.app.select_window(1);
+    let mut sv = state_with_subs(&["tests", "docs"]);
+    // docs: exited after a successful report.
+    let docs = sv
+        .agents
+        .iter_mut()
+        .find(|a| a.id.to_string().ends_with("/docs"))
+        .unwrap();
+    docs.life = cmux_proto::view::Life::Exited { code: Some(0) };
+    docs.report = Some(cmux_proto::view::Report {
+        status: cmux_proto::view::ReportStatus::Success,
+        summary: "done".into(),
+        pr_url: None,
+        attempt: 1,
+        implicit: false,
+        supersedes_blocked: false,
+    });
+    rig.set_state(sv);
+    let w = &rig.app.windows[1];
+    let dim: Vec<(String, bool)> = w.panes.iter().map(|p| (p.name(), p.dim)).collect();
+    assert_eq!(
+        dim,
+        [
+            ("T-0002".into(), false),
+            ("tests".into(), false),
+            ("docs".into(), true)
+        ]
+    );
+
+    let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    term.draw(|f| crate::ui::draw(f, &rig.app)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let row = |y: u16| -> String { (0..120).map(|x| buf[(x, y)].symbol()).collect() };
+    let text: Vec<String> = (0..30).map(row).collect();
+    let all = text.join("\n");
+    assert!(all.contains("tests  /home/me/api"), "{all}");
+    assert!(all.contains("docs · reported success"), "{all}");
+
+    // Focus the finished pane: the active header is bold, unless dimmed.
+    let docs = AgentId::new(plan(), AgentPath::sub(t2(), "docs").unwrap());
+    rig.app.show_node(&Node::Sub(docs));
+    let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    term.draw(|f| crate::ui::draw(f, &rig.app)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let area = rig.app.body_area();
+    let w = &rig.app.windows[1];
+    assert_eq!(w.get(w.active).unwrap().name(), "docs");
+    for a in w.areas(area) {
+        let name = w.get(a.id).unwrap().name();
+        let cell = &buf[(a.body.x, a.body.y)];
+        // The pane's name starts after the margin and the status glyph.
+        let header = &buf[(a.header.unwrap().x + 3, a.header.unwrap().y)];
+        assert_eq!(header.symbol(), &name[..1], "name cell of {name}");
+        assert_eq!(
+            cell.modifier.contains(ratatui::style::Modifier::DIM),
+            name == "docs",
+            "body of {name}"
+        );
+        // The header of a finished pane is not bold, even focused.
+        assert!(
+            !header.modifier.contains(ratatui::style::Modifier::BOLD),
+            "header of {name} (focused: {})",
+            a.id == w.active
+        );
+    }
+}
+
+#[test]
+fn prefix_u_goes_sub_agent_to_task_to_executor() {
+    let mut rig = Rig::new(120, 30);
+    let sub = AgentId::new(plan(), AgentPath::sub(t2(), "tests").unwrap());
+    rig.app.show_node(&Node::Sub(sub.clone()));
+    assert_eq!(rig.active_agent().unwrap(), sub.to_string());
+    rig.prefix(b"u");
+    assert_eq!(rig.names()[rig.app.active], "T-0002 api");
+    assert_eq!(rig.active_agent().unwrap(), format!("{}/T-0002", plan()));
+    rig.prefix(b"u");
+    assert_eq!(rig.names()[rig.app.active], "executor");
+    assert_eq!(rig.active_agent().unwrap(), format!("{}/executor", plan()));
+    // The top: stays put.
+    rig.prefix(b"u");
+    assert_eq!(rig.names()[rig.app.active], "executor");
+}
+
+#[test]
+fn closing_a_finished_sub_agent_pane_hides_it_for_good() {
+    let mut rig = Rig::new(120, 30);
+    let mut sv = state_with_subs(&["tests", "docs"]);
+    sv.agents
+        .iter_mut()
+        .find(|a| a.id.to_string().ends_with("/docs"))
+        .unwrap()
+        .life = cmux_proto::view::Life::Exited { code: Some(0) };
+    rig.set_state(sv.clone());
+    let docs = AgentId::new(plan(), AgentPath::sub(t2(), "docs").unwrap());
+    rig.app.show_node(&Node::Sub(docs.clone()));
+    assert_eq!(rig.active_agent().unwrap(), docs.to_string());
+    rig.take_calls();
+    rig.prefix(b"x");
+    rig.keys(b"y");
+    // Closing is local: no request, the pane is gone and remembered.
+    assert_eq!(rig.take_calls(), []);
+    let r = rig.app.remote.as_ref().unwrap();
+    assert!(r.view.closed.contains(&docs.to_string()));
+    let w = &rig.app.windows[rig.app.active];
+    assert_eq!(w.panes.len(), 2);
+    assert!(w.panes.iter().all(|p| p.agent.as_ref() != Some(&docs)));
+    // A later state does not bring it back.
+    rig.set_state(sv);
+    assert_eq!(rig.app.windows[rig.app.active].panes.len(), 2);
+    // A running sub-agent is stopped, not closed.
+    let tests = AgentId::new(plan(), AgentPath::sub(t2(), "tests").unwrap());
+    rig.app.show_node(&Node::Sub(tests.clone()));
+    rig.prefix(b"x");
+    rig.keys(b"y");
+    assert_eq!(
+        rig.take_calls(),
+        [post(
+            format!("/v1/agents/{}%2FT-0002%2Ftests/stop", plan()),
+            Value::Null
+        )]
+    );
+}
+
+#[test]
+fn a_sub_agents_question_is_replied_to_from_the_overlay() {
+    let mut rig = Rig::new(120, 30);
+    let mut sv = state_with_subs(&["tests"]);
+    let sub = AgentId::new(plan(), AgentPath::sub(t2(), "tests").unwrap());
+    sv.items.clear();
+    sv.items.push(cmux_proto::view::ItemView {
+        id: cmux_proto::view::ItemId(9),
+        to: cmux_proto::view::Recipient::Human,
+        kind: cmux_proto::view::ItemKind::Question,
+        from: Some(sub.clone()),
+        body: "Mock the clock?".into(),
+        status: cmux_proto::view::Delivery::Pending,
+        created: 500,
+        needs_human: true,
+    });
+    rig.set_state(sv);
+    // The sub-agent's pane header shows it needs you.
+    let w = &rig.app.windows[1];
+    let sub_pane = w
+        .panes
+        .iter()
+        .find(|p| p.agent.as_ref() == Some(&sub))
+        .unwrap();
+    assert_eq!(
+        rig.app.remote.as_ref().unwrap().pane_glyph(sub_pane),
+        Some(cmux_core::glyph::Glyph::NeedsYou)
+    );
+    rig.prefix(b"a");
+    assert!(matches!(rig.app.mode, Mode::Inbox));
+    assert!(rig.draw(120, 30).contains("Mock the clock?"));
+    rig.take_calls();
+    rig.keys(b"r");
+    assert!(matches!(rig.app.mode, Mode::Form));
+    rig.keys(b"yes, freeze it\r");
+    assert_eq!(
+        rig.take_calls(),
+        [post(
+            "/v1/items/9/answer",
+            json!({"action": "reply", "text": "yes, freeze it"})
+        )]
+    );
+    // Enter jumps to the asking sub-agent's pane.
+    rig.keys(b"\r");
+    assert!(matches!(rig.app.mode, Mode::Normal));
+    assert_eq!(rig.active_agent().unwrap(), sub.to_string());
+}
+
+fn report_of(status: cmux_proto::view::ReportStatus) -> cmux_proto::view::Report {
+    cmux_proto::view::Report {
+        status,
+        summary: "x".into(),
+        pr_url: None,
+        attempt: 1,
+        implicit: false,
+        supersedes_blocked: false,
+    }
+}
+
+fn sub_mut<'a>(sv: &'a mut StateView, name: &str) -> &'a mut cmux_proto::view::AgentView {
+    sv.agents
+        .iter_mut()
+        .find(|a| a.id.to_string().ends_with(&format!("/{name}")))
+        .unwrap()
+}
+
+#[test]
+fn a_sub_agent_that_resumed_after_a_blocked_report_is_not_dimmed() {
+    use cmux_proto::view::{Activity, Life, ReportStatus};
+    let mut rig = Rig::new(120, 30);
+    rig.app.select_window(1);
+    let mut sv = state_with_subs(&["tests"]);
+    let a = sub_mut(&mut sv, "tests");
+    a.life = Life::Running;
+    a.activity = Activity::Working;
+    a.report = Some(report_of(ReportStatus::Blocked));
+    rig.set_state(sv.clone());
+    let dim = |rig: &Rig| {
+        rig.app.windows[1]
+            .panes
+            .iter()
+            .find(|p| p.name() == "tests")
+            .unwrap()
+            .dim
+    };
+    assert!(!dim(&rig));
+    let s = rig.draw(120, 30);
+    let line = s.lines().find(|l| l.contains("tests")).unwrap_or("");
+    assert!(!line.contains("blocked"), "{s}");
+    // Idle with the blocked report: it is waiting, dimmed with its report.
+    sub_mut(&mut sv, "tests").activity = Activity::Idle;
+    rig.set_state(sv);
+    assert!(dim(&rig));
+    assert!(rig.draw(120, 30).contains("tests · blocked"));
+}
+
+#[test]
+fn a_reported_sub_agent_that_is_still_running_can_be_closed_locally() {
+    use cmux_proto::view::{Activity, ReportStatus};
+    let mut rig = Rig::new(120, 30);
+    let mut sv = state_with_subs(&["tests", "docs"]);
+    let a = sub_mut(&mut sv, "docs");
+    a.activity = Activity::Idle;
+    a.report = Some(report_of(ReportStatus::Success));
+    rig.set_state(sv);
+    let docs = AgentId::new(plan(), AgentPath::sub(t2(), "docs").unwrap());
+    rig.app.show_node(&Node::Sub(docs.clone()));
+    rig.take_calls();
+    rig.prefix(b"x");
+    rig.keys(b"y");
+    assert_eq!(rig.take_calls(), []);
+    assert!(
+        rig.app
+            .remote
+            .as_ref()
+            .unwrap()
+            .view
+            .closed
+            .contains(&docs.to_string())
+    );
+    let w = &rig.app.windows[rig.app.active];
+    assert!(w.panes.iter().all(|p| p.agent.as_ref() != Some(&docs)));
+}
+
+#[test]
+fn showing_a_task_keeps_the_zoom_when_its_pane_is_already_focused() {
+    let mut rig = Rig::new(120, 30);
+    rig.app.select_window(1);
+    rig.set_state(state_with_subs(&["tests"]));
+    {
+        let w = &mut rig.app.windows[1];
+        let main = w.panes[0].id;
+        w.focus(main);
+        w.zoomed = true;
+    }
+    rig.app.show_node(&Node::Task(plan(), t2()));
+    assert!(rig.app.windows[1].zoomed);
+    // Another pane focused: showing the task goes to its pane and un-zooms.
+    {
+        let w = &mut rig.app.windows[1];
+        let other = w.panes[1].id;
+        w.focus(other);
+        w.zoomed = true;
+    }
+    rig.app.show_node(&Node::Task(plan(), t2()));
+    let w = &rig.app.windows[1];
+    assert!(!w.zoomed);
+    assert_eq!(w.get(w.active).unwrap().name(), "T-0002");
+}
+
+#[test]
+fn a_header_with_no_room_for_text_shows_just_the_name() {
+    for cols in [30u16, 40] {
+        let mut rig = Rig::new(cols, 30);
+        rig.app.select_window(1);
+        rig.set_state(state_with_subs(&["docs"]));
+        let s = rig.draw(cols, 30);
+        // The docs pane is right of the main pane's header.
+        let line = s.lines().find(|l| l.contains("docs")).unwrap();
+        let docs = &line[line.rfind('│').unwrap()..];
+        assert!(
+            !docs.contains('…') && !docs.contains("docs ·"),
+            "{cols}: {s}"
+        );
+    }
+}
+
+#[test]
+fn a_resumed_sub_agent_on_a_new_terminal_keeps_its_pane_and_layout() {
+    let mut rig = Rig::new(120, 30);
+    rig.app.select_window(1);
+    rig.set_state(state_with_subs(&["tests", "docs"]));
+    {
+        let w = &mut rig.app.windows[1];
+        let ids = w.layout.leaves();
+        w.layout = crate::layout::Node::preset("even-vertical", &ids).unwrap();
+        w.preset = None;
+        let docs = w.panes.iter().find(|p| p.name() == "docs").unwrap().id;
+        w.focus(docs);
+    }
+    let before = rig.pane_rects();
+    let mut sv = state_with_subs(&["tests", "docs"]);
+    sub_mut(&mut sv, "docs").term = Some(TermId(77));
+    sv.terminals
+        .iter_mut()
+        .find(|t| t.id == TermId(41))
+        .unwrap()
+        .id = TermId(77);
+    rig.set_state(sv);
+    assert_eq!(rig.pane_rects(), before);
+    let w = &rig.app.windows[1];
+    assert_eq!(w.get(w.active).unwrap().name(), "docs");
+}
+
+#[test]
+fn a_sub_agent_stopped_after_its_success_report_is_not_red() {
+    use cmux_core::glyph::Glyph;
+    use cmux_proto::view::{Activity, Life, ReportStatus};
+    let mut rig = Rig::new(120, 30);
+    rig.app.select_window(1);
+    let mut sv = state_with_subs(&["tests", "docs"]);
+    let a = sub_mut(&mut sv, "docs");
+    a.life = Life::Stopped;
+    a.activity = Activity::Idle;
+    a.report = Some(report_of(ReportStatus::Success));
+    rig.set_state(sv);
+    let glyphs = |rig: &Rig| {
+        let r = rig.app.remote.as_ref().unwrap();
+        let win = &rig.app.windows[rig.app.active];
+        let docs = win
+            .panes
+            .iter()
+            .find(|p| {
+                p.agent
+                    .as_ref()
+                    .is_some_and(|a| a.to_string().ends_with("/docs"))
+            })
+            .unwrap();
+        (r.pane_glyph(docs), r.window_glyph(win))
+    };
+    let (pane, window) = glyphs(&rig);
+    assert_eq!(pane, Some(Glyph::Unseen));
+    assert_ne!(window, Some(Glyph::Failed));
+    // A sub-agent stopped without a report is red.
+    let mut sv = rig.app.remote.as_ref().unwrap().mirror.sv.clone();
+    sub_mut(&mut sv, "docs").report = None;
+    rig.set_state(sv);
+    assert_eq!(glyphs(&rig).0, Some(Glyph::Failed));
+}
+
+#[test]
+fn killing_the_pane_of_a_reported_task_agent_stops_it() {
+    use cmux_proto::view::{Activity, ReportStatus};
+    let mut rig = Rig::new(120, 30);
+    let mut sv = state_with_subs(&["tests"]);
+    let task = AgentId::new(plan(), AgentPath::Task(t2()));
+    let a = sv.agents.iter_mut().find(|a| a.id == task).unwrap();
+    a.activity = Activity::Idle;
+    a.report = Some(report_of(ReportStatus::Success));
+    rig.set_state(sv);
+    rig.app.show_node(&Node::Task(plan(), t2()));
+    rig.take_calls();
+    rig.prefix(b"x");
+    rig.keys(b"y");
+    assert_eq!(
+        rig.take_calls(),
+        [post(
+            format!("/v1/agents/{}%2FT-0002/stop", plan()),
+            Value::Null
+        )]
+    );
+    assert!(
+        !rig.app
+            .remote
+            .as_ref()
+            .unwrap()
+            .view
+            .closed
+            .contains(&task.to_string())
+    );
 }
 
 /// T-0002 with `n` sub-agents: `tests` runs, `docs` has exited after its

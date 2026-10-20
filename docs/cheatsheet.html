@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cmux cheatsheet</title>
+<!-- Build the PDF: see the comment at the end of this file. -->
+<style>
+  @page { size: A4 landscape; margin: 9mm; }
+  :root { --ink: #1b1f24; --mute: #5b636e; --line: #d8dde3; --key: #eef1f4; --accent: #6b46c1; }
+  * { box-sizing: border-box; }
+  body { margin: 0; color: var(--ink); background: #fff;
+         font: 8.4pt/1.3 -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 10px; border-bottom: 2px solid var(--accent);
+           padding-bottom: 3px; margin-bottom: 6px; }
+  header h1 { font-size: 15pt; margin: 0; }
+  header p { margin: 0; color: var(--mute); }
+  .cols { column-count: 3; column-gap: 7mm; }
+  section { break-inside: avoid; margin-bottom: 7px; }
+  h2 { font-size: 9.2pt; margin: 0 0 2px; color: var(--accent); text-transform: uppercase; letter-spacing: .04em; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 1.4px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td:first-child { white-space: nowrap; padding-right: 6px; width: 1%; }
+  kbd { font: 7.6pt/1 ui-monospace, Menlo, monospace; background: var(--key); border: 1px solid var(--line);
+        border-radius: 3px; padding: 1px 3px; }
+  .note { color: var(--mute); font-size: 7.6pt; margin: 2px 0 0; }
+  .page { break-after: page; }
+</style>
+</head>
+<body>
+
+<div class="page">
+<header><h1>cmux</h1><p>Ghostty bindings and prefix keys. Prefix: <kbd>Ctrl-b</kbd>. <kbd>Ctrl-b Ctrl-b</kbd> sends a literal <kbd>Ctrl-b</kbd>.</p></header>
+<div class="cols">
+
+<section><h2>Ghostty: tabs</h2><table>
+<tr><td><kbd>⌘1</kbd>…<kbd>⌘9</kbd> <kbd>⌘0</kbd></td><td>Go to a tab (<kbd>⌘0</kbd> is tab 10)</td></tr>
+<tr><td><kbd>⌘T</kbd></td><td>New Claude session</td></tr>
+<tr><td><kbd>⌘⇧O</kbd></td><td>New session in another directory</td></tr>
+<tr><td><kbd>⌘P</kbd></td><td>Resume or fork a past session</td></tr>
+<tr><td><kbd>⌘⇧T</kbd> / <kbd>⌘G</kbd></td><td>New shell / lazygit</td></tr>
+<tr><td><kbd>⌘⇧[</kbd> / <kbd>⌘⇧]</kbd></td><td>Previous / next tab</td></tr>
+<tr><td><kbd>⌘J</kbd> / <kbd>⌘⇧J</kbd></td><td>Next / previous tab with an alert</td></tr>
+<tr><td><kbd>⌘⇧←</kbd> / <kbd>⌘⇧→</kbd></td><td>Move the tab (server: narrow / widen the tree)</td></tr>
+<tr><td><kbd>⌘R</kbd></td><td>Rename the tab</td></tr>
+<tr><td><kbd>⌘S</kbd></td><td>List the open tabs</td></tr>
+<tr><td><kbd>⌘⇧C</kbd></td><td>Scroll back through output</td></tr>
+<tr><td><kbd>⌘W</kbd> / <kbd>⌘⇧W</kbd></td><td>Stop the pane's session / quit (detach)</td></tr>
+</table></section>
+
+<section><h2>Ghostty: panes</h2><table>
+<tr><td><kbd>⌘D</kbd> / <kbd>⌘⇧D</kbd></td><td>Split right / below</td></tr>
+<tr><td><kbd>⌘⌥H</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd></td><td>Go to the pane left / down / up / right</td></tr>
+<tr><td><kbd>⌘⌃H</kbd> <kbd>J</kbd> <kbd>K</kbd> <kbd>L</kbd></td><td>Resize the pane by 5 cells</td></tr>
+<tr><td><kbd>⌘⇧↩</kbd></td><td>Zoom the pane</td></tr>
+<tr><td><kbd>⇧↩</kbd></td><td>Newline in Claude</td></tr>
+</table></section>
+
+<section><h2>Ghostty: plans (server)</h2><table>
+<tr><td><kbd>⌘B</kbd></td><td>Focus the plan tree, or go back to the pane</td></tr>
+<tr><td><kbd>⌘⇧B</kbd></td><td>Hide / show the plan tree</td></tr>
+</table></section>
+
+<section><h2>Prefix: tabs</h2><table>
+<tr><td><kbd>c</kbd></td><td>New Claude session here</td></tr>
+<tr><td><kbd>C</kbd></td><td>New session in another directory</td></tr>
+<tr><td><kbd>t</kbd> / <kbd>g</kbd></td><td>New shell / lazygit</td></tr>
+<tr><td><kbd>n</kbd> / <kbd>p</kbd></td><td>Next / previous tab</td></tr>
+<tr><td><kbd>M-n</kbd> / <kbd>M-p</kbd></td><td>Next / previous tab with an alert</td></tr>
+<tr><td><kbd>0</kbd>…<kbd>9</kbd></td><td>Go to a tab</td></tr>
+<tr><td><kbd>'</kbd></td><td>Go to a tab by typed index</td></tr>
+<tr><td><kbd>l</kbd></td><td>Last used tab</td></tr>
+<tr><td><kbd>w</kbd> / <kbd>f</kbd></td><td>List and filter the open tabs</td></tr>
+<tr><td><kbd>s</kbd> / <kbd>r</kbd></td><td>Resume or fork a past session</td></tr>
+<tr><td><kbd>,</kbd></td><td>Rename the tab</td></tr>
+<tr><td><kbd>&lt;</kbd> / <kbd>&gt;</kbd></td><td>Move the tab (server: narrow / widen the tree)</td></tr>
+<tr><td><kbd>&amp;</kbd></td><td>Stop all sessions in the tab</td></tr>
+</table></section>
+
+<section><h2>Prefix: panes</h2><table>
+<tr><td><kbd>%</kbd> / <kbd>"</kbd></td><td>New Claude pane right / below</td></tr>
+<tr><td><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></td><td>Go to the pane in that direction</td></tr>
+<tr><td><kbd>C-arrow</kbd> / <kbd>M-arrow</kbd></td><td>Resize the pane by 1 / 5 cells</td></tr>
+<tr><td><kbd>o</kbd> / <kbd>;</kbd></td><td>Next pane / last used pane</td></tr>
+<tr><td><kbd>z</kbd></td><td>Zoom the pane (toggle)</td></tr>
+<tr><td><kbd>{</kbd> / <kbd>}</kbd></td><td>Swap with the previous / next pane</td></tr>
+<tr><td><kbd>!</kbd></td><td>Move the pane to a new tab</td></tr>
+<tr><td><kbd>Space</kbd></td><td>Next preset layout</td></tr>
+<tr><td><kbd>M-1</kbd>…<kbd>M-5</kbd></td><td>Select a preset layout</td></tr>
+<tr><td><kbd>x</kbd></td><td>Stop the session in the pane</td></tr>
+</table></section>
+
+<section><h2>Prefix: other</h2><table>
+<tr><td><kbd>[</kbd> / <kbd>PgUp</kbd></td><td>Scroll back through output</td></tr>
+<tr><td><kbd>:</kbd></td><td>Command prompt (tmux commands)</td></tr>
+<tr><td><kbd>i</kbd></td><td>Show pid and session id</td></tr>
+<tr><td><kbd>d</kbd></td><td>Quit (server: detach, agents keep running)</td></tr>
+<tr><td><kbd>?</kbd></td><td>Help</td></tr>
+</table></section>
+
+</div>
+</div>
+
+<header><h1>cmux plans</h1><p>Server mode: a plan is a workspace, a task is a tab, a sub-agent is a pane.</p></header>
+<div class="cols">
+
+<section><h2>Prefix: server</h2><table>
+<tr><td><kbd>Tab</kbd></td><td>Focus the plan tree, or go back</td></tr>
+<tr><td><kbd>B</kbd></td><td>Hide / show the plan tree</td></tr>
+<tr><td><kbd>&lt;</kbd> / <kbd>&gt;</kbd></td><td>Narrow / widen the plan tree</td></tr>
+<tr><td><kbd>P</kbd></td><td>Next plan</td></tr>
+<tr><td><kbd>e</kbd> / <kbd>u</kbd></td><td>Go to the executor / up one level</td></tr>
+<tr><td><kbd>v</kbd></td><td>Board view (cards by state)</td></tr>
+<tr><td><kbd>a</kbd></td><td>Needs-you overlay</td></tr>
+<tr><td><kbd>M-a</kbd> / <kbd>M-A</kbd></td><td>Next / previous item that needs you</td></tr>
+<tr><td><kbd>m</kbd></td><td>Message the focused agent</td></tr>
+<tr><td><kbd>=</kbd></td><td>Take the terminal size from another client</td></tr>
+<tr><td><kbd>d</kbd></td><td>Detach</td></tr>
+</table></section>
+
+<section><h2>Tree (focused)</h2><table>
+<tr><td><kbd>j</kbd> <kbd>k</kbd> / <kbd>↓</kbd> <kbd>↑</kbd></td><td>Move</td></tr>
+<tr><td><kbd>h</kbd> <kbd>l</kbd> / <kbd>←</kbd> <kbd>→</kbd></td><td>Collapse / expand</td></tr>
+<tr><td><kbd>Home</kbd> / <kbd>End</kbd></td><td>First / last row</td></tr>
+<tr><td><kbd>Enter</kbd></td><td>Open and focus the pane</td></tr>
+<tr><td><kbd>Space</kbd></td><td>Preview (keep the tree focus)</td></tr>
+<tr><td><kbd>/</kbd></td><td>Filter</td></tr>
+<tr><td><kbd>&lt;</kbd> / <kbd>&gt;</kbd></td><td>Narrow / widen the tree</td></tr>
+<tr><td><kbd>Esc</kbd></td><td>Back to the pane</td></tr>
+</table></section>
+
+<section><h2>Tree: act on the selection</h2><table>
+<tr><td><kbd>A</kbd></td><td>Accept the plan (starts it), or a task</td></tr>
+<tr><td><kbd>S</kbd></td><td>Pause / resume the plan</td></tr>
+<tr><td><kbd>s</kbd></td><td>Message the agent</td></tr>
+<tr><td><kbd>x</kbd> / <kbd>R</kbd></td><td>Stop / resume the agent</td></tr>
+<tr><td><kbd>c</kbd></td><td>Cancel the task</td></tr>
+<tr><td><kbd>X</kbd></td><td>Delete the plan</td></tr>
+<tr><td><kbd>e</kbd></td><td>Go to the executor</td></tr>
+<tr><td><kbd>o</kbd></td><td>Open the task's PR</td></tr>
+<tr><td><kbd>g</kbd> / <kbd>D</kbd></td><td>lazygit / diff in the worktree</td></tr>
+<tr><td><kbd>v</kbd> / <kbd>i</kbd></td><td>Board / needs-you overlay</td></tr>
+</table>
+<p class="note">On the board, the same keys act on the selected card.</p></section>
+
+<section><h2>Needs you</h2><table>
+<tr><td><kbd>y</kbd> / <kbd>Y</kbd></td><td>Allow / allow always (<kbd>y</kbd> accepts a plan)</td></tr>
+<tr><td><kbd>n</kbd></td><td>Deny, or send a plan back</td></tr>
+<tr><td><kbd>r</kbd></td><td>Reply to a question</td></tr>
+<tr><td><kbd>d</kbd></td><td>Dismiss</td></tr>
+<tr><td><kbd>Enter</kbd></td><td>Jump to the agent</td></tr>
+<tr><td><kbd>j</kbd> <kbd>k</kbd></td><td>Move</td></tr>
+<tr><td><kbd>Esc</kbd> / <kbd>q</kbd></td><td>Close</td></tr>
+</table></section>
+
+<section><h2>Message form</h2><table>
+<tr><td><kbd>Enter</kbd></td><td>Queue for the end of the turn</td></tr>
+<tr><td><kbd>Alt-Enter</kbd></td><td>Steer now</td></tr>
+</table></section>
+
+<section><h2>Session picker</h2><table>
+<tr><td><em>type</em></td><td>Filter</td></tr>
+<tr><td><kbd>Enter</kbd></td><td>Resume the session</td></tr>
+<tr><td><kbd>Ctrl-f</kbd></td><td>Fork the session</td></tr>
+<tr><td><kbd>Ctrl-o</kbd></td><td>New session in that directory</td></tr>
+<tr><td><kbd>Tab</kbd></td><td>All projects / current directory</td></tr>
+</table>
+<p class="note">● open in cmux · ◆ running in another terminal</p></section>
+
+<section><h2>Mouse</h2><table>
+<tr><td>Click a tab</td><td>Go to the tab (wheel cycles)</td></tr>
+<tr><td>Click a pane</td><td>Focus the pane</td></tr>
+<tr><td>Drag a divider</td><td>Resize the pane</td></tr>
+<tr><td>Click the tree</td><td>Focus the tree; a row previews it</td></tr>
+<tr><td>Double-click a row</td><td>Open it and focus the pane</td></tr>
+<tr><td>Drag the tree border</td><td>Resize the tree</td></tr>
+<tr><td>Wheel in the tree</td><td>Move the selection</td></tr>
+</table></section>
+
+</div>
+<!--
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless \
+    --no-pdf-header-footer --print-to-pdf=docs/cheatsheet.pdf docs/cheatsheet.html
+-->
+</body>
+</html>

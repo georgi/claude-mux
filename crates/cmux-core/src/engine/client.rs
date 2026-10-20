@@ -404,6 +404,9 @@ impl Ctx<'_> {
         if self.plan(pi).spawn_queue.iter().any(|q| q.task == task) && to.is_terminal() {
             self.plan_mut(pi).spawn_queue.retain(|q| q.task != task);
         }
+        if to == TaskState::Merged {
+            self.stop_subs(pi, task);
+        }
         if to == TaskState::Cancelled {
             // Cancelling stops the task agent and its sub-agents.
             let id = AgentId::new(self.plan(pi).id.clone(), AgentPath::Task(task));

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ItemKind } from "./api/types";
 import { agent, fakeApi, item, PLAN, plan, state, task } from "./fixtures";
-import { actionsFor, describe as describeItem, type Nav, needs, pending, perform } from "./needs";
+import { actionsFor, describe as describeItem, groups, type Nav, NUDGE, needs, notifyKind, pending, perform } from "./needs";
 
 const perm: ItemKind = { permission: { tool: "Bash", input_summary: "cargo test -p api" } };
 
@@ -21,10 +21,12 @@ describe("actionsFor", () => {
   it("offers the actions of UI design 2.3 for each kind", () => {
     expect(ids(perm)).toEqual(["allow", "allow_always", "deny", "open"]);
     expect(ids("question")).toEqual(["reply", "dismiss", "open"]);
+    expect(ids("child_question")).toEqual(["reply", "dismiss", "open"]);
     expect(ids("plan_review")).toEqual(["accept", "send_back", "open"]);
-    expect(ids("stalled")).toEqual(["message", "resume", "stop", "dismiss", "open"]);
-    expect(ids("exited_without_report")).toEqual(["message", "resume", "stop", "dismiss", "open"]);
-    expect(ids("ci_failing")).toEqual(["open_pr", "message", "dismiss"]);
+    expect(ids("stalled")).toEqual(["open", "nudge", "dismiss"]);
+    expect(ids("exited_without_report")).toEqual(["message", "resume", "dismiss", "open"]);
+    expect(ids("ci_failing")).toEqual(["open_pr", "open", "dismiss"]);
+    expect(ids("child_report")).toEqual(["dismiss", "open"]);
   });
 
   it("asks for text where the action needs it", () => {
@@ -62,6 +64,57 @@ describe("needs", () => {
     });
     const n = describeItem(v, v.items[0]);
     expect([n.title, n.detail]).toEqual(["Plan ready for review: demo", "2 tasks, 1 repo"]);
+  });
+});
+
+describe("groups", () => {
+  const OTHER = "P-20261018-other";
+  const v = state({
+    plans: [plan(), plan({ id: OTHER, title: "other plan" })],
+    items: [
+      item(1, { created: 10 }),
+      item(2, { created: 50, from: `${OTHER}/T-0001` }),
+      item(3, { created: 30 }),
+      item(4, { created: 20, from: null }),
+      item(5, { created: 40, from: `${OTHER}/executor` }),
+      item(6, { created: 30, from: `${PLAN}/T-0002` }),
+    ],
+  });
+
+  it("groups by plan, the group with the newest item first", () => {
+    const g = groups(v);
+    expect(g.map((x) => [x.plan, x.title])).toEqual([
+      [OTHER, "other plan"],
+      [PLAN, "demo"],
+      [null, "Other"],
+    ]);
+  });
+
+  it("orders each group newest first, the higher id first on a tie", () => {
+    expect(groups(v).map((x) => x.needs.map((n) => n.item.id))).toEqual([[2, 5], [6, 3, 1], [4]]);
+  });
+
+  it("puts items from an unknown plan under Other", () => {
+    const g = groups(state({ items: [item(1, { from: "P-gone/T-0001" })] }));
+    expect(g.map((x) => [x.plan, x.title, x.needs.length])).toEqual([[null, "Other", 1]]);
+  });
+
+  it("is empty with nothing pending", () => {
+    expect(groups(state({ items: [item(1, { status: "dismissed" })] }))).toEqual([]);
+  });
+});
+
+describe("notifyKind", () => {
+  it("maps items to the notification settings", () => {
+    const k = (kind: ItemKind) => notifyKind(item(1, { kind }));
+    expect([k(perm), k("child_question"), k("plan_review"), k("exited_without_report"), k("ci_failing"), k("child_report")]).toEqual([
+      "permission",
+      "question",
+      "plan_review",
+      "stalled",
+      "ci_failing",
+      null,
+    ]);
   });
 });
 
@@ -107,8 +160,23 @@ describe("perform", () => {
       ["answer", 9, { action: "dismiss", text: null }, expect.any(String)],
     ]);
     expect((await run("stalled", "resume")).calls.map((c) => c[0])).toEqual(["resumeAgent", "answer"]);
+    expect((await run("stalled", "nudge")).calls).toEqual([
+      ["message", from, NUDGE, true],
+      ["answer", 9, { action: "dismiss", text: null }, expect.any(String)],
+    ]);
     expect((await run("exited_without_report", "stop")).calls.map((c) => c[0])).toEqual(["stopAgent", "answer"]);
     await expect(run("stalled", "message", "")).rejects.toThrow(/needs text/);
+  });
+
+  it("keeps the stalled item unanswered when sending the nudge fails", async () => {
+    const v = state({ items: [item(9, { kind: "stalled", from })] });
+    const api = fakeApi({
+      message: async () => {
+        throw new Error("connection lost");
+      },
+    });
+    await expect(perform(api, nav().n, describeItem(v, v.items[0]), "nudge")).rejects.toThrow("connection lost");
+    expect(api.calls).toEqual([]);
   });
 
   it("opens things without calling the server", async () => {

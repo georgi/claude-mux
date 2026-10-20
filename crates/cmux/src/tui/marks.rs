@@ -1,6 +1,6 @@
 //! Small text marks that several widgets share.
 
-use cmux_proto::view::{ClientId, PrRef, StateView, TermId};
+use cmux_proto::view::{Activity, AgentView, ClientId, Life, PrRef, StateView, TermId};
 
 /// `⇲ 120×40` when another client owns the terminal's size (UI design 3.4),
 /// to go in the pane header. `None` when `me` owns it or nobody does.
@@ -8,6 +8,17 @@ pub fn size_mark(sv: &StateView, term: TermId, me: &ClientId) -> Option<String> 
     let t = sv.terminal(term)?;
     let owner = t.size_owner.as_ref()?;
     (owner != me).then(|| format!("⇲ {}×{}", t.cols, t.rows))
+}
+
+/// Whether an agent is done for now: its process is over, or it reported and
+/// is not at work. The same rule as the `finished && !working` branch of
+/// `cmux_core::glyph::glyph`; a `blocked` agent that resumed is not done.
+pub fn agent_done(a: &AgentView) -> bool {
+    match a.life {
+        Life::Exited { .. } | Life::Stopped => true,
+        Life::Starting => false,
+        Life::Running => a.report.is_some() && a.activity == Activity::Idle,
+    }
 }
 
 /// `✉N`, or an empty string when nothing is queued.
@@ -68,5 +79,47 @@ mod tests {
         assert_eq!(size_mark(&sv, TermId(9), &me), None);
         assert_eq!(queue_mark(0), "");
         assert_eq!(queue_mark(3), "✉3");
+    }
+
+    #[test]
+    fn a_running_agent_is_done_only_when_idle_with_a_report() {
+        use cmux_core::ids::AgentPath;
+        use cmux_proto::view::{Report, ReportStatus};
+        let report = Report {
+            status: ReportStatus::Success,
+            summary: "x".into(),
+            pr_url: None,
+            attempt: 1,
+            implicit: false,
+            supersedes_blocked: false,
+        };
+        let plan = cmux_proto::view::PlanId::new(2026, 10, 18, "auth");
+        let mut a = AgentView {
+            id: cmux_proto::view::AgentId::new(plan, AgentPath::Executor),
+            path: AgentPath::Executor,
+            level: cmux_proto::view::Level::Executor,
+            parent: None,
+            task: None,
+            term: None,
+            cwd: "/".into(),
+            life: Life::Running,
+            activity: Activity::Idle,
+            report: Some(report),
+            tokens: Default::default(),
+            idle_since: None,
+            stalled: false,
+        };
+        assert!(agent_done(&a));
+        for act in [
+            Activity::NeedsPermission,
+            Activity::Working,
+            Activity::Unknown,
+        ] {
+            a.activity = act;
+            assert!(!agent_done(&a), "{act:?}");
+        }
+        a.activity = Activity::Idle;
+        a.report = None;
+        assert!(!agent_done(&a));
     }
 }

@@ -1,18 +1,33 @@
-import { useEffect, useMemo, useState } from "preact/hooks";
+import { PlusIcon, SquareMousePointerIcon } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarHeader,
+  SidebarInset,
+  SidebarProvider,
+} from "@/components/ui/sidebar";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Toaster } from "@/components/ui/sonner";
 import { api, endSession, hasSession } from "../api/http";
-import type { StateView } from "../api/types";
 import { Conn, streamUrl } from "../conn";
-import { useMedia, useModel, useSpinner } from "../hooks";
+import { useMedia, useModel } from "../hooks";
 import { type Nav, pending } from "../needs";
+import { KEYBOARD_PX, useVisualViewport } from "../pwa";
 import { formatRoute, parseRoute, type Route } from "../route";
 import { Store } from "../store";
-import { agentGlyph } from "../tree";
 import { AgentPane } from "./AgentPane";
-import { Board, NewPlan, PlanList } from "./Board";
-import { NeedsYou } from "./NeedsYou";
-import { Pairing } from "./Pairing";
-import { Settings } from "./Settings";
-import { TermView } from "./TermView";
+import { NeedsYou, useAttention } from "./NeedsYou";
+import { Keyboard } from "./shell/command";
+import { crumbsFor, Header } from "./shell/header";
+import { Live } from "./shell/live";
+import { ActionSheet, OfflineBanner, PullToReconnect } from "./shell/phone";
+import { PhoneTabs, type Tab } from "./shell/phone-tabs";
+import { Board, NeedsLayout, NewPlan, Pairing, PlanList, Settings, TermView } from "./lazy";
 import { Tree } from "./Tree";
 
 type Phase = "checking" | "pair" | "app";
@@ -28,16 +43,69 @@ export function App() {
       .catch((e: unknown) => setError(String(e)));
   }, [phase]);
 
-  if (error) return <p class="error pad">Cannot reach the server: {error}</p>;
-  if (phase === "checking") return <p class="muted pad">Connecting…</p>;
-  if (phase === "pair") return <Pairing onPaired={() => setPhase("app")} />;
-  return <Main onSignedOut={() => setPhase("pair")} />;
+  let body: React.ReactNode;
+  if (error)
+    body = (
+      <Empty className="min-h-svh">
+        <EmptyHeader>
+          <EmptyTitle>Cannot reach the server</EmptyTitle>
+          <EmptyDescription className="break-all">{error}</EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
+          <Button
+            onClick={() => {
+              setError(null);
+              setPhase("checking");
+            }}
+          >
+            Retry
+          </Button>
+        </EmptyContent>
+      </Empty>
+    );
+  else if (phase === "checking")
+    body = (
+      <main className="flex min-h-svh flex-col items-center justify-center gap-3" aria-busy="true">
+        <Skeleton className="h-6 w-40" />
+        <p className="text-sm text-muted-foreground">Connecting…</p>
+      </main>
+    );
+  else if (phase === "pair") body = <Pairing onPaired={() => setPhase("app")} />;
+  else body = <Main onSignedOut={() => setPhase("pair")} />;
+
+  return (
+    <>
+      {body}
+      <Toaster position="top-center" />
+    </>
+  );
 }
 
 /** Phones get bottom tabs and chat first (UI design 4.2). */
 const PHONE = "(max-width: 639px)";
 /** Wide screens show the needs-you column (UI design 4.1). */
 const WIDE = "(min-width: 1024px)";
+
+function Loading() {
+  return (
+    <div className="flex flex-col gap-2 p-4" aria-busy="true">
+      <Skeleton className="h-5 w-1/2" />
+      <Skeleton className="h-5 w-2/3" />
+      <Skeleton className="h-5 w-1/3" />
+    </div>
+  );
+}
+
+function Missing({ text }: { text: string }) {
+  return (
+    <Empty>
+      <EmptyHeader>
+        <EmptyTitle>Not found</EmptyTitle>
+        <EmptyDescription>{text}</EmptyDescription>
+      </EmptyHeader>
+    </Empty>
+  );
+}
 
 function Main({ onSignedOut }: { onSignedOut: () => void }) {
   const store = useMemo(() => new Store(), []);
@@ -46,6 +114,11 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
   const [route, setRoute] = useState<Route>(parseRoute(location.hash));
   const phone = useMedia(PHONE);
   const wide = useMedia(WIDE);
+  const vp = useVisualViewport(phone);
+  const keyboard = !!vp && vp.keyboard > KEYBOARD_PX;
+  const [more, setMore] = useState(false);
+  const seen = useRef(false);
+  if (m.conn === "open") seen.current = true;
 
   useEffect(() => {
     conn.start();
@@ -70,6 +143,10 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
     }
   }, [m.conn]);
 
+  useEffect(() => {
+    if (m.error && m.error.code !== "unauthorized") toast.error(m.error.message, { id: "server-error" });
+  }, [m.error]);
+
   const signOut = async () => {
     conn.stop();
     await endSession().catch(() => {});
@@ -89,14 +166,37 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
   const v = m.view;
   const readOnly = m.scope === "read";
   const count = v ? pending(v).length : 0;
+  useAttention(v, route.view === "needs" || (route.view === "home" && phone), () => go({ view: "needs" }));
   const selected = route.view === "agent" ? route.agent : route.view === "term" ? `term-${route.term}` : null;
 
+  const tree = v ? (
+    <Tree
+      view={v}
+      selected={selected}
+      api={api}
+      readOnly={readOnly}
+      onOpenAgent={(agent, mode) => go({ view: "agent", agent, mode })}
+      onOpenTerm={(term) => go({ view: "term", term })}
+      onPlan={nav.openPlan}
+    />
+  ) : null;
+  // On a phone the list pulls down to reconnect.
+  const inbox =
+    v &&
+    (phone ? (
+      <PullToReconnect onPull={() => conn.kick()}>
+        <NeedsYou view={v} api={api} nav={nav} readOnly={readOnly} phone />
+      </PullToReconnect>
+    ) : (
+      <NeedsYou view={v} api={api} nav={nav} readOnly={readOnly} />
+    ));
+
   const body = () => {
-    if (!v) return <p class="muted pad">Loading…</p>;
+    if (!v) return <Loading />;
     switch (route.view) {
       case "agent": {
         const a = v.agents.find((x) => x.id === route.agent);
-        if (!a) return <p class="muted pad">No agent {route.agent}.</p>;
+        if (!a) return <Missing text={`No agent ${route.agent}.`} />;
         return (
           <AgentPane
             key={a.id}
@@ -115,115 +215,127 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
       }
       case "term": {
         const t = v.terminals.find((x) => x.id === route.term);
-        if (!t) return <p class="muted pad">No terminal {route.term}.</p>;
-        return <TermView key={t.id} term={t.id} title={t.title ?? `terminal ${t.id}`} conn={conn} store={store} />;
+        if (!t) return <Missing text={`No terminal ${route.term}.`} />;
+        return (
+          <div className="min-h-0 flex-1">
+            <TermView key={t.id} term={t.id} title={t.title ?? `terminal ${t.id}`} conn={conn} store={store} />
+          </div>
+        );
       }
       case "board":
         return <Board view={v} plan={route.plan} api={api} readOnly={readOnly} onOpenAgent={nav.openAgent} />;
       case "new":
-        return <NewPlan api={api} readOnly={readOnly} onCreated={(plan) => go({ view: "board", plan })} />;
+        return (
+          <NewPlan
+            api={api}
+            readOnly={readOnly}
+            onCreated={(plan) => go({ view: "board", plan })}
+            onTerminal={(term) => go({ view: "term", term })}
+          />
+        );
       case "settings":
         return <Settings api={api} readOnly={readOnly} />;
       case "plans":
         return <PlanList view={v} onOpen={nav.openPlan} onNew={() => go({ view: "new" })} />;
       case "live":
         return <Live view={v} onOpen={nav.openAgent} />;
+      case "agents":
+        return tree;
       case "needs":
-        return <NeedsYou view={v} api={api} nav={nav} readOnly={readOnly} />;
+        return inbox;
       case "home":
-        if (phone) return <NeedsYou view={v} api={api} nav={nav} readOnly={readOnly} />;
-        return <p class="muted pad">Open an agent from the tree.</p>;
+        if (phone) return inbox;
+        return (
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <SquareMousePointerIcon />
+              </EmptyMedia>
+              <EmptyTitle>No agent open</EmptyTitle>
+              <EmptyDescription>Open an agent from the tree.</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        );
     }
   };
 
-  const tab = route.view === "home" || route.view === "needs" ? "needs" : route.view === "plans" || route.view === "board" || route.view === "new" ? "plans" : route.view === "settings" ? "settings" : "live";
+  const tab: Tab =
+    route.view === "home" || route.view === "needs"
+      ? "needs"
+      : route.view === "agents" || route.view === "agent" || route.view === "term"
+        ? "agents"
+        : route.view === "plans" || route.view === "board"
+          ? "plans"
+          : "more";
 
   return (
-    <div class={`app${phone ? " phone" : ""}${wide ? " wide" : ""}`}>
-      <header class="top">
-        <span class={`dot ${m.conn}`} title={m.conn} />
-        <strong>{m.server?.name ?? "cmux"}</strong>
-        <span class="muted small">
-          {m.conn === "open" ? `${m.presence.length} client${m.presence.length === 1 ? "" : "s"}` : m.conn}
-          {readOnly ? " · read-only" : ""}
-        </span>
-        <span class="grow" />
-        {m.error && m.error.code !== "unauthorized" && <span class="error small">{m.error.message}</span>}
-        {!phone && !wide && (
-          <button class="link" onClick={() => go({ view: "needs" })}>
-            Needs you ({count})
-          </button>
-        )}
-        {!phone && (
-          <button class="link" onClick={() => go({ view: "new" })}>
+    <SidebarProvider
+      defaultOpen={matchMedia("(min-width: 768px)").matches}
+      className="h-svh overflow-hidden"
+      // A phone sizes to the visual viewport: the composer stays above the keyboard.
+      style={vp ? { position: "fixed", insetInline: 0, top: vp.top, height: vp.height, minHeight: 0 } : undefined}
+      data-keyboard={keyboard || undefined}
+    >
+      <Sidebar aria-label="Agents and plans">
+        <SidebarHeader className="flex-row items-center justify-between">
+          <span className="px-2 text-sm font-semibold">{m.server?.name ?? "cmux"}</span>
+        </SidebarHeader>
+        <SidebarContent>
+          <nav aria-label="Agents and plans">
+            {tree ?? (
+              <div className="p-3">
+                <Loading />
+              </div>
+            )}
+          </nav>
+        </SidebarContent>
+        <SidebarFooter>
+          <Button variant="outline" size="sm" onClick={() => go({ view: "new" })}>
+            <PlusIcon data-icon="inline-start" />
             New plan
-          </button>
+          </Button>
+        </SidebarFooter>
+      </Sidebar>
+      <SidebarInset className="min-w-0 overflow-hidden">
+        <Header
+          m={m}
+          crumbs={crumbsFor(v, route)}
+          seen={seen.current}
+          phone={phone}
+          wide={wide}
+          readOnly={readOnly}
+          needsCount={count}
+          onNeeds={() => go({ view: "needs" })}
+          onNew={() => go({ view: "new" })}
+          onSettings={() => go({ view: "settings" })}
+          onSignOut={signOut}
+        />
+        {phone && <OfflineBanner status={m.conn} seen={seen.current} onRetry={() => conn.kick()} />}
+        {wide && !phone ? (
+          <NeedsLayout count={count} main={body()}>
+            {v ? <NeedsYou view={v} api={api} nav={nav} readOnly={readOnly} /> : <Loading />}
+          </NeedsLayout>
+        ) : (
+          <div className="flex min-h-0 flex-1">
+            <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-y-contain">{body()}</main>
+          </div>
         )}
-        <button class="link" onClick={() => go({ view: "settings" })} aria-label="Settings">
-          Settings
-        </button>
-        <button class="link" onClick={signOut}>
-          Sign out
-        </button>
-      </header>
-      {!phone && (
-        <aside class="side">
-          {v ? (
-            <Tree
-              view={v}
-              selected={selected}
-              onOpen={(r) => (r.agent ? nav.openAgent(r.agent) : r.term !== undefined && go({ view: "term", term: r.term }))}
-              onPlan={nav.openPlan}
-            />
-          ) : (
-            <p class="muted pad">Loading…</p>
-          )}
-        </aside>
-      )}
-      <main class="center">{body()}</main>
-      {wide && !phone && (
-        <aside class="needs-col">
-          <h3 class="pad-x">Needs you ({count})</h3>
-          {v && <NeedsYou view={v} api={api} nav={nav} readOnly={readOnly} />}
-        </aside>
-      )}
-      {phone && (
-        <nav class="tabs" aria-label="Sections">
-          <button class={tab === "needs" ? "on" : ""} onClick={() => go({ view: "needs" })}>
-            Needs you{count ? <span class="count">{count}</span> : null}
-          </button>
-          <button class={tab === "plans" ? "on" : ""} onClick={() => go({ view: "plans" })}>
-            Plans
-          </button>
-          <button class={tab === "live" ? "on" : ""} onClick={() => go({ view: "live" })}>
-            Live
-          </button>
-        </nav>
-      )}
-    </div>
-  );
-}
-
-/** The phone's Live tab: agents running now, working ones first. */
-function Live({ view, onOpen }: { view: StateView; onOpen: (agent: string) => void }) {
-  const live = view.agents.filter((a) => a.life === "running" || a.life === "starting");
-  const spin = useSpinner(live.some((a) => a.activity === "working"));
-  const rank = (a: (typeof live)[number]) => (a.activity === "needs_permission" ? 0 : a.activity === "working" ? 1 : 2);
-  const plans = new Map(view.plans.map((p) => [p.id, p.title]));
-  if (live.length === 0) return <p class="muted pad">No agent is running.</p>;
-  return (
-    <ul class="plain live">
-      {[...live]
-        .sort((a, b) => rank(a) - rank(b))
-        .map((a) => (
-          <li key={a.id}>
-            <button class="row-button" onClick={() => onOpen(a.id)}>
-              <span class="glyph">{agentGlyph(a, spin)}</span>
-              <span class="label">{a.path}</span>
-              <span class="muted small">{plans.get(a.id.slice(0, a.id.indexOf("/"))) ?? ""}</span>
-            </button>
-          </li>
-        ))}
-    </ul>
+        {phone && !keyboard && <PhoneTabs tab={tab} count={count} go={(t) => (t === "more" ? setMore(true) : go({ view: t }))} />}
+        {phone && (
+          <ActionSheet
+            open={more}
+            onOpenChange={setMore}
+            title="More"
+            actions={[
+              { id: "live", label: "Live activity", run: () => go({ view: "live" }) },
+              { id: "new", label: "New plan", disabled: readOnly, run: () => go({ view: "new" }) },
+              { id: "settings", label: "Settings", run: () => go({ view: "settings" }) },
+              { id: "signout", label: "Sign out", destructive: true, run: () => void signOut() },
+            ]}
+          />
+        )}
+      </SidebarInset>
+      <Keyboard view={v} route={route} readOnly={readOnly} api={api} nav={nav} go={go} onSignOut={signOut} />
+    </SidebarProvider>
   );
 }

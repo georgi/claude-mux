@@ -11,9 +11,9 @@ use cmux_core::ids::TermId;
 use cmux_core::model::{Activity, Level, Life};
 use cmux_proto::api::{
     Created, DevicesResp, ErrorBody, ErrorCode, PairCompleteReq, PairCompleteResp, PairStartReq,
-    PairStartResp, PatchTaskReq, RepoInfo, ReposResp, Scope, SettingsResp, route,
+    PairStartResp, PatchTaskReq, RepoInfo, ReposResp, Scope, SettingsResp, TranscriptResp, route,
 };
-use cmux_proto::view::{StateView, TaskDetail, TaskState};
+use cmux_proto::view::{ChatEntry, ChatKind, StateView, TaskDetail, TaskState};
 use cmuxd::agent::AgentRuntime;
 use cmuxd::api::auth::PeerCred;
 use cmuxd::api::{self, Extra, Transport};
@@ -705,6 +705,114 @@ async fn state_survives_a_restart_and_a_second_server_is_refused() {
     })
     .await;
     server.shutdown().await;
+}
+
+#[tokio::test]
+async fn one_transcript_entry_comes_back_uncut() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let claude = fake_claude(&root);
+    let long: String = (0..200).map(|i| format!("line {i:03}\n")).collect();
+    std::fs::write(
+        root.join("scripts/executor.json"),
+        serde_json::json!({"first": [
+            {"think": "Run the tests first."},
+            {"call": "Bash", "input": {"command": "cargo test", "description": "Test"},
+             "result": long},
+            {"call": "Edit", "input": {"file_path": "/a.rs", "old_string": "x", "new_string": "y"},
+             "result": "String to replace not found in file.", "is_error": true},
+            {"say": "Tests ran."},
+            {"wait_file": root.join("never").display().to_string()},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let server = start_agents(config(&root), &claude).await.unwrap();
+    let h = Harness {
+        unix: Endpoint::Unix(server.socket_path.clone()),
+        tcp: Endpoint::Tcp(server.tcp_addr.unwrap()),
+        server,
+        _tmp: tmp,
+    };
+    let ep = h.unix.clone();
+    let plan = serde_json::json!({
+        "title": "transcript",
+        "repos": [{"path": root.display().to_string()}],
+        "request": "x",
+    });
+    let created: Created = send(&ep, "POST", route::PLANS, &[], &plan)
+        .await
+        .json()
+        .unwrap();
+    let agent = format!("{}%2Fexecutor", created.id);
+    let entries = eventually("the transcript to hold the turn", async || {
+        let r: TranscriptResp = req(&ep, "GET", &route::transcript(&agent), &[])
+            .await
+            .json()
+            .ok()?;
+        r.entries
+            .iter()
+            .any(|e| e.text == "Tests ran.")
+            .then_some(r.entries)
+    })
+    .await;
+    let kinds: Vec<ChatKind> = entries.iter().map(|e| e.kind).collect();
+    assert!(kinds.contains(&ChatKind::Thinking), "{kinds:?}");
+    let bash = entries
+        .iter()
+        .find(|e| e.kind == ChatKind::ToolResult && !e.is_error)
+        .unwrap();
+    let call = entries
+        .iter()
+        .find(|e| e.kind == ChatKind::ToolCall && e.call_id == bash.call_id)
+        .unwrap();
+    assert_eq!(
+        call.tool.as_ref().unwrap().input.as_ref().unwrap()["command"],
+        "cargo test"
+    );
+    assert_eq!(bash.text.chars().count(), 400);
+    assert_eq!(bash.full_len, Some(long.chars().count() as u32));
+    let error = entries.iter().find(|e| e.is_error).unwrap();
+    assert_eq!(error.tool.as_ref().unwrap().name, "Edit");
+    let said = entries.iter().find(|e| e.text == "Tests ran.").unwrap();
+    assert_eq!(said.model.as_deref(), Some("fake"));
+
+    // The one entry, uncut.
+    let r = req(
+        &ep,
+        "GET",
+        &route::transcript_entry(&agent, &bash.uuid),
+        &[],
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    let full: ChatEntry = r.json().unwrap();
+    assert_eq!(full.uuid, bash.uuid);
+    assert_eq!(full.text, long);
+    assert_eq!(full.full_len, None);
+    assert_eq!(full.call_id, bash.call_id);
+    // Over TCP with a token as well.
+    let token = pair(&h, Scope::Read).await.token;
+    let r = req(
+        &h.tcp,
+        "GET",
+        &route::transcript_entry(&agent, &bash.uuid),
+        &[("Authorization", &bearer(&token))],
+    )
+    .await;
+    assert_eq!(r.status, 200, "{}", r.text());
+    // Unknown entries and agents are 404.
+    let r = req(&ep, "GET", &route::transcript_entry(&agent, "nope"), &[]).await;
+    assert_eq!(r.status, 404);
+    let r = req(
+        &ep,
+        "GET",
+        &route::transcript_entry(&format!("{}%2FT-0099", created.id), "x"),
+        &[],
+    )
+    .await;
+    assert_eq!(r.status, 404);
+    h.server.shutdown().await;
 }
 
 #[tokio::test]

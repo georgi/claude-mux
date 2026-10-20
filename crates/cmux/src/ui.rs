@@ -192,7 +192,10 @@ fn draw_pane_header(
     area: Rect,
 ) {
     let outcome = app.remote.as_ref().and_then(|r| r.pane_outcome(pane));
-    let style = if pane.finished && !focused {
+    let style = if pane.dim {
+        let bg = if focused { Color::Indexed(238) } else { BAR_BG };
+        Style::default().bg(bg).fg(DIM)
+    } else if pane.finished && !focused {
         Style::default().bg(BAR_BG).fg(DIM)
     } else if focused {
         Style::default()
@@ -237,7 +240,7 @@ fn draw_pane_header(
             format!(" +{scrolled} "),
             Style::default().bg(Color::Cyan).fg(Color::Black),
         ));
-    } else if w > used + 4 {
+    } else if w > used + 6 {
         let dir = truncate(&tilde(&pane.cwd), w - used - 2);
         spans.push(Span::styled(
             format!(" {dir}"),

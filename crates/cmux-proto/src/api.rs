@@ -86,6 +86,11 @@ pub mod route {
     pub fn transcript(agent: &str) -> String {
         format!("/v1/agents/{agent}/transcript")
     }
+    // GET (ChatEntry): one entry with its text uncut (at most 1 MB). `uuid`
+    // must be percent-encoded (`#` is `%23`).
+    pub fn transcript_entry(agent: &str, uuid: &str) -> String {
+        format!("/v1/agents/{agent}/transcript/{uuid}")
+    }
     // GET / DELETE
     pub fn device(id: &str) -> String {
         format!("/v1/devices/{id}")

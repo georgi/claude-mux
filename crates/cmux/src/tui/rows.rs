@@ -1,11 +1,11 @@
 //! The flat list of visible tree rows. Drawing, navigation and hit-testing
 //! all start from [`tree_rows`], so they agree on what row N is.
 
-use cmux_core::glyph::Glyph;
+use cmux_core::glyph::{Glyph, agent_state_glyph};
 use cmux_core::ids::AgentPath;
 use cmux_proto::view::{
     Activity, AgentView, Delivery, ItemKind, ItemView, Life, PlanState, PlanView, Recipient,
-    ReportStatus, StateView, TaskState, TaskView,
+    StateView, TaskState, TaskView,
 };
 use ratatui::style::Color;
 
@@ -66,7 +66,7 @@ fn build(sv: &StateView, vs: &ViewState, expand_all: bool) -> Vec<Row> {
             rows.push(task_row(sv, vs, task, !subs.is_empty(), task_open));
             if task_open {
                 for (i, sub) in subs.iter().enumerate() {
-                    rows.push(sub_row(sv, vs, sub, i + 1 == subs.len()));
+                    rows.push(sub_row(sv, vs, task, sub, i + 1 == subs.len()));
                 }
             }
         }
@@ -150,11 +150,9 @@ fn task_row(sv: &StateView, vs: &ViewState, task: &TaskView, has_subs: bool, ope
     let unmet: Vec<String> = task
         .deps
         .iter()
-        .filter(|d| {
-            sv.task(&task.plan, **d)
-                .is_some_and(|t| t.state != TaskState::Merged)
-        })
-        .map(ToString::to_string)
+        .filter_map(|d| sv.task(&task.plan, *d))
+        .filter(|t| t.state != TaskState::Merged)
+        .map(|t| t.title.clone())
         .collect();
     let mut right = if let Some(pr) = &task.pr {
         super::marks::pr_mark(pr)
@@ -178,15 +176,21 @@ fn task_row(sv: &StateView, vs: &ViewState, task: &TaskView, has_subs: bool, ope
         mark: theme::glyph_char(g, vs.spinner),
         mark_color: theme::glyph_color(g),
         branch: None,
-        label: format!("{} {}", task.id, task.title),
+        label: task.title.clone(),
         right,
         right_color: theme::task_state_color(task.state),
         dim: task.state == TaskState::Cancelled,
     }
 }
 
-fn sub_row(sv: &StateView, vs: &ViewState, sub: &AgentView, last: bool) -> Row {
-    let g = agent_glyph(sv, vs, sub);
+fn sub_row(sv: &StateView, vs: &ViewState, task: &TaskView, sub: &AgentView, last: bool) -> Row {
+    // Nobody will focus the pane of a sub-agent whose task is over, so its
+    // result shows (success or failed) instead of Unseen forever.
+    let over = matches!(
+        task.state,
+        TaskState::Merged | TaskState::Cancelled | TaskState::Passing
+    );
+    let g = agent_glyph_seen(sv, vs, sub, over);
     let name = sub.id.path().sub_name().unwrap_or_default().to_string();
     Row {
         node: Node::Sub(sub.id.clone()),
@@ -224,51 +228,28 @@ fn task_glyph(sv: &StateView, vs: &ViewState, task: &TaskView, agent: Option<&Ag
 /// The agent glyph of UI design 2.1, from views. Same precedence as
 /// `cmux_core::glyph::glyph`, which works on the core model.
 pub fn agent_glyph(sv: &StateView, vs: &ViewState, a: &AgentView) -> Glyph {
-    let running = a.life == Life::Running;
+    agent_glyph_seen(sv, vs, a, false)
+}
+
+/// [`agent_glyph`] with the agent counted as seen when `seen` is set.
+fn agent_glyph_seen(sv: &StateView, vs: &ViewState, a: &AgentView, seen: bool) -> Glyph {
     let asks = sv.items.iter().any(|i| {
         i.status == Delivery::Pending
             && i.to == Recipient::Human
             && i.from.as_ref() == Some(&a.id)
             && matches!(i.kind, ItemKind::Permission { .. } | ItemKind::Question)
     });
-    if asks || (running && a.activity == Activity::NeedsPermission) {
-        return Glyph::NeedsYou;
-    }
-    if running && (a.stalled || vs.stalled.contains(&a.id)) {
-        return Glyph::Stalled;
-    }
-    match a.life {
-        Life::Stopped
-        | Life::Exited { code: None }
-        | Life::Exited {
-            code: Some(1..) | Some(..=-1),
-        } => return Glyph::Failed,
-        Life::Starting => return Glyph::Working,
-        _ => {}
-    }
-    let working = running && a.activity == Activity::Working;
-    let finished = !running || a.report.is_some();
-    if finished && !working {
-        if !vs.seen.contains(&a.id) {
-            return Glyph::Unseen;
-        }
-        return match &a.report {
-            Some(r) if r.status == ReportStatus::Success => Glyph::Success,
-            Some(_) => Glyph::Failed,
-            None => Glyph::Idle,
-        };
-    }
-    if working {
-        Glyph::Working
-    } else if sv
-        .agents
-        .iter()
-        .any(|c| c.parent.as_ref() == Some(&a.id) && is_live(c))
-    {
-        Glyph::Parked
-    } else {
-        Glyph::Idle
-    }
+    agent_state_glyph(
+        a.life,
+        a.activity,
+        a.report.as_ref(),
+        asks,
+        a.stalled || vs.stalled.contains(&a.id),
+        seen || vs.seen.contains(&a.id),
+        sv.agents
+            .iter()
+            .any(|c| c.parent.as_ref() == Some(&a.id) && is_live(c)),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -325,4 +306,38 @@ pub fn item_label(sv: &StateView, item: &ItemView) -> String {
 /// with the selection pinned to the bottom edge once it scrolls.
 pub fn window_start(sel: usize, visible: usize) -> usize {
     (sel + 1).saturating_sub(visible)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::fixture::{state, view_state};
+    use cmux_proto::view::TaskId;
+
+    fn docs_mark(sv: &StateView, vs: &ViewState) -> char {
+        let row = tree_rows(sv, vs)
+            .into_iter()
+            .find(|r| matches!(&r.node, Node::Sub(id) if id.path().sub_name() == Some("docs")))
+            .unwrap();
+        row.mark
+    }
+
+    #[test]
+    fn unseen_sub_of_a_finished_task_shows_its_result() {
+        let mut sv = state();
+        let mut vs = view_state();
+        vs.seen.clear();
+        let (unseen, success) = (
+            theme::glyph_char(Glyph::Unseen, vs.spinner),
+            theme::glyph_char(Glyph::Success, vs.spinner),
+        );
+        // While the task works, a finished sub-agent waits to be looked at.
+        assert_eq!(docs_mark(&sv, &vs), unseen);
+        for state in [TaskState::Merged, TaskState::Cancelled, TaskState::Passing] {
+            for t in sv.tasks.iter_mut().filter(|t| t.id == TaskId::new(2)) {
+                t.state = state;
+            }
+            assert_eq!(docs_mark(&sv, &vs), success, "{state:?}");
+        }
+    }
 }

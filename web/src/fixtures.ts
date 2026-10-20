@@ -1,7 +1,7 @@
 // Test fixtures: small, valid wire objects.
 
 import type { Api } from "./api/http";
-import type { AgentView, ChatEntry, ItemView, PlanView, StateView, TaskView, TerminalView } from "./api/types";
+import type { AgentView, ChatEntry, ItemView, PlanView, StateView, TaskDetail, TaskView, TerminalView } from "./api/types";
 
 export const PLAN = "P-20261018-demo";
 
@@ -95,7 +95,11 @@ export function state(over: Partial<StateView> = {}): StateView {
 }
 
 export function entry(uuid: string, over: Partial<ChatEntry> = {}): ChatEntry {
-  return { uuid, ts: 1000, role: "assistant", kind: "text", text: `text ${uuid}`, ...over };
+  return { uuid, ts: 1000, role: "assistant", kind: "text", text: `text ${uuid}`, is_error: false, ...over };
+}
+
+export function detail(t: TaskView, over: Partial<TaskDetail> = {}): TaskDetail {
+  return { task: t, body: "", criteria: [], notes: [], instructions: null, ...over };
 }
 
 /** Every `Api` call, in order, as `[method, ...args]`. */
@@ -117,7 +121,15 @@ export function fakeApi(over: Partial<Api> = {}): Api & { calls: Call[] } {
     resumeAgent: rec("resumeAgent", undefined),
     plan: rec("plan", undefined),
     createPlan: rec("createPlan", { id: "P-20261018-new" }),
+    planBody: rec("planBody", { text: "" }),
+    putPlanBody: rec("putPlanBody", undefined),
+    createTask: rec("createTask", { id: "T-0009" }),
+    task: rec("task", detail(task("T-0001"))),
+    patchTask: rec("patchTask", detail(task("T-0001"))),
+    spawnTask: rec("spawnTask", undefined),
     transcript: rec("transcript", { agent: "", entries: [] }),
+    entry: rec("entry", entry("full")),
+    createTerminal: rec("createTerminal", terminal(7)),
     repos: rec("repos", { repos: [] }),
     addRepo: rec("addRepo", { path: "/srv/repos/x", base_branch: "main", remote_url: null }),
     devices: rec("devices", { devices: [] }),
@@ -144,4 +156,31 @@ export function fakeApi(over: Partial<Api> = {}): Api & { calls: Call[] } {
     pushUnsubscribe: rec("pushUnsubscribe", undefined),
   } as Api;
   return Object.assign({ ...base, ...over }, { calls });
+}
+
+/**
+ * A long conversation of `n` entries, a minute apart over several days:
+ * prompts, thinking, Markdown replies and tool calls with results.
+ */
+export function longChat(n = 2000, start = Date.UTC(2026, 9, 14)): ChatEntry[] {
+  const out: ChatEntry[] = [];
+  for (let i = 0; out.length < n; i++) {
+    const ts = start + out.length * 60_000 * 5;
+    const k = i % 6;
+    if (k === 0) out.push(entry(`u${i}`, { role: "user", text: `Prompt ${i}: fix the pagination in /users`, ts }));
+    else if (k === 1) out.push(entry(`t${i}`, { kind: "thinking", text: "The cursor is off by one.", ts }));
+    else if (k === 2 || k === 3) {
+      const id = `call${i}`;
+      out.push(entry(`c${i}`, { kind: "tool_call", text: "", call_id: id, tool: { name: "Bash", summary: "cargo test" }, ts }));
+      out.push(entry(`r${i}`, { role: "user", kind: "tool_result", text: "test result: ok", call_id: id, tool: { name: "Bash", summary: "" }, ts: ts + 1000 }));
+    } else
+      out.push(
+        entry(`a${i}`, {
+          text: `## Step ${i}\n\nRan **cargo test** and fixed \`next_cursor\`:\n\n- one\n- two\n\n\`\`\`rust\nfn main() {}\n\`\`\``,
+          model: "claude-opus-5-5",
+          ts,
+        }),
+      );
+  }
+  return out.slice(0, n);
 }

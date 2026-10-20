@@ -12,7 +12,7 @@ use cmux_core::ids::{AgentId, TermId};
 use cmux_core::model::State;
 use cmux_proto::api::{AnswerAction, AnswerReq, Created, route};
 use cmux_proto::view::{
-    Activity, Delivery, DeliveryPath, ItemKind, ItemView, Recipient, StateView, TaskState,
+    Activity, Delivery, DeliveryPath, ItemKind, ItemView, Life, Recipient, StateView, TaskState,
 };
 use cmuxd::actor::{ActorHandle, EffectRunner};
 use cmuxd::agent::AgentRuntime;
@@ -1178,6 +1178,352 @@ async fn an_exited_agents_terminal_keeps_its_final_screen_in_the_hub() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let t = hub.get_term(term).expect("terminal removed after exit");
     assert!(t.screen_text().contains("TOOLS: "));
+    env.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Sub-agents and questions (step 9)
+// ---------------------------------------------------------------------------
+
+/// Runs the executor through acceptance and starts `T-0001`; returns the plan.
+async fn plan_with_task(task: Value, subs: &[(&str, Value)]) -> (Env, String) {
+    let mut scripts = vec![
+        (
+            "executor",
+            executor_script(json!([
+                {"when": "plan was accepted", "tool": "spawn_task", "args": {"task": "T-0001"}},
+            ])),
+        ),
+        ("T-0001", task),
+    ];
+    scripts.extend(subs.iter().map(|(n, s)| (*n, s.clone())));
+    let env = start_fake(&scripts, Duration::from_secs(600)).await;
+    let (plan, _) = accepted_plan(&env).await;
+    (env, plan)
+}
+
+fn agent_view(v: &StateView, id: &str) -> Option<cmux_proto::view::AgentView> {
+    v.agents.iter().find(|a| a.id.to_string() == id).cloned()
+}
+
+fn sub_report(v: &StateView, sub: &str) -> Option<ItemView> {
+    v.items
+        .iter()
+        .find(|i| {
+            i.kind == ItemKind::ChildReport && i.from.as_ref().is_some_and(|f| f.to_string() == sub)
+        })
+        .cloned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_agent_spawns_sub_agents_up_to_the_limit_and_gets_their_reports() {
+    let flag = tempfile::tempdir().unwrap();
+    let flag_file = flag.path().join("go").display().to_string();
+    let sub = |summary: &str| {
+        json!({"first": [
+            {"wait_file": flag_file},
+            {"tool": "report_result", "args": {"status": "success", "summary": summary}},
+        ]})
+    };
+    let task = json!({
+        "first": [
+            {"tool": "spawn_subagent", "args": {"name": "lint", "prompt": "run the linter"}},
+            {"tool": "spawn_subagent", "args": {"name": "docs", "prompt": "fix the docs"}},
+            {"tool": "spawn_subagent", "args": {"name": "third", "prompt": "one too many"}},
+        ],
+        "later": [
+            {"when": "lint is clean", "tool": "report_result",
+             "args": {"status": "success", "summary": "all done"}},
+        ],
+    });
+    let (env, plan) = plan_with_task(
+        task,
+        &[
+            ("T-0001/lint", sub("lint is clean")),
+            ("T-0001/docs", sub("docs fixed")),
+        ],
+    )
+    .await;
+    let (tid, lint, docs) = (
+        format!("{plan}/T-0001"),
+        format!("{plan}/T-0001/lint"),
+        format!("{plan}/T-0001/docs"),
+    );
+
+    // The third is refused through MCP: two sub-agents per task.
+    env.screen_has(&tid, "TOOL spawn_subagent: error: limit reached")
+        .await;
+    let v = env.view().await;
+    assert!(agent_view(&v, &format!("{plan}/T-0001/third")).is_none());
+
+    // The sub-agents are real processes in the task's worktree, with the
+    // sub-agent prompt and tool set, linked to their task and parent.
+    let worktree = env.repo.join(".worktrees/T-0001");
+    let a = agent_view(&v, &lint).expect("lint exists");
+    assert_eq!(a.level, cmux_proto::view::Level::Sub);
+    assert_eq!(
+        a.parent.as_ref().map(ToString::to_string),
+        Some(tid.clone())
+    );
+    assert_eq!(a.task.map(|t| t.to_string()), Some("T-0001".into()));
+    assert_eq!(a.cwd, worktree);
+    env.screen_has(&lint, "SYSTEM: # Sub-agent: T-0001/lint")
+        .await;
+    env.screen_has(&lint, "/repo/.worktrees/T-0001").await;
+    env.screen_has(&lint, "report_result,ask_parent").await;
+    env.screen_has(&lint, "run the linter").await;
+    assert!(!env.screen(&lint).await.contains("spawn_subagent"));
+    assert!(agent_view(&v, &docs).is_some());
+
+    // Release them. The report reaches the task agent, which finishes.
+    std::fs::write(&flag_file, "").unwrap();
+    let item = env
+        .wait("the lint report to be delivered", |v| {
+            sub_report(v, &lint).filter(|i| matches!(i.status, Delivery::Delivered { .. }))
+        })
+        .await;
+    assert_eq!(item.to, Recipient::Agent(tid.parse().unwrap()));
+    env.wait("the task to pass", |v| {
+        v.tasks
+            .iter()
+            .find(|t| t.state == TaskState::Passing)
+            .map(|_| ())
+    })
+    .await;
+    // A finished sub-agent stays listed with its report (clients dim it).
+    let v = env.view().await;
+    let a = agent_view(&v, &lint).unwrap();
+    assert_eq!(
+        a.report.as_ref().map(|r| r.summary.as_str()),
+        Some("lint is clean")
+    );
+    env.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_sub_agent_is_stopped_and_the_task_agent_can_spawn_another() {
+    // The limit is two sub-agents per task: `busy` never finishes and holds one
+    // slot, so `docs` can only start once the finished `lint` has freed the other.
+    let never = tempfile::tempdir().unwrap().path().join("never");
+    let task = json!({
+        "first": [
+            {"tool": "spawn_subagent", "args": {"name": "lint", "prompt": "run the linter"}},
+            {"tool": "spawn_subagent", "args": {"name": "busy", "prompt": "wait"}},
+        ],
+        "later": [
+            {"when": "lint is clean", "tool": "spawn_subagent",
+             "args": {"name": "docs", "prompt": "fix the docs"}},
+        ],
+    });
+    let lint_script = json!({"first": [
+        {"tool": "report_result", "args": {"status": "success", "summary": "lint is clean"}},
+    ]});
+    let docs_script = json!({"first": [{"print": "docs is up"}]});
+    let busy_script = json!({"first": [{"wait_file": never.display().to_string()}]});
+    let (env, plan) = plan_with_task(
+        task,
+        &[
+            ("T-0001/lint", lint_script),
+            ("T-0001/busy", busy_script),
+            ("T-0001/docs", docs_script),
+        ],
+    )
+    .await;
+    let (tid, lint, docs) = (
+        format!("{plan}/T-0001"),
+        format!("{plan}/T-0001/lint"),
+        format!("{plan}/T-0001/docs"),
+    );
+    // The report lands, and the finished sub-agent's process goes: it stays
+    // listed, stopped, with its report.
+    let lint_term = eventually("lint to get a terminal", async || env.term_of(&lint).await).await;
+    let a = env
+        .wait("the lint sub-agent to be stopped", |v| {
+            agent_view(v, &lint).filter(|a| a.life == Life::Stopped)
+        })
+        .await;
+    assert_eq!(
+        a.report.as_ref().map(|r| r.summary.as_str()),
+        Some("lint is clean")
+    );
+    let hub = env.app().hub.clone();
+    eventually("the lint process to end", async || {
+        hub.get_term(lint_term)
+            .filter(|t| t.exited().borrow().is_some())
+            .map(|_| ())
+    })
+    .await;
+    // The task agent was woken by the report and starts the next one.
+    env.screen_has(&tid, "TOOL spawn_subagent: started sub-agent T-0001/docs")
+        .await;
+    env.screen_has(&docs, "docs is up").await;
+    let v = env.view().await;
+    assert_eq!(agent_view(&v, &docs).unwrap().life, Life::Running);
+    assert_eq!(
+        agent_view(&v, &format!("{plan}/T-0001/busy")).unwrap().life,
+        Life::Running
+    );
+    env.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agent_asks_its_parent_and_the_answer_comes_back() {
+    let task = json!({
+        "first": [{"tool": "spawn_subagent", "args": {"name": "lint", "prompt": "run the linter"}}],
+        "later": [
+            {"when": "which config?", "tool": "answer_child",
+             "args": {"agent": "T-0001/lint", "answer": "use strict.toml"}},
+            {"when": "linted with strict.toml", "tool": "report_result",
+             "args": {"status": "success", "summary": "all done"}},
+        ],
+    });
+    let sub = json!({
+        "first": [{"tool": "ask_parent", "args": {"question": "which config?"}}],
+        "later": [
+            {"when": "use strict.toml", "print": "CONFIG: strict.toml"},
+            {"when": "use strict.toml", "tool": "report_result",
+             "args": {"status": "success", "summary": "linted with strict.toml"}},
+        ],
+    });
+    let (env, plan) = plan_with_task(task, &[("T-0001/lint", sub)]).await;
+    let lint = format!("{plan}/T-0001/lint");
+    let question = env
+        .wait("the question", |v| {
+            v.items
+                .iter()
+                .find(|i| i.kind == ItemKind::ChildQuestion)
+                .cloned()
+        })
+        .await;
+    assert_eq!(question.body, "which config?");
+    assert_eq!(
+        question.from.as_ref().map(ToString::to_string),
+        Some(lint.clone())
+    );
+    assert!(!question.needs_human);
+    // The task agent answered; the sub-agent got the answer as a prompt and
+    // reported, and that report finished the task.
+    env.screen_has(&format!("{plan}/T-0001"), "TOOL answer_child: answer sent")
+        .await;
+    // The answer can arrive by a paste or a Stop-hook block, depending on
+    // whether the sub-agent already idled. Both must run the matching steps.
+    env.screen_has(&lint, "CONFIG: strict.toml").await;
+    env.wait("the question to be answered", |v| {
+        v.items
+            .iter()
+            .find(|i| i.id == question.id && matches!(i.status, Delivery::Answered { .. }))
+            .map(|_| ())
+    })
+    .await;
+    env.wait("the task to pass", |v| {
+        v.tasks
+            .iter()
+            .find(|t| t.state == TaskState::Passing)
+            .map(|_| ())
+    })
+    .await;
+    env.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ask_user_is_answered_over_rest_and_expires_after_sixty_minutes() {
+    let task = json!({
+        "first": [{"tool": "ask_user", "args": {"question": "ship it?"}}],
+        "later": [
+            {"when": "yes, ship", "tool": "report_result",
+             "args": {"status": "success", "summary": "shipped"}},
+            {"when": "got no answer", "print": "EXPIRED-SEEN"},
+        ],
+    });
+    let (env, plan) = plan_with_task(task, &[]).await;
+    let tid = format!("{plan}/T-0001");
+    let ask = |v: &StateView, body: &str| {
+        v.items
+            .iter()
+            .find(|i| i.kind == ItemKind::Question && i.body == body)
+            .cloned()
+    };
+    let q = env.wait("the question", |v| ask(v, "ship it?")).await;
+    assert!(q.needs_human);
+    assert_eq!(q.to, Recipient::Human);
+    env.screen_has(&tid, "(it expires after 60 minutes)").await;
+    env.answer(q.id.0, AnswerAction::Reply, Some("yes, ship"))
+        .await;
+    env.wait("the task to pass", |v| {
+        v.tasks
+            .iter()
+            .find(|t| t.state == TaskState::Passing)
+            .map(|_| ())
+    })
+    .await;
+    env.shutdown().await;
+
+    // An unanswered question expires on a tick and the asker is told.
+    let task = json!({
+        "first": [{"tool": "ask_user", "args": {"question": "which color?"}}],
+        "later": [{"when": "got no answer", "print": "EXPIRED-SEEN"}],
+    });
+    let (env, plan) = plan_with_task(task, &[]).await;
+    let tid = format!("{plan}/T-0001");
+    let q = env.wait("the question", |v| ask(v, "which color?")).await;
+    env.app().clock.advance(Duration::from_secs(59 * 60));
+    env.app().actor.send(Command::Tick);
+    assert_eq!(
+        ask(&env.view().await, "which color?").unwrap().status,
+        Delivery::Pending
+    );
+    env.app().clock.advance(Duration::from_secs(2 * 60));
+    env.app().actor.send(Command::Tick);
+    env.screen_has(&tid, "EXPIRED-SEEN").await;
+    let v = env.view().await;
+    assert_eq!(
+        v.items.iter().find(|i| i.id == q.id).unwrap().status,
+        Delivery::Expired
+    );
+    env.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agents_git_push_is_denied_by_the_pre_tool_use_hook() {
+    let task = json!({
+        "first": [{"tool": "spawn_subagent", "args": {"name": "lint", "prompt": "run the linter"}}],
+        "later": [{"when": "pushed nothing", "tool": "report_result",
+                   "args": {"status": "success", "summary": "done"}}],
+    });
+    let sub = json!({"first": [
+        {"permission": {"tool": "Bash", "input": {"command": "git add -A && git push origin HEAD"}}},
+        {"permission": {"tool": "Bash", "input": {"command": "git checkout main"}}},
+        {"permission": {"tool": "Bash", "input": {"command": "git status"}}},
+        {"tool": "report_result", "args": {"status": "success", "summary": "pushed nothing"}},
+    ]});
+    let (env, plan) = plan_with_task(task, &[("T-0001/lint", sub)]).await;
+    let lint = format!("{plan}/T-0001/lint");
+    // The reason reaches Claude in the hook's real output format.
+    env.screen_has(&lint, "PRE deny: error: sub-agents may not run git push")
+        .await;
+    env.screen_has(
+        &lint,
+        "PRE deny: error: do not check out the base branch main",
+    )
+    .await;
+    // `git status` is fine: the hook prints nothing and the permission flow
+    // goes on to hold a request for a human.
+    let held = env
+        .wait("a permission item for git status", |v| {
+            Env::pending_permissions(v).pop()
+        })
+        .await;
+    assert!(held.body.contains("git status"), "{}", held.body);
+    assert_eq!(held.from.as_ref().map(ToString::to_string), Some(lint));
+    // The denied command never became a request.
+    assert!(
+        !env.view()
+            .await
+            .items
+            .iter()
+            .any(|i| i.body.contains("git push"))
+    );
+    env.answer(held.id.0, AnswerAction::Allow, None).await;
     env.shutdown().await;
 }
 

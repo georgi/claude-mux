@@ -1,12 +1,15 @@
 import { defineConfig } from "vitest/config";
-import preact from "@preact/preset-vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import { fileURLToPath } from "node:url";
 
 // `npm run dev` proxies the API to a local cmuxd (CMUXD_URL, default
 // http://127.0.0.1:7878), so the cookie and the WebSocket stay same-origin.
 const target = process.env.CMUXD_URL ?? "http://127.0.0.1:7878";
 
 export default defineConfig({
-  plugins: [preact()],
+  plugins: [react(), tailwindcss()],
+  resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   build: {
     outDir: "dist",
     emptyOutDir: true,
@@ -26,5 +29,6 @@ export default defineConfig({
   },
   test: {
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    exclude: ["node_modules/**"],
   },
 });

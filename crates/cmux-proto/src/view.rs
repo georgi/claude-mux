@@ -138,8 +138,9 @@ pub struct ItemView {
 }
 
 /// One entry of an agent's conversation, read from Claude's transcript
-/// (architecture 5.3). Thinking blocks, meta lines and `<`-wrapped injections
-/// never become entries.
+/// (architecture 5.3). Meta lines and `<`-wrapped injections never become
+/// entries. Every field after `tool` is optional, so older clients can ignore
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ChatEntry {
     /// The transcript line's `uuid`; `uuid#n` for the n-th further entry of
@@ -148,12 +149,30 @@ pub struct ChatEntry {
     pub ts: Timestamp,
     pub role: ChatRole,
     pub kind: ChatKind,
-    /// The text, the tool's input summary (`tool_call`), or the tool's output
-    /// cut to 400 chars (`tool_result`).
+    /// The text, the thinking, the tool's input (`tool_call`), or the tool's
+    /// output (`tool_result`). Tool input and output are cut to 400 chars;
+    /// `full_len` then says how long they were.
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tool: Option<ChatTool>,
+    /// The `tool_use` id on a `tool_call` and on the `tool_result` that
+    /// answers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub call_id: Option<String>,
+    /// A `tool_result` that Claude marked as an error.
+    #[serde(default)]
+    pub is_error: bool,
+    /// The length of the uncut `text` in chars, when `text` was cut.
+    /// `GET /agents/:id/transcript/:uuid` returns the entry uncut.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub full_len: Option<u32>,
+    /// The model that wrote an assistant `text`, when the line names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -167,6 +186,8 @@ pub enum ChatRole {
 #[serde(rename_all = "snake_case")]
 pub enum ChatKind {
     Text,
+    /// An assistant thinking block (empty, redacted ones are skipped).
+    Thinking,
     ToolCall,
     ToolResult,
 }
@@ -177,6 +198,16 @@ pub struct ChatTool {
     pub name: String,
     /// The input on one line, at most 60 chars.
     pub summary: String,
+    /// On a `tool_call` of a known tool, its input as an object with only
+    /// the fields a view draws: `Bash` {command, description}, `Edit`
+    /// {file_path, old_string, new_string}, `MultiEdit` {file_path, edits},
+    /// `Write` {file_path, content}, `Read` {file_path, offset, limit},
+    /// `Grep`/`Glob` {pattern, path}, `WebFetch` {url}, `WebSearch` {query},
+    /// `Task` {description, subagent_type}, `TodoWrite` {todos}. Each string
+    /// is cut to 20 KB; the object then has `"truncated": true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub input: Option<serde_json::Value>,
 }
 
 /// A whole-object change at `rev`.
