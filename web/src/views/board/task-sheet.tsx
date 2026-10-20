@@ -143,7 +143,7 @@ export function TaskSheet({ view, plan, task, api, readOnly, onClose, onOpenAgen
         side={mobile ? "bottom" : "right"}
         className="gap-0 data-[side=bottom]:max-h-[90dvh] data-[side=right]:w-full data-[side=right]:sm:max-w-lg"
       >
-        {shown && <TaskBodyView t={shown} view={view} api={api} readOnly={readOnly} onOpenAgent={onOpenAgent} />}
+        {shown && <TaskBodyView key={`${shown.plan}/${shown.id}`} t={shown} view={view} api={api} readOnly={readOnly} onOpenAgent={onOpenAgent} />}
       </SheetContent>
     </Sheet>
   );
