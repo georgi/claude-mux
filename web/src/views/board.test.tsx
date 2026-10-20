@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { agent, detail, fakeApi, PLAN, plan, state, task } from "../fixtures";
 import { Board } from "./Board";
@@ -127,6 +127,52 @@ describe("Board", () => {
     fireEvent.click(within(sheet).getByRole("switch", { name: /Force/ }));
     fireEvent.click(within(sheet).getByRole("button", { name: /^Spawn$/ }));
     await waitFor(() => expect(api.calls).toContainEqual(["spawnTask", PLAN, "T-0003", { instructions: "go slow", force: true }]));
+  });
+
+  it("resets the open task's detail and spawn settings when navigating between plans", async () => {
+    const a = task("T-0001", { plan: "plan-A", title: "A task" });
+    const b = task("T-0001", { plan: "plan-B", title: "B task" });
+    const view = state({ plans: [a, b].map((t) => plan({ id: t.plan, tasks: [t.id] })), tasks: [a, b] });
+    let resolveB!: (d: ReturnType<typeof detail>) => void;
+    const api = fakeApi({ task: async (p) => p === a.plan
+      ? detail(a, { body: "A description" })
+      : new Promise((resolve) => { resolveB = resolve; }) });
+    const board = (p: string) => <Board view={view} plan={p} api={api} onOpenAgent={() => {}} />;
+    const { rerender } = render(board(a.plan));
+    fireEvent.click(screen.getByRole("button", { name: /A task/ }));
+    const sheet = await screen.findByRole("dialog");
+    await within(sheet).findByText("A description");
+    fireEvent.change(within(sheet).getByLabelText("Instructions for the agent"), { target: { value: "A only" } });
+    fireEvent.click(within(sheet).getByRole("switch", { name: /Force/ }));
+
+    rerender(board(b.plan));
+    expect(within(sheet).getByRole("status", { name: "Loading the task" })).toBeTruthy();
+    expect(within(sheet).queryByText("A description")).toBeNull();
+    expect(within(sheet).getByLabelText("Instructions for the agent")).toHaveProperty("value", "");
+    expect(within(sheet).getByRole("switch", { name: /Force/ }).getAttribute("aria-checked")).toBe("false");
+    await act(async () => resolveB(detail(b, { body: "B description" })));
+    expect(within(sheet).getByText("B description")).toBeTruthy();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Spawn" }));
+    await waitFor(() => expect(api.calls).toContainEqual(["spawnTask", b.plan, b.id, { instructions: null, force: false }]));
+  });
+
+  it("ignores a previous task's pending detail after changing the sheet's task", async () => {
+    const a = task("T-0001", { title: "First task" });
+    const b = task("T-0002", { title: "Second task" });
+    const view = state({ plans: [plan({ tasks: [a.id, b.id] })], tasks: [a, b] });
+    let resolveA!: (d: ReturnType<typeof detail>) => void;
+    const api = fakeApi({ task: async (_, id) => id === a.id
+      ? new Promise((resolve) => { resolveA = resolve; })
+      : detail(b, { body: "Second description" }) });
+    const { TaskSheet } = await import("./board/task-sheet");
+    const sheet = (id: string) => <TaskSheet view={view} plan={PLAN} task={id} api={api} onClose={() => {}} onOpenAgent={() => {}} />;
+    const { rerender } = render(sheet(a.id));
+    await screen.findByRole("status", { name: "Loading the task" });
+    rerender(sheet(b.id));
+    await screen.findByText("Second description");
+    await act(async () => resolveA(detail(a, { body: "First description" })));
+    expect(screen.queryByText("First description")).toBeNull();
+    expect(screen.getByText("Second description")).toBeTruthy();
   });
 
   it("switches views and remembers the choice per plan", async () => {
