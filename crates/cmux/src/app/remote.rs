@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use cmux_core::glyph::Glyph;
 use cmux_proto::api::{NewTerminalKind, ProjectsResp};
-use cmux_proto::view::{AgentId, PlanId, TermId, TermKind, TerminalView};
+use cmux_proto::view::{AgentId, Level, Life, PlanId, TermId, TermKind, TerminalView};
 use ratatui::layout::{Position, Rect};
 use serde_json::Value;
 
@@ -71,7 +71,11 @@ pub struct RemoteState {
     /// The key of each of `App::windows`.
     pub keys: Vec<WindowKey>,
     window_ids: HashMap<WindowKey, u64>,
+    /// Pane ids by terminal, to find the pane of a terminal's output.
     pane_ids: HashMap<TermId, u64>,
+    /// Pane ids by agent: an agent that comes back on a new terminal keeps
+    /// its pane in the window and its focus.
+    agent_pane_ids: HashMap<AgentId, u64>,
     pub form: Option<ActiveForm>,
     form_from_inbox: bool,
     pub pending: Option<Pending>,
@@ -121,6 +125,7 @@ impl RemoteState {
             keys: Vec::new(),
             window_ids: HashMap::new(),
             pane_ids: HashMap::new(),
+            agent_pane_ids: HashMap::new(),
             form: None,
             form_from_inbox: false,
             pending: None,
@@ -622,11 +627,19 @@ impl App {
             let mut built = Vec::new();
             for ps in &panes {
                 let term = ps.term.expect("filtered");
-                let pid = *r.pane_ids.entry(term).or_insert_with(|| {
-                    let id = self.next_id;
-                    self.next_id += 1;
-                    id
-                });
+                let pid = match &ps.agent {
+                    Some(a) => *r.agent_pane_ids.entry(a.clone()).or_insert_with(|| {
+                        let id = self.next_id;
+                        self.next_id += 1;
+                        id
+                    }),
+                    None => *r.pane_ids.entry(term).or_insert_with(|| {
+                        let id = self.next_id;
+                        self.next_id += 1;
+                        id
+                    }),
+                };
+                r.pane_ids.insert(term, pid);
                 let mut pane = old_panes.remove(&term).unwrap_or_else(|| {
                     let rt = RemoteTerm::new(
                         r.handle.clone(),
@@ -679,6 +692,7 @@ impl App {
         // Panes whose terminal is gone are dropped here (the Drop unsubscribes).
         drop(old_panes);
         r.pane_ids.retain(|t, _| sv.terminal(*t).is_some());
+        r.agent_pane_ids.retain(|a, _| sv.agent(a).is_some());
         r.window_ids.retain(|k, _| keys.contains(k));
         r.announced.retain(|t| sv.terminal(*t).is_some());
         r.view.prune(&derived);
@@ -804,7 +818,12 @@ impl App {
                 (Some(p.clone()), first, None)
             }
             Node::Executor(p) => (Some(p.clone()), WindowKey::Executor(p.clone()), None),
-            Node::Task(p, t) => (Some(p.clone()), WindowKey::Task(p.clone(), *t), None),
+            // The task row is the task's own agent, not one of its sub-agents.
+            Node::Task(p, t) => (
+                Some(p.clone()),
+                WindowKey::Task(p.clone(), *t),
+                node.agent(sv),
+            ),
             Node::Sub(a) => {
                 let Some(t) = a.path().task_id() else {
                     return false;
@@ -823,7 +842,6 @@ impl App {
                 (r.plan.clone(), first, None)
             }
         };
-        let _ = sv;
         self.rebuild_to(Some((plan, key.clone())));
         let Some(idx) = self
             .remote
@@ -845,7 +863,10 @@ impl App {
                 .find(|p| p.agent.as_ref() == Some(&a))
                 .map(|p| p.id)
         {
-            w.zoomed = false;
+            // Only a jump to another pane leaves the zoom.
+            if w.active != id {
+                w.zoomed = false;
+            }
             w.focus(id);
             self.relayout();
         }
@@ -929,11 +950,15 @@ impl App {
         };
         match (agent, term) {
             (Some(a), _) => {
+                // A sub-agent that reported is done though its process may
+                // linger; a task agent that reported goes on (PR, CI) and only
+                // an ended process is done.
                 let finished = r.mirror.sv.agent(&a).is_none_or(|v| {
-                    matches!(
-                        v.life,
-                        cmux_proto::view::Life::Exited { .. } | cmux_proto::view::Life::Stopped
-                    )
+                    if v.level == Level::Sub {
+                        crate::tui::marks::agent_done(v)
+                    } else {
+                        matches!(v.life, Life::Exited { .. } | Life::Stopped)
+                    }
                 });
                 if finished {
                     r.view.closed.insert(a.to_string());
@@ -1110,7 +1135,12 @@ impl App {
         else {
             return;
         };
-        match Node::for_agent(&a).parent() {
+        let here = Node::for_agent(&a);
+        match here.parent() {
+            // A task goes up to the executor; the executor is the top.
+            Some(Node::Plan(_)) if matches!(here, Node::Executor(_)) => {
+                self.flash("already at the top");
+            }
             Some(Node::Plan(p)) => {
                 self.show_node(&Node::Executor(p));
             }
@@ -1570,6 +1600,9 @@ fn pane_key(p: &Pane) -> Option<String> {
 /// so the client does not guess. `None` while it runs without a report.
 pub fn outcome(a: &cmux_proto::view::AgentView) -> Option<(&'static str, &'static str)> {
     use cmux_proto::view::{Life, ReportStatus};
+    if !crate::tui::marks::agent_done(a) {
+        return None;
+    }
     match (a.report.as_ref().filter(|r| !r.implicit), &a.life) {
         (Some(r), _) => Some(match r.status {
             ReportStatus::Success => ("✓", "reported success"),
@@ -1586,11 +1619,13 @@ pub fn outcome(a: &cmux_proto::view::AgentView) -> Option<(&'static str, &'stati
 fn describe_pane(pane: &mut Pane, spec: &PaneSpec, sv: &cmux_proto::view::StateView) {
     let term = spec.term.and_then(|t| sv.terminal(t));
     pane.agent = spec.agent.clone();
+    pane.dim = false;
     pane.label = spec.agent.as_ref().map(agent_label);
     pane.finished = spec.finished;
     if let Some(a) = spec.agent.as_ref().and_then(|a| sv.agent(a)) {
         pane.kind = Kind::Claude;
         pane.cwd = a.cwd.clone();
+        pane.dim = spec.level == Some(Level::Sub) && spec.finished;
     } else if let Some(t) = term {
         pane.kind = pane_kind(&t.kind);
         pane.cwd = t.cwd.clone();

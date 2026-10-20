@@ -442,6 +442,12 @@ impl Ctx<'_> {
             }
             Some(PlanState::Done) => {
                 self.plan_mut(pi).state = PlanState::Done;
+                // Nothing is left to do for the plan's sub-agents.
+                for ai in 0..self.plan(pi).agents.len() {
+                    if self.agent(pi, ai).level == Level::Sub {
+                        self.stop_agent(pi, ai);
+                    }
+                }
                 let plan = self.plan(pi).id.clone();
                 self.fx.push(Effect::NotifyPlanDone { plan });
                 text("the plan is done")

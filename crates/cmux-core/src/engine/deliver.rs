@@ -166,13 +166,16 @@ impl Ctx<'_> {
             return;
         };
         let (id, level, task_id, parent) = (a.id.clone(), a.level, a.task, a.parent.clone());
+        // A sub-agent of an earlier attempt reports to nobody: its parent is
+        // gone, and the new attempt must not take the report for its own.
+        let orphan = level == Level::Sub && !self.current_attempt(pi, ai);
         self.agent_mut(pi, ai).landed = true;
         let (kind, verb) = if report.implicit {
             (ItemKind::ChildExited, "exited")
         } else {
             (ItemKind::ChildReport, "reported")
         };
-        if let Some(parent) = parent {
+        if let (Some(parent), false) = (parent, orphan) {
             let pr = report
                 .pr_url
                 .as_ref()
@@ -189,6 +192,15 @@ impl Ctx<'_> {
                 ),
                 dedupe: Some(self.unused_key(format!("report:{id}:{}", report.attempt))),
             });
+        }
+        // A report that is not blocked ends the agent's work: close what it still
+        // asks, and a sub-agent's process goes (blocked ones can be told how to
+        // continue, so they stay).
+        if !report.implicit && report.status != ReportStatus::Blocked {
+            self.close_questions_of(&id);
+            if level == Level::Sub {
+                self.stop_agent(pi, ai);
+            }
         }
         if let (Level::Task, Some(t)) = (level, task_id)
             && let Ok(ti) = self.task_idx(pi, t)
@@ -221,13 +233,18 @@ impl Ctx<'_> {
         let id = self.agent(pi, ai).id.clone();
         self.agent_mut(pi, ai).life = life;
         self.expire_held_for(&id);
+        self.close_questions_of(&id);
         let a = self.agent(pi, ai);
         let (level, task, has_report) = (a.level, a.task, a.report.is_some());
         let attempt = task
             .and_then(|t| self.plan(pi).task(t))
             .map_or(0, |t| t.attempt);
+        let summary = a.last_text.clone().unwrap_or_else(|| why.to_string());
+        // The task agent is the sub-agents' parent: without it they are orphans.
+        if let (Level::Task, Some(t)) = (level, task) {
+            self.stop_subs(pi, t);
+        }
         if level != Level::Executor && !has_report {
-            let summary = a.last_text.clone().unwrap_or_else(|| why.to_string());
             self.agent_mut(pi, ai).report = Some(Report {
                 status: ReportStatus::Blocked,
                 summary,
@@ -270,7 +287,24 @@ impl Ctx<'_> {
         }
     }
 
-    /// Closes a timed-out item and tells the asker.
+    /// An agent that is gone, stopped or done can no longer be answered: its open
+    /// questions leave the parent's and the person's lists.
+    pub fn close_questions_of(&mut self, id: &AgentId) {
+        let open: Vec<ItemId> = self
+            .st
+            .inbox
+            .iter()
+            .filter(|i| i.from.as_ref() == Some(id))
+            .filter(|i| matches!(i.kind, ItemKind::Question | ItemKind::ChildQuestion))
+            .filter(|i| matches!(i.status, Delivery::Pending | Delivery::Delivered { .. }))
+            .map(|i| i.id)
+            .collect();
+        for item in open {
+            self.set_status(item, Delivery::Dismissed);
+        }
+    }
+
+    /// Closes a timed-out item and tells the asker, if it can still hear.
     fn expire(&mut self, item: ItemId) {
         let it = self.st.inbox[self.item_idx(item).expect("listed")].clone();
         self.set_status(item, Delivery::Expired);
@@ -284,7 +318,7 @@ impl Ctx<'_> {
                     });
                 }
             }
-            (_, Some(asker)) => {
+            (_, Some(asker)) if self.can_hear(&asker) => {
                 let mins = self.st.timeouts.question / 60_000;
                 self.message(
                     &asker,
@@ -297,6 +331,14 @@ impl Ctx<'_> {
             }
             _ => {}
         }
+    }
+
+    /// Whether a message to `id` would reach an agent: its process runs. An
+    /// agent that is done for good (a sub-agent after its report) is stopped; a
+    /// task agent stays up after a success report for the PR and CI loop.
+    fn can_hear(&self, id: &AgentId) -> bool {
+        self.agent_idx(id)
+            .is_ok_and(|(pi, ai)| self.agent(pi, ai).is_live())
     }
 
     /// The 1 s timer.
@@ -375,7 +417,7 @@ impl Ctx<'_> {
                 let parked = plan
                     .agents
                     .iter()
-                    .any(|c| c.parent.as_ref() == Some(&a.id) && c.is_live());
+                    .any(|c| c.parent.as_ref() == Some(&a.id) && c.is_live() && !c.landed);
                 let overdue = a.idle_since.is_some_and(|t| now.saturating_sub(t) >= limit);
                 if a.level != Level::Executor
                     && a.life == Life::Running

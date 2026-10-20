@@ -355,6 +355,11 @@ pub struct Agent {
     /// The report has been landed (posted to the parent, task moved).
     #[serde(default)]
     pub landed: bool,
+    /// For a sub-agent: the attempt of its task it was spawned in. A sub-agent of
+    /// an older attempt is an orphan: it neither counts nor reports. 0 (also what
+    /// a sub-agent saved before this field reads as) belongs to the current one.
+    #[serde(default)]
+    pub attempt: u32,
     /// Last hook, tool call or screen change, to within 30 s (the watchdog clock).
     #[serde(default)]
     pub last_progress: Option<Timestamp>,
@@ -375,6 +380,11 @@ pub struct Agent {
 pub const LAST_TEXT_CHARS: usize = 2000;
 
 impl Agent {
+    /// Whether this (sub-)agent was spawned in the given attempt of its task.
+    pub fn in_attempt(&self, attempt: u32) -> bool {
+        self.attempt == 0 || self.attempt == attempt
+    }
+
     /// Starting or running: the process exists or is about to.
     pub fn is_live(&self) -> bool {
         matches!(self.life, Life::Starting | Life::Running)
@@ -409,6 +419,7 @@ impl Agent {
             idle_since: None,
             landed: false,
             unconfirmed: Vec::new(),
+            attempt: 0,
             last_progress: None,
             stalled: false,
             transcript: None,

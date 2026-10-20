@@ -2,7 +2,9 @@
 //! inbox items and its children; never stored.
 
 use crate::ids::AgentId;
-use crate::model::{Activity, Agent, InboxItem, ItemKind, Level, Life, Recipient, ReportStatus};
+use crate::model::{
+    Activity, Agent, InboxItem, ItemKind, Level, Life, Recipient, Report, ReportStatus,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Glyph {
@@ -50,7 +52,8 @@ pub fn pending_count(agent: &AgentId, inbox: &[InboxItem]) -> usize {
 /// 1. `NeedsYou`: a pending Permission/Question item from this agent to the
 ///    human, or activity `NeedsPermission` while running.
 /// 2. `Stalled`: the caller's watchdog flag, while running.
-/// 3. `Failed`: stopped, or exited with a non-zero code or by signal.
+/// 3. `Failed`: stopped (unless it handed in an explicit success or failed
+///    report first, which then counts as step 4), or exited with a non-zero code or by signal.
 /// 4. Finished with a report (not currently `Working`): `Unseen` if `!seen`,
 ///    else `Success`, or `Failed` for a failed report. A blocked report shows
 ///    as `Failed` once seen. A clean exit with no report is `Unseen` until
@@ -65,20 +68,51 @@ pub fn glyph(
     seen: bool,
     stalled: bool,
 ) -> Glyph {
-    let running = agent.life == Life::Running;
     let asks = inbox.iter().any(|i| {
         i.is_pending()
             && i.to == Recipient::Human
             && i.from.as_ref() == Some(&agent.id)
             && matches!(i.kind, ItemKind::Permission { .. } | ItemKind::Question)
     });
-    if asks || (running && agent.activity == Activity::NeedsPermission) {
+    agent_state_glyph(
+        agent.life,
+        agent.activity,
+        agent.report.as_ref(),
+        asks,
+        stalled,
+        seen,
+        children.iter().any(|c| c.is_live()),
+    )
+}
+
+/// Whether a stopped agent still shows its report instead of `Failed`: the
+/// engine stops a sub-agent when its success or failed report lands, so such a
+/// report is a normal ending, not a kill. A `blocked` or synthesized (implicit)
+/// report is not.
+fn reported_before_stop(report: Option<&Report>) -> bool {
+    report.is_some_and(|r| !r.implicit && r.status != ReportStatus::Blocked)
+}
+
+/// The precedence of [`glyph`] on the facts it needs, so clients that hold
+/// views instead of the core model apply the same rules.
+pub fn agent_state_glyph(
+    life: Life,
+    activity: Activity,
+    report: Option<&Report>,
+    asks: bool,
+    stalled: bool,
+    seen: bool,
+    has_live_child: bool,
+) -> Glyph {
+    let running = life == Life::Running;
+    if asks || (running && activity == Activity::NeedsPermission) {
         return Glyph::NeedsYou;
     }
     if running && stalled {
         return Glyph::Stalled;
     }
-    match agent.life {
+    match life {
+        Life::Stopped if reported_before_stop(report) => {}
         Life::Stopped
         | Life::Exited { code: None }
         | Life::Exited {
@@ -89,16 +123,16 @@ pub fn glyph(
         _ => {}
     }
     // Starting: the process is on its way up, which is work, not an exit.
-    if agent.life == Life::Starting {
+    if life == Life::Starting {
         return Glyph::Working;
     }
-    let working = running && agent.activity == Activity::Working;
-    let finished = !running || agent.report.is_some();
+    let working = running && activity == Activity::Working;
+    let finished = !running || report.is_some();
     if finished && !working {
         if !seen {
             return Glyph::Unseen;
         }
-        return match &agent.report {
+        return match report {
             Some(r) if r.status == ReportStatus::Success => Glyph::Success,
             Some(_) => Glyph::Failed,
             None => Glyph::Idle,
@@ -106,7 +140,7 @@ pub fn glyph(
     }
     if working {
         Glyph::Working
-    } else if children.iter().any(|c| c.is_live()) {
+    } else if has_live_child {
         Glyph::Parked
     } else {
         Glyph::Idle
@@ -314,5 +348,27 @@ mod tests {
         ];
         assert_eq!(pending_count(&a.id, &inbox), 2);
         assert_eq!(pending_count(&id(AgentPath::Executor), &inbox), 0);
+    }
+
+    #[test]
+    fn a_sub_agent_stopped_after_its_report_shows_the_report() {
+        let mut a = agent(
+            AgentPath::sub(TaskId::new(3), "tests").unwrap(),
+            Activity::Idle,
+        );
+        a.life = Life::Stopped;
+        // Stopped without a report, or with a blocked or synthesized one: red.
+        assert_eq!(glyph(&a, &[], &[], true, false), Glyph::Failed);
+        a.report = report(ReportStatus::Blocked);
+        assert_eq!(glyph(&a, &[], &[], true, false), Glyph::Failed);
+        a.report = report(ReportStatus::Success);
+        a.report.as_mut().unwrap().implicit = true;
+        assert_eq!(glyph(&a, &[], &[], true, false), Glyph::Failed);
+        // The engine stops a sub-agent when a success or failed report lands.
+        a.report = report(ReportStatus::Success);
+        assert_eq!(glyph(&a, &[], &[], false, false), Glyph::Unseen);
+        assert_eq!(glyph(&a, &[], &[], true, false), Glyph::Success);
+        a.report = report(ReportStatus::Failed);
+        assert_eq!(glyph(&a, &[], &[], true, false), Glyph::Failed);
     }
 }

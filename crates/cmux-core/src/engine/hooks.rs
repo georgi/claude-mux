@@ -4,20 +4,48 @@ use super::*;
 use crate::model::{Activity, Level, Life};
 use crate::permissions::find_match;
 
-/// Words of a shell command, split into simple commands at `;`, `&`, `|` and newlines.
+/// Characters that wrap or glue commands: subshells, command substitution,
+/// groups and quotes. Words are cut of them; they also end a simple command.
+const SHELL_PUNCT: [char; 9] = ['(', ')', '`', '{', '}', '\'', '"', '$', '\\'];
+
+/// Words of a shell command, split into simple commands at `;`, `&`, `|`,
+/// newlines, subshells and substitutions. Quotes are cut off the words, so the
+/// argument of `sh -c '...'` reads like the commands in it.
 fn segments(cmd: &str) -> Vec<Vec<&str>> {
-    cmd.split([';', '&', '|', '\n'])
-        .map(|s| s.split_whitespace().collect::<Vec<_>>())
+    cmd.split([';', '&', '|', '\n', '(', ')', '`', '{', '}'])
+        .map(|s| {
+            s.split_whitespace()
+                .map(|w| w.trim_matches(SHELL_PUNCT))
+                .filter(|w| !w.is_empty())
+                .collect::<Vec<_>>()
+        })
         .filter(|w| !w.is_empty())
         .collect()
 }
 
+/// The last path component: `/usr/bin/git` is `git`.
+fn basename(w: &str) -> &str {
+    w.rsplit('/').next().unwrap_or(w)
+}
+
+/// Options of `git` itself that take their value as the next word.
+const GIT_VALUE_OPTS: [&str; 8] = [
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--exec-path",
+    "--config-env",
+    "--super-prefix",
+];
+
 /// For `git [-C dir] <sub> args...`, the subcommand and its arguments.
 fn git_sub<'a>(words: &'a [&'a str]) -> Option<(&'a str, &'a [&'a str])> {
-    let mut i = words.iter().position(|w| *w == "git")? + 1;
+    let mut i = words.iter().position(|w| basename(w) == "git")? + 1;
     while i < words.len() {
         match words[i] {
-            "-C" | "-c" => i += 2,
+            w if GIT_VALUE_OPTS.contains(&w) => i += 2,
             w if w.starts_with('-') => i += 1,
             w => return Some((w, &words[i + 1..])),
         }
@@ -25,21 +53,100 @@ fn git_sub<'a>(words: &'a [&'a str]) -> Option<(&'a str, &'a [&'a str])> {
     None
 }
 
+/// Whether a ref names the base branch: `main`, `origin/main`, `refs/heads/main`,
+/// `heads/main`, with or without a `^`/`~` suffix.
+fn names_base(arg: &str, base: &str) -> bool {
+    let name = arg.split(['^', '~']).next().unwrap_or(arg);
+    let name = name.trim_end_matches('@');
+    let name = ["refs/remotes/", "remotes/", "refs/heads/", "heads/"]
+        .iter()
+        .find_map(|p| name.strip_prefix(p))
+        .unwrap_or(name);
+    name == base || name.strip_prefix("origin/") == Some(base)
+}
+
+/// The branch a `git checkout|switch` creates, if it creates one: the value of
+/// `-b`/`-B` (checkout), `-c`/`-C` (switch), `--create`/`--force-create` or
+/// `--orphan`. Short options may be grouped (`-qBmain`) and the value glued
+/// (`-bmain`, `--create=main`) or apart. `Some(None)` is a create flag with no
+/// name.
+fn created_branch<'a>(sub: &str, args: &[&'a str]) -> Option<Option<&'a str>> {
+    let short: [char; 2] = if sub == "checkout" {
+        ['b', 'B']
+    } else {
+        ['c', 'C']
+    };
+    let long = ["--create", "--force-create", "--orphan"];
+    args.iter().enumerate().find_map(|(i, a)| {
+        if long.contains(a) {
+            return Some(args.get(i + 1).copied());
+        }
+        if let Some(v) = long
+            .iter()
+            .find_map(|l| a.strip_prefix(l).and_then(|r| r.strip_prefix('=')))
+        {
+            return Some(Some(v));
+        }
+        let group = a.strip_prefix('-').filter(|g| !g.starts_with('-'))?;
+        let at = group.find(short)?;
+        let rest = &group[at + 1..];
+        Some(if rest.is_empty() {
+            args.get(i + 1).copied()
+        } else {
+            Some(rest)
+        })
+    })
+}
+
+/// Whether `git checkout|switch <args>` moves to the base branch. Restoring
+/// files from it (`checkout main -- path`) and branching off it (`-b feat main`)
+/// leave the current branch alone; creating a branch named like it
+/// (`-B main origin/main` resets it) does not. Only `checkout` takes pathspecs
+/// after `--`; `switch` has none, so `switch -- main` does switch.
+fn switches_to_base(sub: &str, args: &[&str], base: &str) -> bool {
+    if let Some(created) = created_branch(sub, args) {
+        return created.is_some_and(|n| names_base(n, base));
+    }
+    let (refs, paths) = match args.iter().position(|a| *a == "--") {
+        Some(at) if sub == "checkout" => (&args[..at], &args[at + 1..]),
+        _ => (args, &[][..]),
+    };
+    paths.is_empty()
+        && refs
+            .iter()
+            .any(|a| !a.starts_with('-') && names_base(a, base))
+}
+
 /// Policy guard rails; `Some(reason)` denies the tool call.
-fn guard(level: Level, base: Option<&str>, tool: &str, input: &str) -> Option<String> {
+pub(super) fn guard(level: Level, base: Option<&str>, tool: &str, input: &str) -> Option<String> {
     if tool != "Bash" {
         return None;
     }
-    for words in segments(input) {
+    let segs = segments(input);
+    if level == Level::Sub {
+        // Conservative: git anywhere before push or send-pack, in any spelling
+        // the shell would accept. Commit messages are not parsed, so one that
+        // mentions push trips it too.
+        let words: Vec<&str> = segs.iter().flatten().copied().collect();
+        let pushes = |w: &str| {
+            matches!(w, "push" | "send-pack") || matches!(basename(w), "git-push" | "git-send-pack")
+        };
+        let git = words
+            .iter()
+            .position(|w| matches!(basename(w), "git" | "git-push" | "git-send-pack"));
+        if git.is_some_and(|at| words[at..].iter().any(|w| pushes(w))) {
+            return Some("sub-agents may not run git push (this check also trips on a commit message that mentions push; reword it); finish with report_result and let the task agent push".into());
+        }
+    }
+    if level == Level::Executor {
+        return None;
+    }
+    for words in segs {
         let Some((sub, args)) = git_sub(&words) else {
             continue;
         };
-        if level == Level::Sub && sub == "push" {
-            return Some("sub-agents may not run git push; finish with report_result and let the task agent push".into());
-        }
-        if level != Level::Executor
-            && matches!(sub, "checkout" | "switch")
-            && let Some(b) = base.filter(|b| args.iter().any(|a| a.trim_matches(['\'', '"']) == *b))
+        if matches!(sub, "checkout" | "switch")
+            && let Some(b) = base.filter(|b| switches_to_base(sub, args, b))
         {
             return Some(format!(
                 "do not check out the base branch {b} in a task worktree; stay on your task branch"
