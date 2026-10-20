@@ -120,6 +120,26 @@ describe("tool cards", () => {
     expect(document.querySelectorAll('[data-op="-"]')).toHaveLength(1);
   });
 
+  it("marks capped Edit input as partial without claiming complete change counts", async () => {
+    // The actual edit differs only after the identical 20 KiB prefixes retained by the server.
+    const prefix = "x\n".repeat(10240);
+    render(<ChatLog entries={[
+      call("e", "Edit", { file_path: "/repo/a.txt", old_string: prefix, new_string: prefix, truncated: true }),
+      result("e", "Edit", "The file was updated."),
+    ]} />);
+    expect(await screen.findByText("Partial input")).toBeTruthy();
+    expect(screen.queryByLabelText(/added, .*removed/)).toBeNull();
+  });
+
+  it("marks truncated Write content before the preview is opened", async () => {
+    render(<ChatLog entries={[
+      call("w", "Write", { file_path: "/repo/a.txt", content: "partial", truncated: true }),
+      result("w", "Write", "The file was written."),
+    ]} />);
+    expect(await screen.findByText("Partial input")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Write output" }).getAttribute("aria-expanded")).toBe("false");
+  });
+
   it("shows a Task with its sub-agent's state and a button that opens it", async () => {
     const opened: string[] = [];
     const parent = `${PLAN}/T-0003`;
