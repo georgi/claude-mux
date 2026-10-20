@@ -331,23 +331,3 @@ export function quoted(text: string): string {
     .map((l) => (l ? `> ${l}` : ">"))
     .join("\n")}\n\n`;
 }
-
-/** The Claude Code commands the composer suggests after a leading `/`. */
-export const SLASH_COMMANDS: { name: string; description: string }[] = [
-  { name: "/compact", description: "Summarize the conversation to free context" },
-  { name: "/clear", description: "Start a new conversation" },
-  { name: "/cost", description: "Show the tokens and cost so far" },
-  { name: "/model", description: "Change the model" },
-  { name: "/review", description: "Review a pull request" },
-  { name: "/init", description: "Write a CLAUDE.md for the repository" },
-];
-
-/**
- * The commands that match a draft that is only a leading `/word`, or `null`
- * when the draft is not a command being typed.
- */
-export function slashMatches(draft: string): typeof SLASH_COMMANDS | null {
-  const m = /^(\/\S*)$/.exec(draft);
-  if (!m) return null;
-  return SLASH_COMMANDS.filter((c) => c.name.startsWith(m[1]));
-}

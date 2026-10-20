@@ -402,6 +402,38 @@ fn cut_results_say_their_full_length_and_can_be_read_whole() {
 }
 
 #[test]
+fn clipped_results_keep_full_length_when_ellipsis_preserves_byte_length() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s.jsonl");
+    for text in [
+        "a".repeat(400),
+        "a".repeat(401),
+        "a".repeat(402),
+        "a".repeat(403),
+        format!("{}éx", "a".repeat(399)),
+        format!("{}漢", "a".repeat(399)),
+    ] {
+        let line = serde_json::json!({
+            "type": "user", "uuid": "result",
+            "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t", "content": text}]},
+        });
+        let e = parse_line(&line.to_string(), &mut ToolNames::new())
+            .entries
+            .remove(0);
+        let chars = text.chars().count();
+        assert_eq!(
+            e.full_len,
+            (chars > TOOL_RESULT_CHARS).then_some(chars as u32),
+            "{chars} chars, {} bytes",
+            text.len(),
+        );
+        std::fs::write(&path, format!("{line}\n")).unwrap();
+        assert_eq!(find_entry(&path, "result").unwrap().unwrap().text, text);
+    }
+}
+
+#[test]
 fn whole_entries_stop_at_a_megabyte() {
     let text = "x".repeat(FULL_BYTES + 10);
     let line = serde_json::json!({

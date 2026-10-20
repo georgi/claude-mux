@@ -153,10 +153,11 @@ interface CardProps {
 /** One tool call: its trace line, and its body folded under it. */
 export function ToolCard({ row, icon, title, meta, action, open, children }: CardProps) {
   const running = row.result === null;
+  const truncated = obj(row.input)?.truncated === true;
   const line = (
     <TraceLine status={running ? "running" : row.isError ? "error" : undefined}>
       <TraceIcon>{running ? <LoaderCircleIcon className="animate-spin" /> : icon}</TraceIcon>
-      <TraceTitle className="flex min-w-0 items-center gap-1.5">{title}</TraceTitle>
+      <TraceTitle className="flex min-w-0 items-center gap-1.5">{title}{truncated && <span title="The server truncated this tool input; the preview is incomplete." className="shrink-0 text-xs text-muted-foreground">Partial input</span>}</TraceTitle>
       {meta && <TraceDescription className="flex items-center gap-1.5 text-xs">{meta}</TraceDescription>}
       <StatusMark row={row} />
     </TraceLine>

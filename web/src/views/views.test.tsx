@@ -98,6 +98,23 @@ describe("tool cards", () => {
     await waitFor(() => expect(screen.getByText("full tail")).toBeTruthy());
   });
 
+  it("keeps every line of a Bash command accessible while running and after completion", async () => {
+    const command = "python3 - <<'PY'\nprint('second line')\nPY";
+    const bash = call("b", "Bash", { command });
+    const { rerender } = render(<ChatLog entries={[call("single", "Bash", { command: "pwd" })]} />);
+    await screen.findByText("$ pwd");
+    expect(screen.queryByRole("button", { name: "Bash output" })).toBeNull();
+    rerender(<ChatLog entries={[bash]} />);
+    const toggle = await screen.findByRole("button", { name: "Bash output" });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(screen.getByLabelText("Bash command").textContent).toBe(command));
+    expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
+
+    rerender(<ChatLog entries={[bash, result("b", "Bash", "second line")]} />);
+    await waitFor(() => expect(screen.getByText("second line")).toBeTruthy());
+    expect(screen.getByLabelText("Bash command").textContent).toBe(command);
+  });
+
   it("shows an Edit with its +/- counts and the diff", async () => {
     render(
       <ChatLog
@@ -116,6 +133,26 @@ describe("tool cards", () => {
     await waitFor(() => expect(screen.getByLabelText("Changes to /repo/src/chat.ts")).toBeTruthy());
     expect(document.querySelectorAll('[data-op="+"]')).toHaveLength(2);
     expect(document.querySelectorAll('[data-op="-"]')).toHaveLength(1);
+  });
+
+  it("marks capped Edit input as partial without claiming complete change counts", async () => {
+    // The actual edit differs only after the identical 20 KiB prefixes retained by the server.
+    const prefix = "x\n".repeat(10240);
+    render(<ChatLog entries={[
+      call("e", "Edit", { file_path: "/repo/a.txt", old_string: prefix, new_string: prefix, truncated: true }),
+      result("e", "Edit", "The file was updated."),
+    ]} />);
+    expect(await screen.findByText("Partial input")).toBeTruthy();
+    expect(screen.queryByLabelText(/added, .*removed/)).toBeNull();
+  });
+
+  it("marks truncated Write content before the preview is opened", async () => {
+    render(<ChatLog entries={[
+      call("w", "Write", { file_path: "/repo/a.txt", content: "partial", truncated: true }),
+      result("w", "Write", "The file was written."),
+    ]} />);
+    expect(await screen.findByText("Partial input")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Write output" }).getAttribute("aria-expanded")).toBe("false");
   });
 
   it("shows a Task with its sub-agent's state and a button that opens it", async () => {
@@ -209,24 +246,16 @@ describe("Composer", () => {
     expect(localStorage.getItem(`cmux.draft.${b}`)).toBeNull();
   });
 
-  it("suggests slash commands, filters them as you type, and completes on Tab", async () => {
-    render(<Composer agent={`${PLAN}/T-0002`} api={fakeApi()} queued={[]} />);
+  it("keeps slash-prefixed messages as plain text without offering native commands", async () => {
+    const api = fakeApi();
+    render(<Composer agent={`${PLAN}/T-0002`} api={api} queued={[]} />);
     const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
-    fireEvent.change(box, { target: { value: "/" } });
-    const list = await screen.findByRole("listbox", { name: "Commands" });
-    expect(list.querySelectorAll('[role="option"]')).toHaveLength(6);
     fireEvent.change(box, { target: { value: "/co" } });
-    await waitFor(() =>
-      expect(screen.getAllByRole("option").map((o) => o.textContent?.split(/\s/)[0])).toEqual(["compactSummarize", "costShow"]),
-    );
-    fireEvent.keyDown(box, { key: "ArrowDown" });
-    expect(screen.getByRole("option", { selected: true }).textContent).toContain("cost");
-    fireEvent.keyDown(box, { key: "Tab" });
-    expect(box.value).toBe("/cost ");
-    await waitFor(() => expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull());
-    // Not at the start: no list.
-    fireEvent.change(box, { target: { value: "run /co" } });
     expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull();
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect(box.value).toBe("/co");
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(api.calls).toEqual([["message", `${PLAN}/T-0002`, "/co", false]]));
   });
 
   it("says why it is disabled on a read-only device", () => {

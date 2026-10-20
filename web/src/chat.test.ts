@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type ChatRow, chatRows, dayLabel, formatDuration, groupRows, KEEP, lastToolKey, mergeEntries, plainText, quoted, slashMatches, toolKind, turnsOf } from "./chat";
+import { type ChatRow, chatRows, dayLabel, formatDuration, groupRows, KEEP, lastToolKey, mergeEntries, plainText, quoted, toolKind, turnsOf } from "./chat";
 import { entry } from "./fixtures";
 
 describe("mergeEntries", () => {
@@ -209,11 +209,5 @@ describe("turns", () => {
     expect(quoted("a\n\nb")).toBe("> a\n>\n> b\n\n");
   });
 
-  it("suggests slash commands only for a leading /word", () => {
-    expect(slashMatches("/co")?.map((c) => c.name)).toEqual(["/compact", "/cost"]);
-    expect(slashMatches("/")).toHaveLength(6);
-    expect(slashMatches("/compact now")).toBeNull();
-    expect(slashMatches("see /co")).toBeNull();
-    expect(slashMatches("/zz")).toEqual([]);
-  });
+
 });

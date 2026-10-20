@@ -133,7 +133,7 @@ export function Edit(p: ToolProps) {
       icon={<FilePenIcon />}
       open={p.open}
       title={<PathChip path={path} cwd={p.cwd} />}
-      meta={<DiffCounts added={added} removed={removed} />}
+      meta={obj(p.row.input)?.truncated === true ? undefined : <DiffCounts added={added} removed={removed} />}
     >
       {wide && (
         <ToggleGroup size="sm" variant="outline" spacing={0} value={[shown]} onValueChange={pick} aria-label="Diff view">
