@@ -160,12 +160,23 @@ describe("perform", () => {
       ["answer", 9, { action: "dismiss", text: null }, expect.any(String)],
     ]);
     expect((await run("stalled", "resume")).calls.map((c) => c[0])).toEqual(["resumeAgent", "answer"]);
-    expect((await run("stalled", "nudge")).calls.map((c) => c.slice(0, 3))).toEqual([
-      ["message", from, NUDGE],
-      ["answer", 9, { action: "dismiss", text: null }],
+    expect((await run("stalled", "nudge")).calls).toEqual([
+      ["message", from, NUDGE, true],
+      ["answer", 9, { action: "dismiss", text: null }, expect.any(String)],
     ]);
     expect((await run("exited_without_report", "stop")).calls.map((c) => c[0])).toEqual(["stopAgent", "answer"]);
     await expect(run("stalled", "message", "")).rejects.toThrow(/needs text/);
+  });
+
+  it("keeps the stalled item unanswered when sending the nudge fails", async () => {
+    const v = state({ items: [item(9, { kind: "stalled", from })] });
+    const api = fakeApi({
+      message: async () => {
+        throw new Error("connection lost");
+      },
+    });
+    await expect(perform(api, nav().n, describeItem(v, v.items[0]), "nudge")).rejects.toThrow("connection lost");
+    expect(api.calls).toEqual([]);
   });
 
   it("opens things without calling the server", async () => {
