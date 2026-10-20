@@ -224,20 +224,33 @@ export function TaskForm({
 /** The plan file, editable while the plan is a draft. */
 function PlanBodyEditor({ api, plan, onDone }: { api: Api; plan: string; onDone: () => void }) {
   const [text, setText] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [load, setLoad] = useState(0);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     let live = true;
+    setText(null);
+    setError(null);
     api
       .planBody(plan)
       .then((b) => live && setText(b.text))
       .catch((e: unknown) => {
-        toast.error(errText(e));
-        if (live) setText("");
+        if (live) setError(errText(e));
       });
     return () => {
       live = false;
     };
-  }, [api, plan]);
+  }, [api, plan, load]);
+  if (error)
+    return (
+      <div className="flex flex-col gap-2 rounded-xl border p-4">
+        <p role="alert" className="text-sm text-destructive">Could not load the plan body: {error}</p>
+        <div className="flex gap-2">
+          <Button type="button" onClick={() => setLoad((n) => n + 1)}>Retry</Button>
+          <Button type="button" variant="ghost" onClick={onDone}>Cancel</Button>
+        </div>
+      </div>
+    );
   if (text === null) return <Skeleton className="h-32 w-full" />;
   const save = () => {
     setBusy(true);

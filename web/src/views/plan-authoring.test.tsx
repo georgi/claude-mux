@@ -36,6 +36,32 @@ describe("deps", () => {
 });
 
 describe("TaskEditor", () => {
+  it("requires a successful body load before saving, and preserves the body after retry", async () => {
+    let resolveBody!: (body: { text: string }) => void;
+    let loads = 0;
+    const api = fakeApi({ planBody: () => ++loads === 1
+      ? Promise.reject(new Error("Temporary read failure"))
+      : new Promise((resolve) => { resolveBody = resolve; }) });
+    render(<TaskEditor plan={draftPlan} tasks={tasks} api={api} />);
+    fireEvent.click(screen.getByRole("button", { name: "Plan body" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Temporary read failure");
+    expect(screen.queryByLabelText("Plan body")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save plan body" })).toBeNull();
+    expect(api.calls.some((c) => c[0] === "putPlanBody")).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(loads).toBe(2));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save plan body" })).toBeNull();
+    await act(async () => resolveBody({ text: "Existing plan body" }));
+    expect(screen.getByLabelText("Plan body")).toHaveProperty("value", "Existing plan body");
+    fireEvent.change(screen.getByLabelText("Plan body"), { target: { value: "Existing plan body, updated" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save plan body" }));
+    await waitFor(() => expect(api.calls.find((c) => c[0] === "putPlanBody")).toEqual([
+      "putPlanBody", PLAN, { text: "Existing plan body, updated" },
+    ]));
+  });
+
   it("discards the previous plan's task draft before saving a task in another plan", async () => {
     const a = task("T-0001", { plan: "plan-A", title: "A original" });
     const b = task("T-0001", { plan: "plan-B", title: "B original" });
