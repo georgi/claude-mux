@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { TokenUsage } from "../api/types";
 import { agent, plan, PLAN, state, task } from "../fixtures";
-import { ContextMeter, contextPercent } from "./shell/context-meter";
+import { TokenUsageSummary } from "./shell/token-usage";
 import { crumbsFor, Crumbs } from "./shell/header";
 
 afterEach(cleanup);
@@ -42,19 +42,22 @@ describe("Breadcrumb", () => {
   });
 });
 
-describe("ContextMeter", () => {
-  // 30k input + 60k cache read + 10k cache write = 100k of 200k; output does not count.
-  const tokens: TokenUsage = { input: 30_000, output: 9_000, cache_read: 60_000, cache_write: 10_000 };
-
-  it("counts input and cache tokens against a 200k window", () => {
-    expect(contextPercent(tokens)).toBe(50);
-    expect(contextPercent({ input: 250_000, output: 0, cache_read: 0, cache_write: 0 })).toBe(100);
+describe("TokenUsageSummary", () => {
+  it("labels all usage categories as cumulative tokens without claiming context occupancy", () => {
+    const tokens: TokenUsage = { input: 30_000, output: 9_000, cache_read: 60_000, cache_write: 10_000 };
+    render(<TokenUsageSummary tokens={tokens} />);
+    expect(screen.getByRole("button", { name: "Cumulative token usage: 109,000 tokens" }).textContent).toBe("109k tokens total");
+    expect(screen.queryByRole("meter")).toBeNull();
+    expect(screen.queryByText(/%/)).toBeNull();
   });
 
-  it("shows the percentage as a meter", () => {
-    render(<ContextMeter tokens={tokens} />);
-    const meter = screen.getByRole("meter", { name: "Context" });
-    expect(meter.getAttribute("aria-valuenow")).toBe("50");
-    expect(screen.getByText("50%")).toBeTruthy();
+  it("keeps displaying accumulated requests above a context window without capping them", () => {
+    const { rerender } = render(<TokenUsageSummary tokens={{ input: 80_000, output: 0, cache_read: 0, cache_write: 0 }} />);
+    expect(screen.getByRole("button", { name: "Cumulative token usage: 80,000 tokens" })).toBeTruthy();
+    // Three requests of 80k each are 240k lifetime usage, not a full context window.
+    rerender(<TokenUsageSummary tokens={{ input: 80_000, output: 0, cache_read: 160_000, cache_write: 0 }} />);
+    expect(screen.getByRole("button", { name: "Cumulative token usage: 240,000 tokens" }).textContent).toBe("240k tokens total");
+    expect(screen.queryByRole("meter")).toBeNull();
+    expect(screen.queryByText(/%/)).toBeNull();
   });
 });

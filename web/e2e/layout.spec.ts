@@ -40,7 +40,7 @@ test("split shows chat and terminal side by side and is remembered", async ({ pa
   const crumbs = page.getByRole("navigation", { name: "breadcrumb" });
   await expect(crumbs.getByRole("link", { name: "layout plan" })).toBeVisible();
   await expect(crumbs).toContainText("Executor");
-  await expect(page.getByRole("meter", { name: "Context" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Cumulative token usage:/ })).toBeVisible();
 
   const views = page.getByRole("group", { name: "View" });
   await views.getByRole("button", { name: "Split" }).click();
