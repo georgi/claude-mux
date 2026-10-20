@@ -101,6 +101,20 @@ describe("tool cards", () => {
     await waitFor(() => expect(screen.getByText("full tail")).toBeTruthy());
   });
 
+  it("keeps every line of a Bash command accessible while running and after completion", async () => {
+    const command = "python3 - <<'PY'\nprint('second line')\nPY";
+    const bash = call("b", "Bash", { command });
+    const { rerender } = render(<ChatLog entries={[bash]} />);
+    const toggle = await screen.findByRole("button", { name: "Bash output" });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(screen.getByLabelText("Bash command").textContent).toBe(command));
+    expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
+
+    rerender(<ChatLog entries={[bash, result("b", "Bash", "second line")]} />);
+    await waitFor(() => expect(screen.getByText("second line")).toBeTruthy());
+    expect(screen.getByLabelText("Bash command").textContent).toBe(command);
+  });
+
   it("shows an Edit with its +/- counts and the diff", async () => {
     render(
       <ChatLog
