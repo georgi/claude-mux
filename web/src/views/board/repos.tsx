@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import type { Api } from "../../api/http";
 import type { RepoInfo } from "../../api/types";
@@ -14,22 +14,32 @@ export function useRepos(api: Api): {
   repos: RepoInfo[] | null;
   error: string | null;
   add: (spec: string) => Promise<RepoInfo>;
+  /** Loads the list again, e.g. after an error. */
+  reload: () => void;
 } {
   const [repos, setRepos] = useState<RepoInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [n, setN] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: n only triggers a reload.
   useEffect(() => {
+    let live = true;
+    setError(null);
     api
       .repos()
-      .then((r) => setRepos(r.repos))
-      .catch((e: unknown) => setError(errText(e)));
-  }, [api]);
+      .then((r) => live && setRepos(r.repos))
+      .catch((e: unknown) => live && setError(errText(e)));
+    return () => {
+      live = false;
+    };
+  }, [api, n]);
+  const reload = useCallback(() => setN((x) => x + 1), []);
   const add = async (spec: string) => {
     const s = spec.trim();
     const r = await api.addRepo(s.startsWith("/") ? { path: s } : { url: s });
     setRepos((list) => [...(list ?? []).filter((x) => x.path !== r.path), r].sort((a, b) => (a.path < b.path ? -1 : 1)));
     return r;
   };
-  return { repos, error, add };
+  return { repos, error, add, reload };
 }
 
 export function AddRepo({ add, disabled }: { add: (spec: string) => Promise<RepoInfo>; disabled?: boolean }) {

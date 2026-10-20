@@ -1,10 +1,11 @@
-import { ChevronRightIcon, EllipsisIcon, FolderTreeIcon, SearchIcon } from "lucide-react";
-import { type FocusEvent, type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronRightIcon, EllipsisIcon, FolderTreeIcon, PlusIcon, SearchIcon } from "lucide-react";
+import { type FocusEvent, type KeyboardEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Kbd } from "@/components/ui/kbd";
 import { Progress } from "@/components/ui/progress";
@@ -26,7 +27,8 @@ import {
   visibleRows,
 } from "../tree";
 import { ActionSheet, useLongPress } from "./shell/phone";
-import { StatusDot, StatusIcon } from "./shell/status";
+import { StatusIcon } from "./shell/status";
+import { useEnter } from "./motion";
 
 interface Props {
   view: StateView;
@@ -38,6 +40,8 @@ interface Props {
   onOpenTerm: (term: TermId) => void;
   /** Opens a plan's board. */
   onPlan: (plan: string) => void;
+  /** Starts a new plan; the empty tree offers it. */
+  onNew?: () => void;
 }
 
 const HOVER_DELAY = 400;
@@ -49,7 +53,7 @@ function tokens(n: number): string {
 }
 
 /** The plan/agent/terminal tree in the sidebar (UI design 4.1, left). Must sit inside a SidebarProvider. */
-export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpenTerm, onPlan }: Props) {
+export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpenTerm, onPlan, onNew }: Props) {
   const { isMobile, setOpenMobile } = useSidebar();
   const now = useNow();
   const [query, setQuery] = useState("");
@@ -61,6 +65,8 @@ export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpe
   const rootRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const items = useRef(new Map<string, HTMLLIElement>());
+  const enter = useEnter();
+  const uid = useId();
 
   const all = useMemo(() => buildTree(view), [view]);
   const nodes = useMemo(() => filterTree(all, query), [all, query]);
@@ -212,6 +218,13 @@ export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpe
           <EmptyTitle>Nothing yet</EmptyTitle>
           <EmptyDescription>No plans or terminals yet.</EmptyDescription>
         </EmptyHeader>
+        {onNew && !readOnly && (
+          <EmptyContent>
+            <Button size="sm" onClick={onNew}>
+              <PlusIcon /> New plan
+            </Button>
+          </EmptyContent>
+        )}
       </Empty>
     );
 
@@ -224,17 +237,21 @@ export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpe
       "aria-level": level,
       "aria-expanded": kids ? expanded : undefined,
       "aria-selected": n.key === selected,
-      "aria-label": n.label,
+      // The visible extras are part of the name (WCAG 2.5.3, label in name).
+      "aria-label": [n.label, n.badge, n.detail, n.needs > 0 ? `${n.needs} need you` : null].filter(Boolean).join(" "),
+      // The status icon's shape and label, not only its color, carry the state.
+      "aria-describedby": n.kind === "group" ? undefined : `${uid}-${n.key}-status`,
       tabIndex: current?.node.key === n.key ? 0 : -1,
       "data-key": n.key,
       ref: (el: HTMLLIElement | null) => {
+        enter(n.key, el);
         if (el) items.current.set(n.key, el);
         else items.current.delete(n.key);
       },
       onFocus: (e: FocusEvent<HTMLLIElement>) => {
         if (e.target === e.currentTarget) setFocus(n.key);
       },
-      className: "group/item outline-none",
+      className: "group/item outline-none [&:focus-visible>*:first-child]:ring-2 [&:focus-visible>*:first-child]:ring-sidebar-ring",
     } as const;
     const label = (
       <span
@@ -250,7 +267,6 @@ export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpe
     const rowProps = {
       className: cn(
         "flex cursor-pointer items-center gap-2 rounded-md pr-1 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-        "group-focus-visible/item:ring-2 group-focus-visible/item:ring-sidebar-ring",
         n.key === selected && "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
         n.dim && "opacity-60",
         isMobile ? "h-11 select-none [-webkit-touch-callout:none]" : "h-8",
@@ -282,16 +298,24 @@ export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpe
         ) : (
           <span aria-hidden className="-mr-1 size-4 shrink-0" />
         )}
-        {n.kind === "group" ? null : <StatusDot status={n.status} />}
+        {n.kind === "group" ? null : (
+          <>
+            <StatusIcon status={n.status} />
+            <span id={`${uid}-${n.key}-status`} className="sr-only">
+              {n.status.label}
+            </span>
+          </>
+        )}
         {!isMobile && (n.agent || n.task) ? <Preview node={n} now={now} trigger={label} /> : label}
         {n.stalled && (
           <span aria-hidden className="shrink-0 text-xs text-status-stalled">
             ⚠
           </span>
         )}
+        {/* Spaces between the parts, so the row's text reads as words (flex ignores them). */}{" "}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          {n.badge && <span className="rounded-sm border px-1 text-[0.625rem] leading-4 text-muted-foreground">{n.badge}</span>}
-          {n.detail && <span className="text-xs text-muted-foreground tabular-nums">{n.detail}</span>}
+          {n.badge && <span className="rounded-sm border px-1 text-[0.625rem] leading-4 text-muted-foreground">{n.badge}</span>}{" "}
+          {n.detail && <span className="text-xs text-muted-foreground tabular-nums">{n.detail}</span>}{" "}
           {n.needs > 0 && (
             <span
               aria-label={`${n.needs} need you`}

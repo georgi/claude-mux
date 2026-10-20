@@ -53,8 +53,8 @@ test("write a draft plan with one task by hand", async ({ page }) => {
   await expect(page.locator('[data-column="todo"] [data-task="T-0001"]')).toContainText("Docs");
 
   // The tree shows the plan as a draft.
-  const row = page.getByRole("treeitem", { name: "hand plan", exact: true });
-  await expect(row.getByText("Draft", { exact: true })).toBeVisible();
+  const row = page.getByRole("treeitem", { name: /hand plan/ }).first();
+  await expect(row).toContainText(/draft/i);
   const body = await page.request.get(`${server.url}${new URL(page.url()).hash.replace("#/board/", "/v1/plans/")}/body`, { headers: { "X-Cmux": "1" } });
   expect(((await body.json()) as { text: string }).text).toContain("Write the **docs**.");
 });

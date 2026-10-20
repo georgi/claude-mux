@@ -24,6 +24,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { isIos, isStandalone, useInstall } from "../../pwa";
 import { formatRoute, type Route } from "../../route";
 import type { Model } from "../../store";
+import { PAGE_HEADING } from "../motion";
 import { ConnBadge } from "./conn-badge";
 
 /** One step of the breadcrumb: its text and where it goes. */
@@ -38,6 +39,33 @@ function subName(a: AgentView): string {
 }
 
 /** Plan › task › sub-agent for an agent, the plan for a board, the title for a terminal. */
+/** The page heading for a route: the current crumb, else the view's name. */
+export function titleFor(crumbs: Crumb[], route: Route, phone: boolean, server: string): string {
+  if (crumbs.length) return crumbs[crumbs.length - 1].label;
+  switch (route.view) {
+    case "agent":
+      return route.agent;
+    case "term":
+      return `terminal ${route.term}`;
+    case "board":
+      return route.plan;
+    case "new":
+      return "New plan";
+    case "settings":
+      return "Settings";
+    case "plans":
+      return "Plans";
+    case "live":
+      return "Live activity";
+    case "agents":
+      return "Agents";
+    case "needs":
+      return "Needs you";
+    case "home":
+      return phone ? "Needs you" : server;
+  }
+}
+
 export function crumbsFor(v: StateView | null, route: Route): Crumb[] {
   if (!v) return [];
   const planCrumb = (id: string): Crumb[] => {
@@ -112,6 +140,8 @@ export function Crumbs({ crumbs, phone }: { crumbs: Crumb[]; phone: boolean }) {
 
 interface Props {
   m: Model;
+  /** The page heading: route changes move focus here (motion.ts). */
+  title: string;
   crumbs: Crumb[];
   seen: boolean;
   phone: boolean;
@@ -124,7 +154,7 @@ interface Props {
   onSignOut: () => void;
 }
 
-export function Header({ m, crumbs, seen, phone, wide, readOnly, needsCount, onNeeds, onNew, onSettings, onSignOut }: Props) {
+export function Header({ m, title, crumbs, seen, phone, wide, readOnly, needsCount, onNeeds, onNew, onSettings, onSignOut }: Props) {
   const install = useInstall();
   const iosHint = !install && isIos() && !isStandalone();
   const clients = m.presence.length;
@@ -136,7 +166,9 @@ export function Header({ m, crumbs, seen, phone, wide, readOnly, needsCount, onN
           <Separator orientation="vertical" className="h-4" />
         </>
       )}
-      <h1 className={crumbs.length ? "sr-only" : "min-w-0 truncate text-sm font-medium"}>{m.server?.name ?? "cmux"}</h1>
+      <h1 id={PAGE_HEADING} tabIndex={-1} className={crumbs.length ? "sr-only" : "min-w-0 truncate rounded-sm text-sm font-medium"}>
+        {title}
+      </h1>
       <Crumbs crumbs={crumbs} phone={phone} />
       <ConnBadge status={m.conn} seen={seen} />
       {!phone && m.conn === "open" && (

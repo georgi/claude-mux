@@ -71,6 +71,22 @@ describe("Settings devices", () => {
     expect(await screen.findByText("Saved")).toBeTruthy();
   });
 
+  it("retries a failed device load", async () => {
+    let fail = true;
+    const api = fakeApi({
+      devices: async () => {
+        if (fail) throw new Error("server down");
+        return { devices: [device("d1", "Work laptop", { current: true })] };
+      },
+    });
+    render(<Settings api={api} />);
+    expect(await screen.findByText("server down")).toBeTruthy();
+    fail = false;
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("This device")).toBeTruthy();
+    expect(screen.queryByText("server down")).toBeNull();
+  });
+
   it("signs out after revoking this device", async () => {
     const onSignedOut = vi.fn();
     const api = fakeApi({ devices: async () => ({ devices: [device("d1", "Work laptop", { current: true })] }) });

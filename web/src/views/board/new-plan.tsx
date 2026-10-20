@@ -10,11 +10,12 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { FieldError } from "./field-error";
 import { MarkdownField } from "./markdown-field";
 import { AddRepo, useRepos } from "./repos";
-import { errText } from "./state";
+import { errText, LoadError } from "./state";
 
 interface Picked {
   path: string;
@@ -103,7 +104,7 @@ export function NewPlan({
   onCreated: (plan: string) => void;
   onTerminal?: (term: number) => void;
 }) {
-  const { repos, error: repoError, add } = useRepos(api);
+  const { repos, error: repoError, add, reload: reloadRepos } = useRepos(api);
   const [title, setTitle] = useState("");
   const [picked, setPicked] = useState<Picked[]>([]);
   const [body, setBody] = useState("");
@@ -198,8 +199,13 @@ export function NewPlan({
 
             <div className="flex flex-col gap-2">
               <span className="text-sm font-medium">Repositories</span>
-              {repoError && <p className="text-sm text-destructive">{repoError}</p>}
-              {repos === null && !repoError && <p className="text-sm text-muted-foreground">Loading…</p>}
+              {repoError && <LoadError text={repoError} onRetry={reloadRepos} />}
+              {repos === null && !repoError && (
+                <div className="flex flex-col gap-2" role="status" aria-label="Loading the repositories">
+                  <Skeleton className="h-9 w-full" />
+                  <Skeleton className="h-9 w-full" />
+                </div>
+              )}
               {repos?.length === 0 && <p className="text-sm text-muted-foreground">The server knows no repositories yet. Add one below.</p>}
               {!!repos?.length && <RepoPicker repos={repos} picked={picked} onToggle={toggle} disabled={readOnly} invalid={!!errors.repos} />}
               <FieldError id="plan-repos-error">{errors.repos}</FieldError>

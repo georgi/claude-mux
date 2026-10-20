@@ -1,6 +1,6 @@
 import { CheckIcon, CircleAlertIcon } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { errText } from "../board/state";
+import { errText, LoadError } from "../board/state";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -72,12 +72,15 @@ export function SaveState({ save, className }: { save: Save; className?: string 
   );
 }
 
-export function Err({ text }: { text: string | null }) {
-  return text ? (
+/** A load error; with `onRetry` it gets a Retry button. */
+export function Err({ text, onRetry }: { text: string | null; onRetry?: () => void }) {
+  if (!text) return null;
+  if (onRetry) return <LoadError text={text} onRetry={onRetry} />;
+  return (
     <p role="alert" className="text-sm text-destructive">
       {text}
     </p>
-  ) : null;
+  );
 }
 
 /** One settings section: a card with a title, a one-line description and actions on the right. */

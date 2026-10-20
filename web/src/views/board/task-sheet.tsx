@@ -26,7 +26,7 @@ import { ciStatus } from "@/lib/status";
 import { relativeTime, useNow } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { StatusIcon } from "../shell/status";
-import { errText, TaskBadge } from "./state";
+import { errText, LoadError, TaskBadge } from "./state";
 import { agentsOf, PrLink, waitingOn } from "./task-card";
 
 /** The states that may move to blocked (cmux-core `TaskState::allowed_next`). */
@@ -157,6 +157,7 @@ function TaskBodyView({ t, view, api, readOnly, onOpenAgent }: { t: TaskView } &
   const [force, setForce] = useState(false);
   // Fetch again whenever the summary says the detail moved.
   const stamp = `${t.state}|${t.criteria_done}/${t.criteria_total}|${t.notes}|${t.attempt}|${t.title}`;
+  const [n, setN] = useState(0);
   useEffect(() => {
     let live = true;
     setError(null);
@@ -167,7 +168,7 @@ function TaskBodyView({ t, view, api, readOnly, onOpenAgent }: { t: TaskView } &
     return () => {
       live = false;
     };
-  }, [api, t.plan, t.id, stamp]);
+  }, [api, t.plan, t.id, stamp, n]);
 
   const tasks = view.tasks.filter((x) => x.plan === t.plan);
   const { agent } = agentsOf(t, view);
@@ -247,7 +248,7 @@ function TaskBodyView({ t, view, api, readOnly, onOpenAgent }: { t: TaskView } &
         )}
 
         {error && !d ? (
-          <p className="text-sm text-destructive">{error}</p>
+          <LoadError text={error} onRetry={() => setN((x) => x + 1)} />
         ) : !d ? (
           <Loading />
         ) : (

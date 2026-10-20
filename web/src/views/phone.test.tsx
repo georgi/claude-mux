@@ -36,8 +36,8 @@ describe("PhoneTabs", () => {
     const went: string[] = [];
     render(<PhoneTabs tab="agents" count={3} go={(t) => went.push(t)} />);
     const tabs = screen.getAllByRole("button");
-    expect(tabs.map((b) => b.textContent)).toEqual(["3Needs you", "Agents", "Plans", "More"]);
-    expect(screen.getByRole("button", { name: "Needs you, 3" })).toBeTruthy();
+    expect(tabs.map((b) => b.textContent)).toEqual(["3 Needs you", "Agents", "Plans", "More"]);
+    expect(screen.getByRole("button", { name: "3 Needs you" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Agents" }).getAttribute("aria-current")).toBe("page");
     fireEvent.click(screen.getByRole("button", { name: "More" }));
     expect(went).toEqual(["more"]);
@@ -91,7 +91,7 @@ describe("swipe on a needs-you card", () => {
 
   it("opens the card's details in a sheet on a tap", async () => {
     render(<NeedsYou view={view(perm)} api={fakeApi()} nav={nav} phone />);
-    fireEvent.click(screen.getByRole("button", { name: "Details: Allow Bash?" }));
+    fireEvent.click(screen.getByRole("button", { name: "Allow Bash?" }));
     const sheet = await screen.findByRole("dialog");
     expect(sheet.textContent).toContain("cargo test -p perms");
     expect([...sheet.querySelectorAll("button")].map((b) => b.textContent)).toContain("Allow");
@@ -126,7 +126,7 @@ describe("Tree on a phone", () => {
         />
       </SidebarProvider>,
     );
-    const row = screen.getByRole("treeitem", { name: "T-0001 Add pagination" }).firstElementChild!;
+    const row = screen.getByRole("treeitem", { name: "T-0001 Add pagination todo" }).firstElementChild!;
     fireEvent.pointerDown(row, { pointerId: 1, pointerType: "touch", clientX: 10, clientY: 10 });
     act(() => vi.advanceTimersByTime(LONG_PRESS_MS + 10));
     fireEvent.pointerUp(row, { pointerId: 1, pointerType: "touch" });

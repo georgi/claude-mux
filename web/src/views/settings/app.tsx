@@ -11,6 +11,7 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle }
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { MiddlePath } from "../shell/path";
 
 const THEMES: [Theme, string, typeof SunIcon][] = [
   ["light", "Light", SunIcon],
@@ -67,7 +68,7 @@ export function App() {
 }
 
 export function Repositories({ api, readOnly }: { api: Api; readOnly?: boolean }) {
-  const { repos, error, add } = useRepos(api);
+  const { repos, error, add, reload } = useRepos(api);
   const [save, run] = useSave();
   // AddRepo shows its own toast too; the inline state stays by the card title.
   const added = (spec: string) => {
@@ -77,14 +78,16 @@ export function Repositories({ api, readOnly }: { api: Api; readOnly?: boolean }
   };
   return (
     <Section id="repositories" title="Repositories" description="Repositories on the server that plans can use." actions={<SaveState save={save} />}>
-      <Err text={error} />
+      <Err text={error} onRetry={reload} />
       {!repos && !error && <Skeleton className="h-14 w-full" />}
       {repos?.length === 0 && <p className="text-sm text-muted-foreground">No repositories yet. Add one by its path or URL.</p>}
       <ItemGroup className="gap-2">
         {repos?.map((r) => (
-          <Item key={r.path} variant="outline" size="sm">
+          <Item key={r.path} role="listitem" variant="outline" size="sm">
             <ItemContent>
-              <ItemTitle className="font-mono text-xs break-all">{r.path}</ItemTitle>
+              <ItemTitle className="w-full min-w-0 font-mono text-xs">
+                <MiddlePath value={r.path} />
+              </ItemTitle>
               {r.remote_url && <ItemDescription className="break-all">{r.remote_url}</ItemDescription>}
             </ItemContent>
             <ItemActions>

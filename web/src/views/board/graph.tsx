@@ -1,6 +1,8 @@
+import { WorkflowIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TaskView } from "../../api/types";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import { Button } from "@/components/ui/button";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { taskStatus } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import { layout, NODE_H, NODE_W } from "./dag";
@@ -14,7 +16,7 @@ function clip(s: string, n: number): string {
 }
 
 /** The plan's tasks as a dependency graph: deps on the left, click a task to open it. */
-export function TaskGraph({ tasks, onOpen }: { tasks: TaskView[]; onOpen: (task: string) => void }) {
+export function TaskGraph({ tasks, onOpen, onList }: { tasks: TaskView[]; onOpen: (task: string) => void; onList?: () => void }) {
   const shape = useMemo(
     () => layout(tasks.map((t) => ({ id: t.id, deps: t.deps }))),
     // Only ids and deps move the layout; a state change only recolors.
@@ -54,11 +56,19 @@ export function TaskGraph({ tasks, onOpen }: { tasks: TaskView[]; onOpen: (task:
     return (
       <Empty className="border">
         <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <WorkflowIcon />
+          </EmptyMedia>
           <EmptyTitle>Dependency cycle</EmptyTitle>
           <EmptyDescription>
             {shape.cycle.join(" → ")} depend on each other, so the graph cannot be drawn. Use the List view.
           </EmptyDescription>
         </EmptyHeader>
+        {onList && (
+          <EmptyContent>
+            <Button onClick={onList}>Show the list</Button>
+          </EmptyContent>
+        )}
       </Empty>
     );
 
@@ -106,7 +116,7 @@ export function TaskGraph({ tasks, onOpen }: { tasks: TaskView[]; onOpen: (task:
               tabIndex={0}
               aria-label={`${t.id} ${t.title}, ${st.label}`}
               transform={`translate(${n.x},${n.y})`}
-              className="group cursor-pointer outline-none"
+              className="group cursor-pointer outline-none focus-visible:[&>rect]:stroke-ring focus-visible:[&>rect]:stroke-[3]"
               onClick={open}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
@@ -120,7 +130,7 @@ export function TaskGraph({ tasks, onOpen }: { tasks: TaskView[]; onOpen: (task:
                 height={NODE_H}
                 rx={10}
                 strokeWidth={1.5}
-                className={cn(STATUS_NODE[st.token], "group-hover:stroke-[2.5] group-focus-visible:stroke-[3]")}
+                className={cn(STATUS_NODE[st.token], "group-hover:stroke-[2.5]")}
               />
               <text x={12} y={21} className="fill-muted-foreground font-mono text-[11px]">
                 {t.id} · {st.label}

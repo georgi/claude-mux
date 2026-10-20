@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatEntry, ItemKind } from "../api/types";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { agent, entry, fakeApi, item, PLAN, plan, state, task } from "../fixtures";
 import { ChatLog, Composer } from "./Chat";
 import { PendingRequest, pendingFor } from "./chat/Pending";
+import { ErrorBoundary } from "./boundary";
 import { Pairing } from "./Pairing";
 import { Tree } from "./Tree";
 
@@ -215,7 +216,7 @@ describe("Composer", () => {
     await waitFor(() => expect(api.calls).toEqual([["message", `${PLAN}/T-0002`, "use cursors", false]]));
     await waitFor(() => expect(box.value).toBe(""));
     fireEvent.change(box, { target: { value: "stop, wrong branch" } });
-    fireEvent.click(screen.getByRole("button", { name: "Steer: interrupt the agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Steer" }));
     fireEvent.click(screen.getByRole("button", { name: "Steer now" }));
     await waitFor(() => expect(api.calls[1]).toEqual(["message", `${PLAN}/T-0002`, "stop, wrong branch", true]));
     await waitFor(() => expect(box.value).toBe(""));
@@ -400,12 +401,12 @@ describe("Tree", () => {
     setup();
     expect(screen.getByRole("tree", { name: "Agents and plans" })).toBeTruthy();
     expect(screen.getAllByRole("treeitem").map((t) => [t.getAttribute("aria-label"), t.getAttribute("aria-level")])).toEqual([
-      ["demo", "1"],
+      ["demo Accepted 0/1", "1"],
       ["executor", "2"],
-      ["T-0001 Add pagination", "2"],
+      ["T-0001 Add pagination todo", "2"],
       ["tests", "3"],
     ]);
-    expect(item("demo").getAttribute("aria-expanded")).toBe("true");
+    expect(item("demo Accepted 0/1").getAttribute("aria-expanded")).toBe("true");
     expect(item("executor").hasAttribute("aria-expanded")).toBe(false);
     // Roving tabindex: one row is in the tab order.
     expect(screen.getAllByRole("treeitem").filter((t) => t.tabIndex === 0)).toHaveLength(1);
@@ -413,26 +414,26 @@ describe("Tree", () => {
 
   it("moves with the arrow keys, collapses, expands and opens on Enter", async () => {
     const { opened, plans } = setup();
-    item("demo").focus();
-    fireEvent.keyDown(item("demo"), { key: "ArrowDown" });
+    item("demo Accepted 0/1").focus();
+    fireEvent.keyDown(item("demo Accepted 0/1"), { key: "ArrowDown" });
     expect(focused()).toBe("executor");
     expect(item("executor").tabIndex).toBe(0);
     fireEvent.keyDown(item("executor"), { key: "ArrowDown" });
-    expect(focused()).toBe("T-0001 Add pagination");
-    fireEvent.keyDown(item("T-0001 Add pagination"), { key: "ArrowLeft" });
-    await waitFor(() => expect(item("T-0001 Add pagination").getAttribute("aria-expanded")).toBe("false"));
+    expect(focused()).toBe("T-0001 Add pagination todo");
+    fireEvent.keyDown(item("T-0001 Add pagination todo"), { key: "ArrowLeft" });
+    await waitFor(() => expect(item("T-0001 Add pagination todo").getAttribute("aria-expanded")).toBe("false"));
     expect(screen.queryByRole("treeitem", { name: "tests" })).toBeNull();
-    fireEvent.keyDown(item("T-0001 Add pagination"), { key: "ArrowRight" });
+    fireEvent.keyDown(item("T-0001 Add pagination todo"), { key: "ArrowRight" });
     await waitFor(() => expect(screen.getByRole("treeitem", { name: "tests" })).toBeTruthy());
-    fireEvent.keyDown(item("T-0001 Add pagination"), { key: "ArrowRight" });
+    fireEvent.keyDown(item("T-0001 Add pagination todo"), { key: "ArrowRight" });
     expect(focused()).toBe("tests");
     fireEvent.keyDown(item("tests"), { key: "ArrowLeft" });
-    expect(focused()).toBe("T-0001 Add pagination");
-    fireEvent.keyDown(item("T-0001 Add pagination"), { key: "Enter" });
+    expect(focused()).toBe("T-0001 Add pagination todo");
+    fireEvent.keyDown(item("T-0001 Add pagination todo"), { key: "Enter" });
     expect(opened).toEqual([[`${PLAN}/T-0001`, null]]);
-    fireEvent.keyDown(item("T-0001 Add pagination"), { key: "Home" });
-    expect(focused()).toBe("demo");
-    fireEvent.keyDown(item("demo"), { key: "Enter" });
+    fireEvent.keyDown(item("T-0001 Add pagination todo"), { key: "Home" });
+    expect(focused()).toBe("demo Accepted 0/1");
+    fireEvent.keyDown(item("demo Accepted 0/1"), { key: "Enter" });
     expect(plans).toEqual([PLAN]);
   });
 
@@ -441,8 +442,8 @@ describe("Tree", () => {
     const filter = screen.getByLabelText("Filter the tree") as HTMLInputElement;
     fireEvent.change(filter, { target: { value: "tests" } });
     expect(screen.getAllByRole("treeitem").map((t) => t.getAttribute("aria-label"))).toEqual([
-      "demo",
-      "T-0001 Add pagination",
+      "demo Accepted 0/1",
+      "T-0001 Add pagination todo",
       "tests",
     ]);
     fireEvent.keyDown(filter, { key: "Escape" });
@@ -457,5 +458,44 @@ describe("Tree", () => {
     const menu = await screen.findByRole("menu");
     const labels = [...menu.querySelectorAll('[role="menuitem"]')].map((m) => m.textContent);
     expect(labels).toEqual(["Open chat", "Copy path"]);
+  });
+});
+
+describe("ErrorBoundary", () => {
+  let fail = true;
+  function Flaky() {
+    if (fail) throw new Error("render broke");
+    return <p>rendered</p>;
+  }
+
+  it("shows Retry when a child throws, and Retry renders the child again", async () => {
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    fail = true;
+    render(
+      <ErrorBoundary>
+        <Flaky />
+      </ErrorBoundary>,
+    );
+    expect(screen.getByRole("alert").textContent).toContain("render broke");
+    const retry = screen.getByRole("button", { name: "Retry" });
+    fail = false;
+    fireEvent.click(retry);
+    expect(await screen.findByText("rendered")).toBeTruthy();
+    quiet.mockRestore();
+  });
+
+  it("offers Reload when a lazy chunk fails to load", () => {
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+    function Chunk(): never {
+      throw new TypeError("Failed to fetch dynamically imported module: /assets/Board-x.js");
+    }
+    render(
+      <ErrorBoundary>
+        <Chunk />
+      </ErrorBoundary>,
+    );
+    expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    quiet.mockRestore();
   });
 });

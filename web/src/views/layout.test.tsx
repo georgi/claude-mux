@@ -46,17 +46,17 @@ describe("TokenUsageSummary", () => {
   it("labels all usage categories as cumulative tokens without claiming context occupancy", () => {
     const tokens: TokenUsage = { input: 30_000, output: 9_000, cache_read: 60_000, cache_write: 10_000 };
     render(<TokenUsageSummary tokens={tokens} />);
-    expect(screen.getByRole("button", { name: "Cumulative token usage: 109,000 tokens" }).textContent).toBe("109k tokens total");
+    expect(screen.getByRole("button", { name: "109k tokens total, cumulative: 109,000 tokens" }).textContent).toBe("109k tokens total");
     expect(screen.queryByRole("meter")).toBeNull();
     expect(screen.queryByText(/%/)).toBeNull();
   });
 
   it("keeps displaying accumulated requests above a context window without capping them", () => {
     const { rerender } = render(<TokenUsageSummary tokens={{ input: 80_000, output: 0, cache_read: 0, cache_write: 0 }} />);
-    expect(screen.getByRole("button", { name: "Cumulative token usage: 80,000 tokens" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "80k tokens total, cumulative: 80,000 tokens" })).toBeTruthy();
     // Three requests of 80k each are 240k lifetime usage, not a full context window.
     rerender(<TokenUsageSummary tokens={{ input: 80_000, output: 0, cache_read: 160_000, cache_write: 0 }} />);
-    expect(screen.getByRole("button", { name: "Cumulative token usage: 240,000 tokens" }).textContent).toBe("240k tokens total");
+    expect(screen.getByRole("button", { name: "240k tokens total, cumulative: 240,000 tokens" }).textContent).toBe("240k tokens total");
     expect(screen.queryByRole("meter")).toBeNull();
     expect(screen.queryByText(/%/)).toBeNull();
   });
