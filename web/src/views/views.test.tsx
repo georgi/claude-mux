@@ -104,7 +104,10 @@ describe("tool cards", () => {
   it("keeps every line of a Bash command accessible while running and after completion", async () => {
     const command = "python3 - <<'PY'\nprint('second line')\nPY";
     const bash = call("b", "Bash", { command });
-    const { rerender } = render(<ChatLog entries={[bash]} />);
+    const { rerender } = render(<ChatLog entries={[call("single", "Bash", { command: "pwd" })]} />);
+    await screen.findByText("$ pwd");
+    expect(screen.queryByRole("button", { name: "Bash output" })).toBeNull();
+    rerender(<ChatLog entries={[bash]} />);
     const toggle = await screen.findByRole("button", { name: "Bash output" });
     fireEvent.click(toggle);
     await waitFor(() => expect(screen.getByLabelText("Bash command").textContent).toBe(command));

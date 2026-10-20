@@ -86,18 +86,22 @@ export function Bash(p: ToolProps) {
         </>
       }
     >
-      {command.includes("\n") && (
-        <CodeBlock size="sm">
-          <CodeBlockHeader>
-            <CodeBlockTitle>Command</CodeBlockTitle>
-          </CodeBlockHeader>
-          <CodeBlockCopyButton value={command} aria-label="Copy command" className="absolute end-1 top-1 z-10 bg-background" />
-          <CodeBlockContent wrap className={CLAMP} aria-label="Bash command">
-            {command}
-          </CodeBlockContent>
-        </CodeBlock>
+      {(command.includes("\n") || p.row.result !== null) && (
+        <>
+          {command.includes("\n") && (
+            <CodeBlock size="sm">
+              <CodeBlockHeader>
+                <CodeBlockTitle>Command</CodeBlockTitle>
+              </CodeBlockHeader>
+              <CodeBlockCopyButton value={command} aria-label="Copy command" className="absolute end-1 top-1 z-10 bg-background" />
+              <CodeBlockContent wrap className={CLAMP} aria-label="Bash command">
+                {command}
+              </CodeBlockContent>
+            </CodeBlock>
+          )}
+          {p.row.result !== null && <Terminal {...p} command={command} />}
+        </>
       )}
-      {p.row.result !== null && <Terminal {...p} command={command} />}
     </ToolCard>
   );
 }
