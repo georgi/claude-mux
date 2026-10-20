@@ -26,7 +26,8 @@ export function TokenUsageSummary({ tokens, className }: { tokens: TokenUsage; c
         render={
           <button
             type="button"
-            aria-label={`Cumulative token usage: ${fmt(total)} tokens`}
+            // The name starts with the visible text (WCAG label in name).
+            aria-label={`${short(total)} tokens total, cumulative: ${fmt(total)} tokens`}
             className={cn("flex shrink-0 items-center gap-1.5 rounded-md px-1 text-xs text-muted-foreground", className)}
           />
         }
