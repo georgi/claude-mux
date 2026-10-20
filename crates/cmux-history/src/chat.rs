@@ -268,7 +268,7 @@ impl Cut {
         let (out, cut) = match self {
             Cut::Stream => {
                 let out = cut(text, TOOL_RESULT_CHARS);
-                let was_cut = out.len() != text.len();
+                let was_cut = out != text;
                 (out, was_cut)
             }
             Cut::Full => cap(text, FULL_BYTES),
