@@ -1,5 +1,7 @@
 import type { PlanState, TaskState } from "../../api/types";
+import { RotateCwIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { planStatus, type Status, taskStatus } from "@/lib/status";
 import { STATUS_TEXT } from "../shell/status";
 
@@ -24,4 +26,16 @@ export function PlanBadge({ state, paused }: { state: PlanState; paused?: boolea
 
 export function errText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/** A failed load: the error and a button that loads again. */
+export function LoadError({ text, onRetry }: { text: string; onRetry: () => void }) {
+  return (
+    <div role="alert" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-destructive">
+      <span className="min-w-0">{text}</span>
+      <Button variant="outline" size="sm" onClick={onRetry}>
+        <RotateCwIcon /> Retry
+      </Button>
+    </div>
+  );
 }

@@ -143,3 +143,38 @@ test.describe("on a phone", () => {
     await audit(page, "phone main view");
   });
 });
+
+test("a route change moves focus to the page heading; the palette gives focus back", async ({ page }) => {
+  await pair(page);
+  await ensurePlan(page);
+  const newPlan = page.locator("header").first().getByRole("button", { name: "New plan" });
+  await newPlan.focus();
+  await page.keyboard.press("Control+K");
+  const palette = page.getByRole("dialog", { name: "Command palette" });
+  await expect(palette).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(palette).toBeHidden();
+  await expect(newPlan).toBeFocused();
+
+  await newPlan.click();
+  const heading = page.getByRole("heading", { level: 1 });
+  await expect(heading).toHaveText("New plan");
+  await expect(heading).toBeFocused();
+});
+
+// Contrast and density: each width in both themes, with no sideways scroll.
+for (const width of [360, 768, 1280, 1920]) {
+  test(`main view and board at ${width} px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await pair(page);
+    const id = await ensurePlan(page);
+    for (const hash of ["#/", `#/board/${encodeURIComponent(id)}`]) {
+      await page.goto(`${server.url}/${hash}`);
+      await expect(page.getByRole("status").filter({ hasText: "Connected" })).toBeVisible();
+      if (hash !== "#/") await expect(page.getByRole("progressbar", { name: "Plan progress" })).toBeVisible();
+      const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      expect(over, `${hash} scrolls sideways at ${width} px`).toBeLessThanOrEqual(0);
+      await audit(page, `${hash} at ${width} px`);
+    }
+  });
+}

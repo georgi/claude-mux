@@ -20,14 +20,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { agentGlyph } from "../../tree";
-import { errText, PlanBadge } from "./state";
+import { errText, LoadError, PlanBadge } from "./state";
 
 /** The plan file, fetched once the accordion opens. */
 function PlanBody({ api, plan }: { api: Api; plan: string }) {
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [n, setN] = useState(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: n only triggers a reload.
   useEffect(() => {
     let live = true;
+    setError(null);
     api
       .planBody(plan)
       .then((b) => live && setText(b.text))
@@ -35,8 +38,8 @@ function PlanBody({ api, plan }: { api: Api; plan: string }) {
     return () => {
       live = false;
     };
-  }, [api, plan]);
-  if (error) return <p className="text-sm text-destructive">{error}</p>;
+  }, [api, plan, n]);
+  if (error) return <LoadError text={error} onRetry={() => setN((x) => x + 1)} />;
   if (text === null)
     return (
       <div className="flex flex-col gap-2" role="status" aria-label="Loading the plan">

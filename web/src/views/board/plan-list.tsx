@@ -1,7 +1,7 @@
-import { PlusIcon } from "lucide-react";
+import { ClipboardListIcon, PlusIcon } from "lucide-react";
 import type { PlanView, StateView } from "../../api/types";
 import { Button } from "@/components/ui/button";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "@/components/ui/item";
 import { Progress } from "@/components/ui/progress";
 import { PlanBadge } from "./state";
@@ -19,9 +19,17 @@ export function PlanList({ view, onOpen, onNew }: { view: StateView; onOpen: (pl
       {plans.length === 0 ? (
         <Empty>
           <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <ClipboardListIcon />
+            </EmptyMedia>
             <EmptyTitle>No plans yet</EmptyTitle>
             <EmptyDescription>Create a plan to start a team of agents.</EmptyDescription>
           </EmptyHeader>
+          <EmptyContent>
+            <Button onClick={onNew}>
+              <PlusIcon /> New plan
+            </Button>
+          </EmptyContent>
         </Empty>
       ) : (
         <ItemGroup className="gap-2">
@@ -46,9 +54,11 @@ export function PlanList({ view, onOpen, onNew }: { view: StateView; onOpen: (pl
           })}
         </ItemGroup>
       )}
-      <Button className="self-start" onClick={onNew}>
-        <PlusIcon /> New plan
-      </Button>
+      {plans.length > 0 && (
+        <Button className="self-start" onClick={onNew}>
+          <PlusIcon /> New plan
+        </Button>
+      )}
     </section>
   );
 }

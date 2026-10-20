@@ -68,7 +68,7 @@ export function App() {
 }
 
 export function Repositories({ api, readOnly }: { api: Api; readOnly?: boolean }) {
-  const { repos, error, add } = useRepos(api);
+  const { repos, error, add, reload } = useRepos(api);
   const [save, run] = useSave();
   // AddRepo shows its own toast too; the inline state stays by the card title.
   const added = (spec: string) => {
@@ -78,7 +78,7 @@ export function Repositories({ api, readOnly }: { api: Api; readOnly?: boolean }
   };
   return (
     <Section id="repositories" title="Repositories" description="Repositories on the server that plans can use." actions={<SaveState save={save} />}>
-      <Err text={error} />
+      <Err text={error} onRetry={reload} />
       {!repos && !error && <Skeleton className="h-14 w-full" />}
       {repos?.length === 0 && <p className="text-sm text-muted-foreground">No repositories yet. Add one by its path or URL.</p>}
       <ItemGroup className="gap-2">

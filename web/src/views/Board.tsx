@@ -1,9 +1,10 @@
-import { ColumnsIcon, ListIcon, NetworkIcon } from "lucide-react";
+import { ColumnsIcon, ListChecksIcon, ListIcon, NetworkIcon } from "lucide-react";
 import { lazy, Suspense, useState } from "react";
 import type { Api } from "../api/http";
 import type { StateView, TaskState, TaskView } from "../api/types";
 import { useSpinner } from "../hooks";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import { Button } from "@/components/ui/button";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { ItemGroup } from "@/components/ui/item";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -141,13 +142,21 @@ export function Board({ view, plan, api, readOnly, onOpenAgent }: BoardProps) {
         !draft && (
           <Empty>
             <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <ListChecksIcon />
+              </EmptyMedia>
               <EmptyTitle>No tasks yet</EmptyTitle>
               <EmptyDescription>The executor adds tasks as the plan takes shape.</EmptyDescription>
             </EmptyHeader>
+            {executor && (
+              <EmptyContent>
+                <Button onClick={() => onOpenAgent(executor.id)}>Open the executor</Button>
+              </EmptyContent>
+            )}
           </Empty>
         )
       ) : mode === "graph" ? (
-        <TaskGraph tasks={tasks} onOpen={setOpen} />
+        <TaskGraph tasks={tasks} onOpen={setOpen} onList={() => setMode("list")} />
       ) : mode === "list" ? (
         <List tasks={tasks} view={view} onOpen={setOpen} />
       ) : (

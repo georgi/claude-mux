@@ -52,7 +52,7 @@ export function Devices({ api, readOnly, onSignedOut }: { api: Api; readOnly?: b
   };
   return (
     <Section id="devices" title="Devices" description="Paired browsers. Pair a new one with `cmuxd pair` on the server." actions={<SaveState save={save} />}>
-      <Err text={error} />
+      <Err text={error} onRetry={reload} />
       {!resp && !error && <Skeleton className="h-14 w-full" />}
       {devices?.length === 0 && <p className="text-sm text-muted-foreground">No paired devices.</p>}
       <ItemGroup className="gap-2">

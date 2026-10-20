@@ -213,6 +213,7 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
       onOpenAgent={(agent, mode) => go({ view: "agent", agent, mode })}
       onOpenTerm={(term) => go({ view: "term", term })}
       onPlan={nav.openPlan}
+      onNew={() => go({ view: "new" })}
     />
   ) : null;
   // On a phone the list pulls down to reconnect.
@@ -273,7 +274,7 @@ function Main({ onSignedOut }: { onSignedOut: () => void }) {
       case "plans":
         return <PlanList view={v} onOpen={nav.openPlan} onNew={() => go({ view: "new" })} />;
       case "live":
-        return <Live view={v} onOpen={nav.openAgent} />;
+        return <Live view={v} onOpen={nav.openAgent} onAgents={() => go({ view: "agents" })} />;
       case "agents":
         return tree;
       case "needs":

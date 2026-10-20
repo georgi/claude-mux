@@ -1,10 +1,11 @@
-import { ChevronRightIcon, EllipsisIcon, FolderTreeIcon, SearchIcon } from "lucide-react";
+import { ChevronRightIcon, EllipsisIcon, FolderTreeIcon, PlusIcon, SearchIcon } from "lucide-react";
 import { type FocusEvent, type KeyboardEvent, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Kbd } from "@/components/ui/kbd";
 import { Progress } from "@/components/ui/progress";
@@ -39,6 +40,8 @@ interface Props {
   onOpenTerm: (term: TermId) => void;
   /** Opens a plan's board. */
   onPlan: (plan: string) => void;
+  /** Starts a new plan; the empty tree offers it. */
+  onNew?: () => void;
 }
 
 const HOVER_DELAY = 400;
@@ -50,7 +53,7 @@ function tokens(n: number): string {
 }
 
 /** The plan/agent/terminal tree in the sidebar (UI design 4.1, left). Must sit inside a SidebarProvider. */
-export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpenTerm, onPlan }: Props) {
+export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpenTerm, onPlan, onNew }: Props) {
   const { isMobile, setOpenMobile } = useSidebar();
   const now = useNow();
   const [query, setQuery] = useState("");
@@ -215,6 +218,13 @@ export function Tree({ view, selected, api, readOnly = false, onOpenAgent, onOpe
           <EmptyTitle>Nothing yet</EmptyTitle>
           <EmptyDescription>No plans or terminals yet.</EmptyDescription>
         </EmptyHeader>
+        {onNew && !readOnly && (
+          <EmptyContent>
+            <Button size="sm" onClick={onNew}>
+              <PlusIcon /> New plan
+            </Button>
+          </EmptyContent>
+        )}
       </Empty>
     );
 

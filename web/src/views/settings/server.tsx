@@ -63,7 +63,7 @@ export function Server({ api }: { api: Api }) {
         </Button>
       }
     >
-      <Err text={error} />
+      <Err text={error} onRetry={reload} />
       {!s && !error && <Skeleton className="h-24 w-full" />}
       {s && (
         <>
@@ -90,10 +90,10 @@ export function useSettings(api: Api) {
   return useLoad<SettingsResp>(() => api.settings(), [api]);
 }
 
-export function Limits({ settings: [s, error] }: { settings: ReturnType<typeof useSettings> }) {
+export function Limits({ settings: [s, error, reload] }: { settings: ReturnType<typeof useSettings> }) {
   return (
     <Section id="limits" title="Limits" description="How much runs at once. Set these in config.toml on the server.">
-      <Err text={error} />
+      <Err text={error} onRetry={reload} />
       {!s && !error && <Skeleton className="h-24 w-full" />}
       {s && (
         <KV
@@ -109,10 +109,10 @@ export function Limits({ settings: [s, error] }: { settings: ReturnType<typeof u
   );
 }
 
-export function Claude({ settings: [s, error] }: { settings: ReturnType<typeof useSettings> }) {
+export function Claude({ settings: [s, error, reload] }: { settings: ReturnType<typeof useSettings> }) {
   return (
     <Section id="claude" title="Claude" description="The model and permission mode per agent level. Set these in config.toml.">
-      <Err text={error} />
+      <Err text={error} onRetry={reload} />
       {!s && !error && <Skeleton className="h-24 w-full" />}
       {s && (
         <ItemGroup className="gap-2">
