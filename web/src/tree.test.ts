@@ -114,9 +114,23 @@ describe("rowActions", () => {
   it("offers mutations only on a full device", () => {
     const [p] = buildTree(demo());
     const t1 = p.children[1];
-    expect(rowActions(t1, false).map((a) => a.id)).toEqual(["chat", "terminal", "stop", "resume", "copy_path", "open_pr"]);
+    expect(rowActions(t1, false).map((a) => a.id)).toEqual(["chat", "terminal", "stop", "copy_path", "open_pr"]);
     expect(rowActions(t1, true).map((a) => a.id)).toEqual(["chat", "terminal", "copy_path", "open_pr"]);
     const t2 = p.children[2];
     expect(rowActions(t2, false).map((a) => a.id)).toEqual(["chat", "resume", "copy_branch", "copy_path"]);
+  });
+
+  it.each(["starting", "running"] as const)("offers Stop instead of Resume for a stalled %s agent", (life) => {
+    const node = buildTree(demo())[0].children[1];
+    const actions = rowActions({ ...node, agent: { ...node.agent!, life, stalled: true } }, false).map((a) => a.id);
+    expect(actions).toContain("stop");
+    expect(actions).not.toContain("resume");
+  });
+
+  it("still offers Resume for a stopped agent", () => {
+    const node = buildTree(demo())[0].children[1];
+    const actions = rowActions({ ...node, agent: { ...node.agent!, life: "stopped" } }, false).map((a) => a.id);
+    expect(actions).toContain("resume");
+    expect(actions).not.toContain("stop");
   });
 });
