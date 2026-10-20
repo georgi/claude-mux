@@ -91,7 +91,7 @@ export function AgentPane({ view, agent, mode, phone, conn, store, api, readOnly
           agent={agent.id}
           conn={conn}
           entries={m.chats[agent.id]}
-          activity={agent.activity}
+          activity={agent.life === "running" ? agent.activity : undefined}
           idleSince={agent.idle_since}
           tools={{ agent: agent.id, api, agents: view.agents, cwd: agent.cwd, onOpenAgent }}
         >
@@ -117,7 +117,7 @@ function ChatPane({
   agent: string;
   conn: Conn;
   entries: ChatEntry[] | undefined;
-  activity: Activity;
+  activity: Activity | undefined;
   idleSince: number | null;
   tools: ToolContext;
   children: React.ReactNode[];
