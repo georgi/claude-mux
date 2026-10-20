@@ -133,7 +133,7 @@ export function Board({ view, plan, api, readOnly, onOpenAgent }: BoardProps) {
 
       {draft && (
         <Suspense fallback={<Skeleton className="h-24 w-full" />}>
-          <TaskEditor plan={p} tasks={tasks} api={api} readOnly={readOnly} />
+          <TaskEditor key={p.id} plan={p} tasks={tasks} api={api} readOnly={readOnly} />
         </Suspense>
       )}
 

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { detail, fakeApi, PLAN, plan, state, task } from "../fixtures";
 import { Board } from "./Board";
@@ -36,6 +36,56 @@ describe("deps", () => {
 });
 
 describe("TaskEditor", () => {
+  it("discards the previous plan's task draft before saving a task in another plan", async () => {
+    const a = task("T-0001", { plan: "plan-A", title: "A original" });
+    const b = task("T-0001", { plan: "plan-B", title: "B original" });
+    const view = state({
+      plans: [a, b].map((t) => plan({ id: t.plan, state: "draft", tasks: [t.id] })),
+      tasks: [a, b],
+    });
+    const api = fakeApi();
+    api.task = async (p) => detail(p === a.plan ? a : b, { body: `${p} body` });
+    const board = (p: string) => <Board view={view} plan={p} api={api} onOpenAgent={() => {}} />;
+    const { rerender } = render(board(a.plan));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit T-0001" }));
+    const first = await screen.findByRole("form", { name: "Edit T-0001" });
+    fireEvent.change(within(first).getByLabelText("Task title"), { target: { value: "A edited" } });
+
+    rerender(board(b.plan));
+    expect(screen.queryByRole("form", { name: "Edit T-0001" })).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Edit T-0001" }));
+    const second = await screen.findByRole("form", { name: "Edit T-0001" });
+    expect(within(second).getByLabelText("Task title")).toHaveProperty("value", "B original");
+    fireEvent.change(within(second).getByLabelText("Task title"), { target: { value: "B edited" } });
+    fireEvent.click(within(second).getByRole("button", { name: "Save task" }));
+    await waitFor(() => expect(api.calls.find((c) => c[0] === "patchTask")).toEqual([
+      "patchTask", b.plan, b.id,
+      { title: "B edited", body: "plan-B body", repo: 0, deps: [], state: null },
+    ]));
+  });
+
+  it("ignores a previous plan's pending body load after navigating to another plan", async () => {
+    const plans = ["plan-A", "plan-B"].map((id) => plan({ id, state: "draft" }));
+    const api = fakeApi();
+    let resolveOld!: (body: { text: string }) => void;
+    api.planBody = (p) => p === "plan-A"
+      ? new Promise((resolve) => { resolveOld = resolve; })
+      : Promise.resolve({ text: "B body" });
+    const board = (p: string) => <Board view={state({ plans })} plan={p} api={api} onOpenAgent={() => {}} />;
+    const { rerender } = render(board("plan-A"));
+    fireEvent.click(await screen.findByRole("button", { name: "Plan body" }));
+    await waitFor(() => expect(resolveOld).toBeTruthy());
+    rerender(board("plan-B"));
+    fireEvent.click(await screen.findByRole("button", { name: "Plan body" }));
+    expect(await screen.findByLabelText("Plan body")).toHaveProperty("value", "B body");
+    await act(async () => resolveOld({ text: "A body" }));
+    expect(screen.getByLabelText("Plan body")).toHaveProperty("value", "B body");
+    fireEvent.click(screen.getByRole("button", { name: "Save plan body" }));
+    await waitFor(() => expect(api.calls.find((c) => c[0] === "putPlanBody")).toEqual([
+      "putPlanBody", "plan-B", { text: "B body" },
+    ]));
+  });
+
   it("refuses a dependency that makes a cycle", async () => {
     const api = editorApi();
     render(<TaskEditor plan={draftPlan} tasks={tasks} api={api} />);
