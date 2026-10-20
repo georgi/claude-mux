@@ -77,7 +77,7 @@ describe("NeedsYou cards", () => {
     await waitFor(() => expect(api.calls[0]?.slice(0, 3)).toEqual(["answer", 5, { action: "accept", text: null }]));
   });
 
-  it("shows how long a stalled agent idled, and nudges it", async () => {
+  it("shows how long a stalled agent idled, and steers it with a nudge", async () => {
     const api = fakeApi();
     const v = view("stalled", 5, { agents: [agent("T-0004", { idle_since: 0, stalled: true })] });
     render(<NeedsYou view={v} api={api} nav={nav} now={(3 * 60 + 5) * 60_000} />);
@@ -85,11 +85,30 @@ describe("NeedsYou cards", () => {
     expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["Open", "Nudge", "Dismiss"]);
     fireEvent.click(screen.getByRole("button", { name: "Nudge" }));
     await waitFor(() =>
-      expect(api.calls.map((c) => c.slice(0, 3))).toEqual([
-        ["message", `${PLAN}/T-0004`, NUDGE],
-        ["answer", 5, { action: "dismiss", text: null }],
+      expect(api.calls).toEqual([
+        ["message", `${PLAN}/T-0004`, NUDGE, true],
+        ["answer", 5, { action: "dismiss", text: null }, expect.any(String)],
       ]),
     );
+  });
+
+  it("restores the stalled card when the nudge request fails", async () => {
+    const d = deferred();
+    const api = fakeApi({ message: () => d.promise });
+    render(
+      <>
+        <NeedsYou view={view("stalled")} api={api} nav={nav} />
+        <Toaster />
+      </>,
+    );
+    const c = card("Stalled");
+    fireEvent.click(screen.getByRole("button", { name: "Nudge" }));
+    await waitFor(() => expect(c.isConnected).toBe(false));
+    await act(async () => d.fail(new Error("nudge unavailable")));
+    const back = await screen.findByRole("listitem", { name: "Stalled" });
+    expect(back.getAttribute("data-leaving")).toBeNull();
+    expect(await screen.findByText("Nudge failed")).toBeTruthy();
+    expect(api.calls).toEqual([]);
   });
 
   it("links the PR of a failing CI and opens the agent", () => {
@@ -183,7 +202,7 @@ describe("NeedsYou list", () => {
     fireEvent.keyDown(c, { key: "a" });
     // Collapsing at once, then gone after the exit animation.
     expect(c.getAttribute("data-leaving")).toBe("true");
-    await waitFor(() => expect(screen.queryAllByRole("listitem", { hidden: true })).toHaveLength(0));
+    await waitFor(() => expect(c.isConnected).toBe(false));
     expect(screen.getByText("Nothing needs you")).toBeTruthy();
     await act(async () => d.fail(new Error("I-5 was already answered by c-2")));
     const back = await screen.findByRole("listitem", { name: "Allow Bash?" });

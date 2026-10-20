@@ -247,7 +247,8 @@ export async function perform(api: Api, nav: Nav, need: Need, id: ActionId, text
       return answer("dismiss");
     case "nudge":
       if (!agent) throw new Error("No agent to nudge.");
-      await api.message(agent, NUDGE, false);
+      // A stalled agent is still working: interrupt it so the nudge can arrive.
+      await api.message(agent, NUDGE, true);
       return answer("dismiss");
     case "resume":
       if (!agent) throw new Error("No agent to resume.");
