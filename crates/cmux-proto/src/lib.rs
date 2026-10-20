@@ -7,10 +7,18 @@
 //!
 //! Ids and the plain state enums come from `cmux-core` and are re-exported
 //! from [`view`], so there is one spelling of each on the wire.
+//!
+//! `web/src/api/types.ts` is generated from these types with ts-rs by
+//! `tests/ts.rs`; run `cargo test -p cmux-proto` after a wire change.
 
 pub mod api;
 pub mod stream;
 pub mod view;
+
+/// The flags every `claude` that cmux starts gets first: Remote Control and
+/// auto mode. `--remote-control` takes an optional name, so a flag must follow
+/// it, never a prompt. Flags that come later (the caller's own) win.
+pub const CLAUDE_DEFAULT_ARGS: &[&str] = &["--remote-control", "--permission-mode", "auto"];
 
 /// The API version prefix every route lives under.
 pub const API_PREFIX: &str = "/v1";

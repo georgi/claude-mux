@@ -22,15 +22,17 @@ use cmux_core::engine::{Change, Delta, ObjectRef as CoreObjectRef};
 use cmux_core::ids::AgentPath;
 use cmux_core::model::{Agent, InboxItem, Plan, QueuedSpawn, State, Task, Terminal};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 pub use cmux_core::ids::{AgentId, ClientId, ItemId, PlanId, TaskId, TermId};
 pub use cmux_core::model::{
-    Activity, Criterion, Delivery, DeliveryPath, ItemKind, Level, Life, Limits, Note, PlanState,
-    PrRef, Recipient, Repo, Report, ReportStatus, TaskState, TermKind, Timestamp, TokenUsage,
+    Activity, CiMark, Criterion, Delivery, DeliveryPath, ItemKind, Level, Life, Limits, Note,
+    PlanState, PrRef, Recipient, Repo, Report, ReportStatus, TaskState, TermKind, Timestamp,
+    TokenUsage,
 };
 
 /// Everything a client needs to draw the tree, board and inbox.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 pub struct StateView {
     pub rev: u64,
     pub plans: Vec<PlanView>,
@@ -44,7 +46,7 @@ pub struct StateView {
     pub items: Vec<ItemView>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PlanView {
     pub id: PlanId,
     pub title: String,
@@ -60,7 +62,7 @@ pub struct PlanView {
     pub queue: Vec<QueuedSpawn>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct TaskView {
     pub plan: PlanId,
     pub id: TaskId,
@@ -80,7 +82,7 @@ pub struct TaskView {
 }
 
 /// A task with everything `TaskView` leaves out.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct TaskDetail {
     pub task: TaskView,
     pub body: String,
@@ -89,7 +91,7 @@ pub struct TaskDetail {
     pub instructions: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct AgentView {
     pub id: AgentId,
     pub path: AgentPath,
@@ -103,9 +105,12 @@ pub struct AgentView {
     pub report: Option<Report>,
     pub tokens: TokenUsage,
     pub idle_since: Option<Timestamp>,
+    /// The watchdog flags it: working, with no progress for a while.
+    #[serde(default)]
+    pub stalled: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct TerminalView {
     pub id: TermId,
     pub kind: TermKind,
@@ -119,7 +124,7 @@ pub struct TerminalView {
 }
 
 /// An inbox item. Items to agents are included so clients can show queues.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ItemView {
     pub id: ItemId,
     pub to: Recipient,
@@ -132,14 +137,56 @@ pub struct ItemView {
     pub needs_human: bool,
 }
 
+/// One entry of an agent's conversation, read from Claude's transcript
+/// (architecture 5.3). Thinking blocks, meta lines and `<`-wrapped injections
+/// never become entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ChatEntry {
+    /// The transcript line's `uuid`; `uuid#n` for the n-th further entry of
+    /// one line. `after=` and `sub_chat` take it.
+    pub uuid: String,
+    pub ts: Timestamp,
+    pub role: ChatRole,
+    pub kind: ChatKind,
+    /// The text, the tool's input summary (`tool_call`), or the tool's output
+    /// cut to 400 chars (`tool_result`).
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tool: Option<ChatTool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatRole {
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatKind {
+    Text,
+    ToolCall,
+    ToolResult,
+}
+
+/// The tool behind a `tool_call` or `tool_result` entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ChatTool {
+    pub name: String,
+    /// The input on one line, at most 60 chars.
+    pub summary: String,
+}
+
 /// A whole-object change at `rev`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct DeltaView {
     pub rev: u64,
     pub change: ChangeView,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum ChangeView {
     Plan(PlanView),
@@ -150,7 +197,7 @@ pub enum ChangeView {
     Removed(ObjectRef),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ObjectRef {
     Plan { plan: PlanId },
@@ -231,6 +278,7 @@ impl AgentView {
             report: a.report.clone(),
             tokens: a.tokens,
             idle_since: a.idle_since,
+            stalled: a.stalled,
         }
     }
 }
@@ -441,7 +489,7 @@ mod tests {
                         base_branch: "main".into(),
                         remote_url: None,
                     }],
-                    request: "build".into(),
+                    request: Some("build".into()),
                 },
             },
             1000,
@@ -593,7 +641,7 @@ mod tests {
                     base_branch: "main".into(),
                     remote_url: None,
                 }],
-                request: "x".into(),
+                request: Some("x".into()),
             },
         );
         let plan = st.plans[0].id.clone();

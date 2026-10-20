@@ -104,7 +104,7 @@ pub fn digest(items: &[&InboxItem]) -> String {
     out
 }
 
-fn kind_label(kind: &ItemKind) -> &'static str {
+pub fn kind_label(kind: &ItemKind) -> &'static str {
     match kind {
         ItemKind::ChildReport => "report",
         ItemKind::ChildQuestion | ItemKind::Question => "question",
@@ -116,6 +116,7 @@ fn kind_label(kind: &ItemKind) -> &'static str {
         ItemKind::PlanReview => "plan review",
         ItemKind::Stalled => "stalled",
         ItemKind::ExitedWithoutReport => "exited without report",
+        ItemKind::CiFailing => "CI failing",
     }
 }
 

@@ -12,7 +12,7 @@
 //! - Answers to questions, and kickoff texts, travel as `UserMessage` items.
 //! - Delivery by PTY paste marks items `Delivered` at once; the next
 //!   `UserPromptSubmit` is the (untracked) confirmation, so delivery is
-//!   at-least-once across a restart (step 15 resets unconfirmed ones).
+//!   at-least-once across a restart (`Recover` resets unconfirmed ones).
 
 mod client;
 mod command;
@@ -74,6 +74,7 @@ impl Ctx<'_> {
                 hook,
             } => {
                 let (pi, ai) = self.auth(&agent, &token_hash)?;
+                self.progress(pi, ai);
                 self.hook(pi, ai, hook)
             }
             Command::Tool {
@@ -82,11 +83,16 @@ impl Ctx<'_> {
                 call,
             } => {
                 let (pi, ai) = self.auth(&agent, &token_hash)?;
+                self.progress(pi, ai);
                 self.tool(pi, ai, call)
             }
             Command::Runner(ev) => self.runner(ev).map(|()| Reply::Ok),
             Command::Tick => {
                 self.tick();
+                Ok(Reply::Ok)
+            }
+            Command::Recover { auto_resume } => {
+                self.recover(auto_resume);
                 Ok(Reply::Ok)
             }
         }

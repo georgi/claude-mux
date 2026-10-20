@@ -1,6 +1,6 @@
 //! Small text marks that several widgets share.
 
-use cmux_proto::view::{Activity, AgentView, ClientId, Life, ReportStatus, StateView, TermId};
+use cmux_proto::view::{Activity, AgentView, ClientId, Life, PrRef, StateView, TermId};
 
 /// `⇲ 120×40` when another client owns the terminal's size (UI design 3.4),
 /// to go in the pane header. `None` when `me` owns it or nobody does.
@@ -21,22 +21,6 @@ pub fn agent_done(a: &AgentView) -> bool {
     }
 }
 
-/// `reported success` (or `blocked`, `failed`) for an agent that handed in its
-/// report and is done, to go in the pane header instead of the directory (UI
-/// design 3.3). An agent that resumed work shows its directory again.
-pub fn report_mark(a: &AgentView) -> Option<String> {
-    if !agent_done(a) {
-        return None;
-    }
-    let r = a.report.as_ref()?;
-    let what = match r.status {
-        ReportStatus::Success => "success",
-        ReportStatus::Blocked => "blocked",
-        ReportStatus::Failed => "failed",
-    };
-    Some(format!("reported {what}"))
-}
-
 /// `✉N`, or an empty string when nothing is queued.
 pub fn queue_mark(n: usize) -> String {
     if n == 0 {
@@ -46,10 +30,33 @@ pub fn queue_mark(n: usize) -> String {
     }
 }
 
+/// `#41 ✓`, `#41 ✗` or `#41 …` by the PR's CI; `#41` before the first poll
+/// or without checks.
+pub fn pr_mark(pr: &PrRef) -> String {
+    match pr.ci {
+        Some(ci) => format!("#{} {}", pr.number, ci.glyph()),
+        None => format!("#{}", pr.number),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cmux_proto::view::{TermKind, TerminalView};
+    use cmux_proto::view::{CiMark, TermKind, TerminalView};
+
+    #[test]
+    fn pr_mark_shows_the_ci() {
+        let mut pr = PrRef::new("https://github.com/o/r/pull/41", 41);
+        assert_eq!(pr_mark(&pr), "#41");
+        for (ci, want) in [
+            (CiMark::Passing, "#41 ✓"),
+            (CiMark::Failing, "#41 ✗"),
+            (CiMark::Pending, "#41 …"),
+        ] {
+            pr.ci = Some(ci);
+            assert_eq!(pr_mark(&pr), want);
+        }
+    }
 
     #[test]
     fn size_mark_only_for_foreign_owner() {
@@ -77,7 +84,7 @@ mod tests {
     #[test]
     fn a_running_agent_is_done_only_when_idle_with_a_report() {
         use cmux_core::ids::AgentPath;
-        use cmux_proto::view::Report;
+        use cmux_proto::view::{Report, ReportStatus};
         let report = Report {
             status: ReportStatus::Success,
             summary: "x".into(),
@@ -100,6 +107,7 @@ mod tests {
             report: Some(report),
             tokens: Default::default(),
             idle_since: None,
+            stalled: false,
         };
         assert!(agent_done(&a));
         for act in [

@@ -5,10 +5,8 @@
 //! (submit on the last), `Alt-↵` submit from anywhere, `Ctrl-O` newline in
 //! multi-line fields, `Ctrl-U` clear the field, `Esc` cancel.
 
-use cmux_proto::api::{
-    AnswerAction, AnswerReq, CreatePlanReq, CreateTaskReq, MessageReq, RepoSpec,
-};
-use cmux_proto::view::{AgentId, ItemId, PlanId, TaskId};
+use cmux_proto::api::{AnswerAction, AnswerReq, MessageReq};
+use cmux_proto::view::{AgentId, ItemId};
 
 use crate::keys::Key;
 
@@ -192,187 +190,6 @@ fn fail<T>(error: &mut Option<String>, msg: impl Into<String>) -> FormEvent<T> {
 }
 
 // ---------------------------------------------------------------------------
-// New plan
-// ---------------------------------------------------------------------------
-
-/// `N`: title, repositories and the request for the executor.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NewPlanForm {
-    f: Fields,
-    error: Option<String>,
-}
-
-impl NewPlanForm {
-    /// `default_repo` pre-fills the repositories field (the client's cwd).
-    pub fn new(default_repo: &str) -> Self {
-        NewPlanForm {
-            f: Fields {
-                fields: vec![
-                    Field::new("title", "", false),
-                    Field::new("repos (path[@branch], ...)", default_repo, false),
-                    Field::new("request", "", true),
-                ],
-                focus: 0,
-            },
-            error: None,
-        }
-    }
-
-    pub fn handle(&mut self, key: Key) -> FormEvent<CreatePlanReq> {
-        self.error = None;
-        match self.f.handle(key) {
-            Step::Edited => FormEvent::Editing,
-            Step::Cancel => FormEvent::Cancel,
-            Step::Submit { .. } => self.submit(),
-        }
-    }
-
-    fn submit(&mut self) -> FormEvent<CreatePlanReq> {
-        let title = self.f.text(0).trim().to_string();
-        if title.is_empty() {
-            return fail(&mut self.error, "title is empty");
-        }
-        let repos: Vec<RepoSpec> = self
-            .f
-            .text(1)
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| match s.rsplit_once('@') {
-                Some((path, branch)) if !path.is_empty() && !branch.is_empty() => RepoSpec {
-                    path: path.trim().to_string(),
-                    base_branch: Some(branch.trim().to_string()),
-                },
-                _ => RepoSpec {
-                    path: s.to_string(),
-                    base_branch: None,
-                },
-            })
-            .collect();
-        if repos.is_empty() {
-            return fail(&mut self.error, "give at least one repository path");
-        }
-        let request = self.f.text(2).trim().to_string();
-        if request.is_empty() {
-            return fail(&mut self.error, "request is empty");
-        }
-        FormEvent::Submit(CreatePlanReq {
-            title,
-            repos,
-            request,
-        })
-    }
-}
-
-form_view!(
-    NewPlanForm,
-    |_| "new plan",
-    "tab next  ↵ next/submit  alt-↵ submit  ^o newline  esc cancel"
-);
-
-// ---------------------------------------------------------------------------
-// New task
-// ---------------------------------------------------------------------------
-
-/// `T`: a task in a plan.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NewTaskForm {
-    plan: PlanId,
-    repos: usize,
-    f: Fields,
-    error: Option<String>,
-}
-
-impl NewTaskForm {
-    /// `repos` is the number of repositories in the plan, to check the index.
-    pub fn new(plan: PlanId, repos: usize) -> Self {
-        NewTaskForm {
-            plan,
-            repos,
-            f: Fields {
-                fields: vec![
-                    Field::new("title", "", false),
-                    Field::new("body", "", true),
-                    Field::new("repo (index)", "0", false),
-                    Field::new("depends on (T-0001, ...)", "", false),
-                    Field::new("criteria (one per line)", "", true),
-                ],
-                focus: 0,
-            },
-            error: None,
-        }
-    }
-
-    #[allow(dead_code)] // accessor
-    pub fn plan(&self) -> &PlanId {
-        &self.plan
-    }
-
-    pub fn handle(&mut self, key: Key) -> FormEvent<(PlanId, CreateTaskReq)> {
-        self.error = None;
-        match self.f.handle(key) {
-            Step::Edited => FormEvent::Editing,
-            Step::Cancel => FormEvent::Cancel,
-            Step::Submit { .. } => self.submit(),
-        }
-    }
-
-    fn submit(&mut self) -> FormEvent<(PlanId, CreateTaskReq)> {
-        let title = self.f.text(0).trim().to_string();
-        if title.is_empty() {
-            return fail(&mut self.error, "title is empty");
-        }
-        let repo = match self.f.text(2).trim() {
-            "" => 0,
-            s => match s.parse::<usize>() {
-                Ok(n) if n < self.repos.max(1) => n,
-                _ => {
-                    let msg = format!("repo must be a number below {}", self.repos.max(1));
-                    return fail(&mut self.error, msg);
-                }
-            },
-        };
-        let mut deps = Vec::new();
-        for d in self
-            .f
-            .text(3)
-            .split([',', ' '])
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            match d.parse::<TaskId>() {
-                Ok(t) => deps.push(t),
-                Err(_) => return fail(&mut self.error, format!("{d:?} is not a task id (T-0001)")),
-            }
-        }
-        let criteria = self
-            .f
-            .text(4)
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(String::from)
-            .collect();
-        FormEvent::Submit((
-            self.plan.clone(),
-            CreateTaskReq {
-                title,
-                body: self.f.text(1).trim().to_string(),
-                repo,
-                deps,
-                criteria,
-            },
-        ))
-    }
-}
-
-form_view!(
-    NewTaskForm,
-    |_| "new task",
-    "tab next  ↵ next/submit  alt-↵ submit  ^o newline  esc cancel"
-);
-
-// ---------------------------------------------------------------------------
 // Message
 // ---------------------------------------------------------------------------
 
@@ -497,10 +314,6 @@ mod tests {
         }
     }
 
-    fn plan_id() -> PlanId {
-        "P-20261018-auth".parse().unwrap()
-    }
-
     #[test]
     fn text_field_edits_by_char() {
         let mut f = TextField::with_text("héy");
@@ -515,98 +328,6 @@ mod tests {
         assert_eq!(f.text(), "y");
         f.end();
         assert_eq!(f.cursor(), 1);
-    }
-
-    #[test]
-    fn new_plan_submits_repos_and_request() {
-        let mut f = NewPlanForm::new("/home/me/api@main, /home/me/web");
-        type_str(|k| f.handle(k), "auth refactor");
-        assert_eq!(f.handle(Key::Enter), FormEvent::Editing);
-        assert_eq!(f.handle(Key::Enter), FormEvent::Editing);
-        type_str(|k| f.handle(k), "Move to OAuth");
-        match f.handle(Key::Enter) {
-            FormEvent::Submit(req) => {
-                assert_eq!(req.title, "auth refactor");
-                assert_eq!(req.request, "Move to OAuth");
-                assert_eq!(req.repos.len(), 2);
-                assert_eq!(req.repos[0].path, "/home/me/api");
-                assert_eq!(req.repos[0].base_branch.as_deref(), Some("main"));
-                assert_eq!(req.repos[1].base_branch, None);
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn new_plan_validates_and_cancels() {
-        let mut f = NewPlanForm::new("/r");
-        assert!(matches!(f.handle(Key::AltEnter), FormEvent::Invalid(m) if m.contains("title")));
-        assert_eq!(f.error(), Some("title is empty"));
-        // Any key clears the error.
-        type_str(|k| f.handle(k), "t");
-        assert_eq!(f.error(), None);
-        assert!(matches!(f.handle(Key::AltEnter), FormEvent::Invalid(m) if m.contains("request")));
-        assert_eq!(f.handle(Key::Esc), FormEvent::Cancel);
-    }
-
-    #[test]
-    fn multiline_request_uses_ctrl_o() {
-        let mut f = NewPlanForm::new("/r");
-        type_str(|k| f.handle(k), "t");
-        f.handle(Key::Tab);
-        f.handle(Key::Tab);
-        type_str(|k| f.handle(k), "a");
-        f.handle(Key::Ctrl('o'));
-        type_str(|k| f.handle(k), "b");
-        // Ctrl-O does nothing in single-line fields.
-        f.handle(Key::BackTab);
-        f.handle(Key::Ctrl('o'));
-        match f.handle(Key::AltEnter) {
-            FormEvent::Submit(req) => assert_eq!(req.request, "a\nb"),
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn new_task_parses_deps_criteria_and_repo() {
-        let mut f = NewTaskForm::new(plan_id(), 2);
-        type_str(|k| f.handle(k), "api");
-        f.handle(Key::Tab);
-        type_str(|k| f.handle(k), "Add the endpoint");
-        f.handle(Key::Tab);
-        f.handle(Key::Ctrl('u'));
-        type_str(|k| f.handle(k), "1");
-        f.handle(Key::Tab);
-        type_str(|k| f.handle(k), "T-0001, T-0002");
-        f.handle(Key::Tab);
-        type_str(|k| f.handle(k), "tests pass");
-        f.handle(Key::Ctrl('o'));
-        type_str(|k| f.handle(k), "docs updated");
-        match f.handle(Key::Enter) {
-            FormEvent::Submit((plan, req)) => {
-                assert_eq!(plan, plan_id());
-                assert_eq!(req.title, "api");
-                assert_eq!(req.body, "Add the endpoint");
-                assert_eq!(req.repo, 1);
-                assert_eq!(req.deps, vec![TaskId::new(1), TaskId::new(2)]);
-                assert_eq!(req.criteria, vec!["tests pass", "docs updated"]);
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn new_task_rejects_bad_repo_and_dep() {
-        let mut f = NewTaskForm::new(plan_id(), 1);
-        type_str(|k| f.handle(k), "x");
-        f.handle(Key::Tab);
-        f.handle(Key::Tab);
-        type_str(|k| f.handle(k), "3");
-        assert!(matches!(f.handle(Key::AltEnter), FormEvent::Invalid(m) if m.contains("repo")));
-        f.handle(Key::Backspace);
-        f.handle(Key::Tab);
-        type_str(|k| f.handle(k), "nope");
-        assert!(matches!(f.handle(Key::AltEnter), FormEvent::Invalid(m) if m.contains("nope")));
     }
 
     #[test]
@@ -669,16 +390,5 @@ mod tests {
         };
         assert_eq!(req.text.as_deref(), Some("postgres"));
         assert!(req.into_action().is_ok());
-    }
-
-    #[test]
-    fn tab_cycles_fields() {
-        let mut f = NewPlanForm::new("");
-        f.handle(Key::Tab);
-        f.handle(Key::Tab);
-        f.handle(Key::Tab);
-        assert_eq!(f.focus(), 0);
-        f.handle(Key::BackTab);
-        assert_eq!(f.focus(), 2);
     }
 }

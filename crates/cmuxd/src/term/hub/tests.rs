@@ -255,6 +255,24 @@ fn bursts_are_coalesced_into_few_chunks() {
 }
 
 #[test]
+fn an_echo_after_a_quiet_interval_waits_for_no_batch_timer() {
+    let cfg = TermConfig {
+        batch: Duration::from_secs(2),
+        ..TermConfig::default()
+    };
+    let term = Terminal::spawn("t", &cat(), &cfg).unwrap();
+    let mut sub = term.subscribe(None);
+    // Let the batch interval of anything the start printed run out.
+    std::thread::sleep(Duration::from_millis(2100));
+    let sent = Instant::now();
+    term.input("a", b"k");
+    read_until(&mut sub.rx, |s| s.contains('k'));
+    let took = sent.elapsed();
+    assert!(took < Duration::from_secs(1), "echo took {took:?}");
+    term.kill();
+}
+
+#[test]
 fn exit_is_observable() {
     let term = Terminal::spawn("t", &sh("echo bye; exit 3"), &TermConfig::default()).unwrap();
     let mut exited = term.exited();
@@ -443,4 +461,73 @@ fn input_for_a_child_that_stopped_reading_is_refused_once_the_queue_is_full() {
     // there instead of blocking: keep offering input until one is refused.
     wait_for(|| (!term.input("a", &vec![b'z'; 1024 * 1024])).then_some(()));
     term.kill();
+}
+
+#[test]
+fn the_progress_hash_ignores_the_top_row_and_the_spinner() {
+    let screen = |top: &str, spinner: &str, body: &str| {
+        format!("{top}\n● Reading src/lib.rs\n{body}\n{spinner}\n> \n")
+    };
+    let base = progress_hash(&screen(
+        "claude",
+        "✻ Pondering… (12s · ↑ 1.2k tokens · esc to interrupt)",
+        "line",
+    ));
+    // Spinner frames, verbs and timers, and the top row, are redraws.
+    for (top, spinner) in [
+        (
+            "claude",
+            "✶ Pondering… (13s · ↑ 1.3k tokens · esc to interrupt)",
+        ),
+        ("claude", "✢ Noodling… (14s)"),
+        ("claude", "· Thinking…"),
+        (
+            "✳ claude: working",
+            "✻ Pondering… (12s · ↑ 1.2k tokens · esc to interrupt)",
+        ),
+    ] {
+        assert_eq!(
+            progress_hash(&screen(top, spinner, "line")),
+            base,
+            "{top} {spinner}"
+        );
+    }
+    // New content is progress; trailing spaces are not.
+    assert_ne!(
+        progress_hash(&screen("claude", "· Thinking…", "line 2")),
+        base
+    );
+    assert_eq!(
+        progress_hash(&screen("claude", "· Thinking…", "line   ")),
+        base
+    );
+}
+
+#[tokio::test]
+async fn a_spinner_alone_is_no_progress() {
+    let script = "printf 'top\\n'; for i in 1 2 3 4 5 6 7 8; do printf '\\r✻ Thinking… (%ss · esc to interrupt)' $i; sleep 0.05; done";
+    let term = Terminal::spawn("t", &sh(script), &TermConfig::default()).unwrap();
+    let mut calls = 0;
+    tokio::time::timeout(
+        WAIT,
+        term.watch_progress(Duration::from_millis(20), || calls += 1),
+    )
+    .await
+    .expect("returns when the child exits");
+    assert_eq!(calls, 0);
+}
+
+#[tokio::test]
+async fn new_output_is_progress_at_most_once_per_interval() {
+    let script = "sleep 0.2; for i in 1 2 3 4 5 6 7 8 9 10; do echo line $i; done; sleep 0.3";
+    let term = Terminal::spawn("t", &sh(script), &TermConfig::default()).unwrap();
+    let mut calls = 0;
+    tokio::time::timeout(
+        WAIT,
+        term.watch_progress(Duration::from_millis(100), || calls += 1),
+    )
+    .await
+    .expect("returns when the child exits");
+    // Ten lines in one burst are one look's worth of change.
+    assert!((1..=2).contains(&calls), "{calls}");
 }

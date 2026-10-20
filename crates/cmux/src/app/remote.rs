@@ -91,6 +91,8 @@ pub struct RemoteState {
     seen_state: bool,
     /// The server is cmuxd on this machine (Unix socket): our paths are its paths.
     local_server: bool,
+    /// `cmux attach <agent>`: the node to show once the first state is in.
+    pub open_on_start: Option<Node>,
 }
 
 impl RemoteState {
@@ -133,6 +135,7 @@ impl RemoteState {
             last_click: None,
             seen_state: false,
             local_server: false,
+            open_on_start: None,
         }
     }
 
@@ -222,6 +225,11 @@ impl RemoteState {
     pub fn pane_glyph(&self, p: &Pane) -> Option<Glyph> {
         let a = self.mirror.sv.agent(p.agent.as_ref()?)?;
         Some(rows::agent_glyph(&self.mirror.sv, &self.vs, a))
+    }
+
+    /// The end of a finished agent, for its pane header.
+    pub fn pane_outcome(&self, p: &Pane) -> Option<(&'static str, &'static str)> {
+        outcome(self.mirror.sv.agent(p.agent.as_ref()?)?)
     }
 
     /// The glyph a tab shows: the most urgent of its panes.
@@ -363,9 +371,14 @@ impl App {
             StreamEvent::State(_) | StreamEvent::Deltas { .. } => {
                 nav::fix_selection(&r.mirror.sv, &mut r.vs);
                 let first = !std::mem::replace(&mut r.seen_state, true);
+                let open = if first { r.open_on_start.take() } else { None };
                 self.rebuild();
-                // Nothing to look at yet: start in the tree.
-                if first && self.windows.is_empty() && matches!(self.mode, Mode::Normal) {
+                if let Some(node) = open {
+                    if self.show_node(&node) {
+                        self.set_tree_focus(false);
+                    }
+                } else if first && self.windows.is_empty() && matches!(self.mode, Mode::Normal) {
+                    // Nothing to look at yet: start in the tree.
                     self.set_tree_focus(true);
                 }
             }
@@ -945,17 +958,35 @@ impl App {
         let Some(w) = self.windows.get(self.active) else {
             return;
         };
-        let reqs: Vec<Request> = w
+        let main = w.panes.first().and_then(|p| p.agent.clone());
+        let terms: Vec<Request> = w
             .panes
             .iter()
-            .enumerate()
-            .filter_map(|(i, p)| match (&p.agent, p.remote_term()) {
-                (Some(a), _) if i == 0 => Some(Pending::Stop(a.clone()).request()),
+            .filter_map(|p| match (&p.agent, p.remote_term()) {
                 (None, Some(t)) => Some(Request::close_terminal(t.term)),
                 _ => None,
             })
             .collect();
-        for req in reqs {
+        let Some(r) = self.remote.as_mut() else {
+            return;
+        };
+        if let Some(a) = main {
+            let finished = r.mirror.sv.agent(&a).is_none_or(|v| {
+                matches!(
+                    v.life,
+                    cmux_proto::view::Life::Exited { .. } | cmux_proto::view::Life::Stopped
+                )
+            });
+            if finished {
+                // Nothing to stop: hide the window instead.
+                r.view.closed.insert(a.to_string());
+                r.view_dirty = true;
+                self.rebuild();
+            } else {
+                self.dispatch(Pending::Stop(a).request());
+            }
+        }
+        for req in terms {
             self.dispatch(req);
         }
     }
@@ -1040,11 +1071,6 @@ impl App {
                     Mode::Board
                 };
             }
-            Key::Char('N') => self.tree_intent(TreeIntent::NewPlan),
-            Key::Char('T') => match self.remote.as_ref().and_then(|r| r.plan.clone()) {
-                Some(p) => self.tree_intent(TreeIntent::NewTask(p)),
-                None => self.flash("no plan"),
-            },
             Key::Char('P') => self.next_plan(),
             Key::Char('B') => {
                 if let Some(r) = self.remote.as_mut() {
@@ -1144,31 +1170,13 @@ impl App {
             let Some(r) = self.remote.as_ref() else {
                 return;
             };
-            let repo = self.default_repo();
-            action_for(&r.mirror.sv, &repo, i)
+            action_for(&r.mirror.sv, i)
         };
         if matches!(action, Action::Back) {
             self.set_tree_focus(false);
         } else {
             self.do_action(action);
         }
-    }
-
-    /// Pre-fill for the new-plan form: the current plan's first repository,
-    /// else the focused pane's directory (a path on the server).
-    fn default_repo(&self) -> String {
-        let r = self.remote.as_ref();
-        r.and_then(|r| {
-            let plan = r.vs.current_plan(&r.mirror.sv)?;
-            let repo = r.mirror.sv.plan(plan)?.repos.first()?;
-            Some(repo.path.display().to_string())
-        })
-        .or_else(|| {
-            self.windows
-                .get(self.active)
-                .map(|w| w.pane().cwd.display().to_string())
-        })
-        .unwrap_or_default()
     }
 
     pub(crate) fn do_action(&mut self, action: Action) {
@@ -1526,12 +1534,33 @@ fn pane_key(p: &Pane) -> Option<String> {
         .or_else(|| p.remote_term().map(|t| format!("term {}", t.term)))
 }
 
+/// How an agent ended, as the glyph and words of its pane header (UI design
+/// 3.3): `✓ docs · reported success`. It reads the report the server keeps,
+/// so the client does not guess. `None` while it runs without a report.
+pub fn outcome(a: &cmux_proto::view::AgentView) -> Option<(&'static str, &'static str)> {
+    use cmux_proto::view::{Life, ReportStatus};
+    if !crate::tui::marks::agent_done(a) {
+        return None;
+    }
+    match (a.report.as_ref().filter(|r| !r.implicit), &a.life) {
+        (Some(r), _) => Some(match r.status {
+            ReportStatus::Success => ("✓", "reported success"),
+            ReportStatus::Blocked => ("!", "blocked"),
+            ReportStatus::Failed => ("✗", "failed"),
+        }),
+        (None, Life::Exited { .. }) => Some(("○", "exited")),
+        (None, Life::Stopped) => Some(("○", "stopped")),
+        (None, Life::Starting | Life::Running) => None,
+    }
+}
+
 /// Copies what the state knows about a terminal onto its pane.
 fn describe_pane(pane: &mut Pane, spec: &PaneSpec, sv: &cmux_proto::view::StateView) {
     let term = spec.term.and_then(|t| sv.terminal(t));
     pane.agent = spec.agent.clone();
     pane.dim = false;
     pane.label = spec.agent.as_ref().map(agent_label);
+    pane.finished = spec.finished;
     if let Some(a) = spec.agent.as_ref().and_then(|a| sv.agent(a)) {
         pane.kind = Kind::Claude;
         pane.cwd = a.cwd.clone();
@@ -1574,7 +1603,6 @@ pub const REMOTE_HELP: &[(&str, &str)] = &[
     ("a  M-a  M-A", "needs-you overlay / next / previous item"),
     ("m", "message the focused agent"),
     ("v", "board view of the plan"),
-    ("N  T", "new plan / new task"),
     ("P  B", "next plan / hide or show the tree"),
     ("=", "take over this terminal's size"),
 ];

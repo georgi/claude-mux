@@ -63,6 +63,8 @@ pub const SESSION_ENV_PREFIXES: &[&str] = &[
     "CCR_",
     "CLAUDE_COWORK_",
     "CLAUDE_CODE_SYNC_",
+    // The real-claude suite found `CLAUDE_CODE_BRIDGE_SESSION_ID` (Remote Control).
+    "CLAUDE_CODE_BRIDGE_",
 ];
 
 /// Whether `name` is on the scrub lists.
@@ -90,7 +92,7 @@ const HOOK_TIMEOUT_SECS: u64 = 5;
 /// Per-level options for `claude`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LevelOpts {
-    /// `--permission-mode`; unset means `default`, whatever the account prefers.
+    /// `--permission-mode`; unset means `auto`, whatever the account prefers.
     pub permission_mode: Option<String>,
     /// `--model`
     pub model: Option<String>,
@@ -300,10 +302,11 @@ pub fn plan_spawn(
     argv.push(format!("--add-dir={}", dir.join("digests").display()));
     argv.push("--append-system-prompt".into());
     argv.push(req.system_prompt.into());
-    // Always pass a mode: without the flag the account's own default applies,
-    // which on some accounts is `auto`.
+    // Always pass a mode: without the flag the account's own default applies.
+    // `--remote-control` takes an optional name, so a flag must follow it.
+    argv.push("--remote-control".into());
     argv.push("--permission-mode".into());
-    argv.push(opts.permission_mode.as_deref().unwrap_or("default").into());
+    argv.push(opts.permission_mode.as_deref().unwrap_or("auto").into());
     if let Some(model) = &opts.model {
         argv.push("--model".into());
         argv.push(model.clone());
@@ -410,6 +413,44 @@ fn mcp_json(cfg: &SpawnConfig, identity: &[(&str, String); 3]) -> Value {
         "args": ["mcp"],
         "env": env,
     }}})
+}
+
+/// Session tools that run without a permission prompt. `accept_plan` starts
+/// agents, so Claude asks first.
+const SESSION_ALLOWED: &[&str] = &[
+    "list_plans",
+    "get_plan",
+    "create_plan",
+    "create_task",
+    "get_task",
+    "update_task",
+];
+
+/// `<data>/session/mcp.json`: the plan tools of `cmuxd mcp --session`, shared
+/// by every Claude terminal the server starts. It holds no secret.
+pub fn session_mcp_file(data_dir: &Path) -> PathBuf {
+    data_dir.join("session").join("mcp.json")
+}
+
+pub fn session_mcp_json(cmuxd_exe: &Path, sock: &Path) -> String {
+    pretty(&json!({ "mcpServers": { MCP_SERVER: {
+        "command": cmuxd_exe.display().to_string(),
+        "args": ["mcp", "--session"],
+        "env": { "CMUX_SOCK": sock.display().to_string() },
+    }}}))
+}
+
+/// The flags that give a Claude terminal the session tools. The `=` forms,
+/// because both flags are variadic (spike S4).
+pub fn session_args(mcp_file: &Path) -> Vec<String> {
+    let allowed: Vec<String> = SESSION_ALLOWED
+        .iter()
+        .map(|t| format!("mcp__{MCP_SERVER}__{t}"))
+        .collect();
+    vec![
+        format!("--mcp-config={}", mcp_file.display()),
+        format!("--allowedTools={}", allowed.join(",")),
+    ]
 }
 
 /// Writes each file (creating parent directories) through a temp file and a

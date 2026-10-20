@@ -755,7 +755,7 @@ async fn orphaned_loose_terminals_are_dropped_at_start() {
     let cfg = |p: &Path| Config {
         data_dir: Some(p.join("data")),
         socket: Some(p.join("api.sock")),
-        listen: None,
+        listen: Some("off".into()),
         ..Config::default()
     };
     let s = ServerBuilder::new(cfg(tmp.path()))
@@ -821,7 +821,7 @@ async fn configured_permission_wait_reaches_the_engine() {
     let mut cfg = Config {
         data_dir: Some(tmp.path().join("data")),
         socket: Some(tmp.path().join("api.sock")),
-        listen: None,
+        listen: Some("off".into()),
         ..Config::default()
     };
     cfg.agents.permission_wait_secs = 77;
@@ -851,4 +851,184 @@ async fn a_bad_tls_certificate_stops_the_start() {
         ..Config::default()
     };
     assert!(ServerBuilder::new(cfg).tick(None).start().await.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Chat
+// ---------------------------------------------------------------------------
+
+/// One transcript line as Claude writes it.
+fn transcript_line(uuid: &str, role: &str, text: &str) -> String {
+    let content = if role == "user" {
+        serde_json::json!(text)
+    } else {
+        serde_json::json!([{"type": "text", "text": text}])
+    };
+    let line = serde_json::json!({
+        "type": role, "uuid": uuid, "timestamp": "2026-10-18T09:00:00.000Z",
+        "message": {"role": role, "id": format!("msg-{uuid}"), "content": content},
+    });
+    format!("{line}\n")
+}
+
+fn append(path: &Path, text: &str) {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap();
+    f.write_all(text.as_bytes()).unwrap();
+}
+
+/// An executor that "runs" with its transcript at `path`: the plan is made
+/// through the actor and the runner's `Spawned` and Claude's `SessionStart`
+/// are played by hand.
+async fn agent_with_transcript(h: &Harness, path: &Path) -> cmux_proto::view::AgentId {
+    use cmux_core::engine::{ClientAction, Command, Hook, RunnerEvent};
+    use cmux_core::ids::ClientId;
+    use cmux_core::model::Repo;
+    let app = &h.server.app;
+    let action = ClientAction::CreatePlan {
+        title: "chat".into(),
+        repos: vec![Repo {
+            path: h.tmp.path().into(),
+            base_branch: "main".into(),
+            remote_url: None,
+        }],
+        request: Some("talk".into()),
+    };
+    app.actor
+        .client(ClientId("test".into()), action)
+        .await
+        .unwrap()
+        .unwrap();
+    let agent = app
+        .actor
+        .query(|s| s.plans[0].agents[0].id.clone())
+        .await
+        .unwrap();
+    let hash = cmuxd::claude::spawn::token_hash("tok");
+    app.actor.send(Command::Runner(RunnerEvent::Spawned {
+        agent: agent.clone(),
+        term: TermId(77),
+        session_id: "s1".into(),
+        token_hash: hash,
+    }));
+    let start = Command::Hook {
+        agent: agent.clone(),
+        token_hash: hash,
+        hook: Hook::SessionStart {
+            session_id: "s1".into(),
+            transcript_path: Some(path.into()),
+        },
+    };
+    app.actor.call(start).await.unwrap().unwrap();
+    agent
+}
+
+fn chat_texts(m: &ServerMsg) -> Option<Vec<String>> {
+    match m {
+        ServerMsg::Chat { entries, .. } => Some(entries.iter().map(|e| e.text.clone()).collect()),
+        _ => None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sub_chat_sends_entries_after_after_then_live_ones() {
+    let h = harness().await;
+    let path = h.tmp.path().join("transcript.jsonl");
+    append(&path, &transcript_line("u1", "user", "first question"));
+    append(&path, &transcript_line("u2", "assistant", "first answer"));
+    let agent = agent_with_transcript(&h, &path).await;
+    let token = h.token(Scope::Read);
+    let mut ws = h.ws().await;
+    ws.connect(Some(&token), None).await;
+
+    // An unknown agent is an error; the connection stays.
+    ws.send(&ClientMsg::SubChat {
+        agent: "P-20261018-nope/executor".parse().unwrap(),
+        after: None,
+    })
+    .await;
+    let code = ws
+        .msg_where(|m| match m {
+            ServerMsg::Error { code, .. } => Some(*code),
+            _ => None,
+        })
+        .await;
+    assert_eq!(code, ErrorCode::NotFound);
+
+    // Behind `u1`: only what came after it, in one message.
+    ws.send(&ClientMsg::SubChat {
+        agent: agent.clone(),
+        after: Some("u1".into()),
+    })
+    .await;
+    assert_eq!(ws.msg_where(chat_texts).await, ["first answer"]);
+
+    // Then live entries, as the poller reads them (a line cut in two waits
+    // for its second half).
+    let next = transcript_line("u3", "user", "second question");
+    let (a, b) = next.split_at(25);
+    append(&path, a);
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    append(&path, b);
+    append(&path, &transcript_line("u4", "assistant", "second answer"));
+    let mut live = Vec::new();
+    while live.len() < 2 {
+        live.extend(ws.msg_where(chat_texts).await);
+    }
+    assert_eq!(live, ["second question", "second answer"]);
+
+    // REST pages through the same conversation.
+    let page = |q: &str| {
+        let path = format!(
+            "{}?{q}",
+            route::transcript(&agent.to_string().replace('/', "%2F"))
+        );
+        let unix = h.unix.clone();
+        async move {
+            let r = unix.request("GET", &path, &[], None).await.unwrap();
+            assert_eq!(r.status, 200, "{}", r.text());
+            let t: cmux_proto::api::TranscriptResp = r.json().unwrap();
+            t.entries.into_iter().map(|e| e.uuid).collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(page("after=u1&limit=2").await, ["u2", "u3"]);
+    assert_eq!(page("limit=2").await, ["u3", "u4"]);
+    assert_eq!(page("").await, ["u1", "u2", "u3", "u4"]);
+    let r = h
+        .unix
+        .request(
+            "GET",
+            &route::transcript("P-20261018-nope%2Fexecutor"),
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.status, 404);
+
+    // After unsub_chat nothing more comes for the agent.
+    ws.send(&ClientMsg::UnsubChat {
+        agent: agent.clone(),
+    })
+    .await;
+    ws.send(&ClientMsg::Ping { nonce: 9 }).await;
+    ws.msg_where(|m| matches!(m, ServerMsg::Pong { nonce: 9 }).then_some(()))
+        .await;
+    assert!(h.server.app.transcripts.watched().is_empty());
+    append(&path, &transcript_line("u5", "assistant", "unheard"));
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    ws.send(&ClientMsg::Ping { nonce: 10 }).await;
+    let between = ws
+        .msg_where(|m| match m {
+            ServerMsg::Pong { nonce: 10 } => Some(None),
+            ServerMsg::Chat { .. } => Some(Some(m.clone())),
+            _ => None,
+        })
+        .await;
+    assert_eq!(between, None);
+    h.server.shutdown().await;
 }

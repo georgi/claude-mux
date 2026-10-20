@@ -10,9 +10,11 @@
 pub mod auth;
 mod idem;
 pub mod projects;
+pub mod push;
 pub mod rest;
 pub mod stream;
 pub mod terminals;
+pub mod web;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
@@ -28,6 +30,7 @@ use cmux_core::engine::EngineError;
 use cmux_proto::api::{ErrorBody, ErrorCode, ServerInfo};
 
 use crate::actor::{ActorGone, ActorHandle, Clock};
+use crate::claude::transcript::Transcripts;
 use crate::config::Config;
 use crate::devices::{Devices, Pairing};
 use crate::diag::Diag;
@@ -69,6 +72,12 @@ pub struct Shared {
     pub hub: Arc<Hub>,
     /// The URL put into pairing QR codes; set once the TCP listener is bound.
     pub base_url: std::sync::RwLock<String>,
+    /// The GitHub poller, as `/status` shows it.
+    pub github: crate::git::github::Status,
+    /// Agents' conversations, for `/transcript` and `sub_chat`.
+    pub transcripts: Arc<Transcripts>,
+    /// Web Push subscriptions and the VAPID key.
+    pub push: Arc<crate::push::Push>,
     idem: idem::Cache,
 }
 
@@ -85,10 +94,12 @@ impl AppState {
         devices: Devices,
         config: Config,
         diag: Diag,
-        data_dir: std::path::PathBuf,
         hub: Arc<Hub>,
+        transcripts: Arc<Transcripts>,
+        push: Arc<crate::push::Push>,
     ) -> AppState {
         let clock = actor.clock().clone();
+        let data_dir = config.data_dir();
         let p = &config.pairing;
         let pairing = Pairing::new(clock.clone(), p.ttl_secs, p.attempts_per_min);
         let info = ServerInfo {
@@ -111,6 +122,9 @@ impl AppState {
             presence: stream::Presence::default(),
             hub,
             base_url,
+            github: crate::git::github::Status::default(),
+            transcripts,
+            push,
         }))
     }
 }
@@ -198,6 +212,7 @@ pub fn router_with(app: AppState, transport: Transport, extra: Extra) -> Router 
         .merge(auth::routes())
         .merge(terminals::routes())
         .merge(projects::routes())
+        .merge(push::routes())
         .merge(extra.authed)
         .layer(middleware::from_fn_with_state(
             app.clone(),
@@ -217,7 +232,9 @@ pub fn router_with(app: AppState, transport: Transport, extra: Extra) -> Router 
     let r = r
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn(no_store))
-        .with_state(app);
+        .with_state(app)
+        // After `no_store`: the app's assets set their own caching.
+        .merge(web::routes());
     if transport == Transport::Unix {
         r.layer(middleware::from_fn(auth::uid_guard))
     } else {

@@ -67,10 +67,20 @@ struct Rig {
 
 impl Rig {
     fn new(cols: u16, rows: u16) -> Rig {
+        Rig::with_state(cols, rows, state_with_terms())
+    }
+
+    fn with_state(cols: u16, rows: u16, sv: StateView) -> Rig {
+        Rig::opened_on(cols, rows, sv, None)
+    }
+
+    /// As `cmux attach <agent>` starts: `open` is shown on the first state.
+    fn opened_on(cols: u16, rows: u16, sv: StateView, open: Option<Node>) -> Rig {
         let (tx, rx) = channel();
         let (handle, cmds) = ConnHandle::detached();
         let rest = Arc::new(Recording::default());
-        let remote = RemoteState::new("test".into(), None, handle, rest.clone(), None).inline();
+        let mut remote = RemoteState::new("test".into(), None, handle, rest.clone(), None).inline();
+        remote.open_on_start = open;
         let mut app = App::new_remote(options(), tx, rows, cols, remote);
         app.handle(Event::Stream(StreamEvent::Welcome {
             client_id: ClientId("me".into()),
@@ -83,9 +93,7 @@ impl Rig {
         app.handle(Event::Stream(StreamEvent::Status(
             crate::conn::stream::ConnStatus::Connected,
         )));
-        app.handle(Event::Stream(StreamEvent::State(Box::new(
-            state_with_terms(),
-        ))));
+        app.handle(Event::Stream(StreamEvent::State(Box::new(sv))));
         Rig {
             app,
             rest,
@@ -162,18 +170,11 @@ fn windows_are_built_from_the_mirror() {
     let rig = Rig::new(120, 30);
     assert_eq!(
         rig.names(),
-        [
-            "executor",
-            "T-0001 schema",
-            "T-0002 api",
-            "T-0004 perms",
-            "zsh",
-            "lazygit"
-        ]
+        ["executor", "T-0002 api", "T-0004 perms", "zsh", "lazygit"]
     );
     let r = rig.app.remote.as_ref().unwrap();
     assert_eq!(r.plan.as_ref(), Some(&plan()));
-    let t2 = &rig.app.windows[2];
+    let t2 = &rig.app.windows[1];
     let labels: Vec<String> = t2.panes.iter().map(|p| p.name()).collect();
     assert_eq!(labels, ["T-0002", "tests", "docs"]);
     assert!(t2.panes.iter().all(|p| p.remote_term().is_some()));
@@ -181,17 +182,17 @@ fn windows_are_built_from_the_mirror() {
     assert_eq!(t2.layout.leaves().len(), 3);
     // Terminals of the other windows are subscribed too.
     assert_eq!(
-        rig.app.windows[4].panes[0].kind,
+        rig.app.windows[3].panes[0].kind,
         Kind::Command("zsh".into())
     );
     // A state change keeps the window the user is on.
     let mut rig = rig;
-    rig.app.select_window(3);
+    rig.app.select_window(2);
     let mut sv = state_with_terms();
     sv.rev += 1;
     rig.app
         .handle(Event::Stream(StreamEvent::State(Box::new(sv))));
-    assert_eq!(rig.app.active, 3);
+    assert_eq!(rig.app.active, 2);
 }
 
 #[test]
@@ -204,7 +205,7 @@ fn a_new_agent_appears_and_a_gone_terminal_disappears() {
     rig.app
         .handle(Event::Stream(StreamEvent::State(Box::new(sv))));
     assert!(!rig.names().iter().any(|n| n.contains("T-0004")));
-    assert_eq!(rig.names().len(), 5);
+    assert_eq!(rig.names().len(), 4);
 }
 
 #[test]
@@ -320,6 +321,13 @@ fn stop_and_cancel_ask_first() {
             json!({"state": "cancelled"}),
         )]
     );
+
+    rig.keys(b"X");
+    rig.keys(b"y");
+    assert_eq!(
+        rig.take_calls(),
+        [Call::Delete(format!("/v1/plans/{}", plan()))]
+    );
 }
 
 #[test]
@@ -348,45 +356,6 @@ fn messages_queue_or_steer() {
         rig.take_calls(),
         [post(path, json!({"text": "stop that", "steer": true}))]
     );
-}
-
-#[test]
-fn new_plan_and_task_forms_post_their_requests() {
-    let mut rig = Rig::new(120, 30);
-    rig.app.set_tree_focus(true);
-    rig.keys(b"n");
-    assert!(matches!(rig.app.mode, Mode::Form));
-    rig.keys(b"ship it\t");
-    rig.keys(b"\x15/srv/api\t");
-    rig.keys(b"do the thing\x1b\r");
-    assert_eq!(
-        rig.take_calls(),
-        [post(
-            "/v1/plans",
-            json!({
-                "title": "ship it",
-                "repos": [{"path": "/srv/api", "base_branch": null}],
-                "request": "do the thing",
-            })
-        )]
-    );
-
-    rig.select(Node::Plan(plan()));
-    rig.keys(b"t");
-    rig.keys(b"fix login\x1b\r");
-    let calls = rig.take_calls();
-    assert_eq!(calls.len(), 1, "{calls:?}");
-    let Call::Post(path, body) = &calls[0] else {
-        panic!("{calls:?}")
-    };
-    assert_eq!(path, &format!("/v1/plans/{}/tasks", plan()));
-    assert_eq!(body["title"], "fix login");
-
-    // Escape cancels a form without a call.
-    rig.keys(b"n");
-    rig.keys(b"\x1b");
-    assert!(rig.calls().is_empty());
-    assert!(matches!(rig.app.mode, Mode::Tree));
 }
 
 #[test]
@@ -452,7 +421,7 @@ fn rest_errors_show_in_the_status_line() {
 #[test]
 fn new_windows_and_splits_post_terminals() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(4); // zsh
+    rig.app.select_window(3); // zsh
     rig.prefix(b"c");
     let calls = rig.take_calls();
     let Call::Post(path, body) = &calls[0] else {
@@ -475,7 +444,7 @@ fn new_windows_and_splits_post_terminals() {
 #[test]
 fn a_split_becomes_a_pane_of_the_window() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(4); // zsh
+    rig.app.select_window(3); // zsh
     let reply = json!({"id": 30, "kind": "shell", "agent": null, "cwd": "/home/me",
         "rows": 24, "cols": 80, "size_owner": null, "title": null});
     *rig.rest.reply.lock().unwrap() = Some(Ok(reply));
@@ -502,7 +471,7 @@ fn a_split_becomes_a_pane_of_the_window() {
     rig.app
         .handle(Event::Stream(StreamEvent::State(Box::new(sv))));
     // It is a second pane of the zsh window, not a window of its own.
-    assert_eq!(rig.app.windows.len(), 6);
+    assert_eq!(rig.app.windows.len(), 5);
     let w = &rig.app.windows[rig.app.active];
     assert_eq!(w.name(), "zsh");
     assert_eq!(w.panes.len(), 2);
@@ -512,7 +481,7 @@ fn a_split_becomes_a_pane_of_the_window() {
 #[test]
 fn closing_a_loose_terminal_deletes_it() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(4);
+    rig.app.select_window(3);
     rig.prefix(b"x");
     rig.keys(b"y");
     assert_eq!(rig.take_calls(), [Call::Delete("/v1/terminals/1".into())]);
@@ -521,7 +490,7 @@ fn closing_a_loose_terminal_deletes_it() {
 #[test]
 fn stopping_a_pane_with_an_agent_stops_the_agent() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2); // T-0002
+    rig.app.select_window(1); // T-0002
     rig.prefix(b"x");
     rig.keys(b"y");
     assert_eq!(
@@ -536,7 +505,7 @@ fn stopping_a_pane_with_an_agent_stops_the_agent() {
 #[test]
 fn prefix_tab_toggles_tree_focus_and_keys_follow() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2);
+    rig.app.select_window(1);
     rig.prefix(b"\t");
     assert!(matches!(rig.app.mode, Mode::Tree));
     // The selection starts at the pane's agent.
@@ -564,8 +533,8 @@ fn prefix_tab_toggles_tree_focus_and_keys_follow() {
 #[test]
 fn prefix_equals_takes_the_terminal_size() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2);
-    let term = rig.app.windows[2].pane().remote_term().unwrap().term;
+    rig.app.select_window(1);
+    let term = rig.app.windows[1].pane().remote_term().unwrap().term;
     let _ = rig.cmds.try_iter().count();
     rig.prefix(b"=");
     let cmds: Vec<Cmd> = rig.cmds.try_iter().collect();
@@ -581,7 +550,7 @@ fn prefix_equals_takes_the_terminal_size() {
 fn focusing_a_pane_focuses_its_terminal() {
     let mut rig = Rig::new(120, 30);
     let _ = rig.cmds.try_iter().count();
-    rig.app.select_window(4);
+    rig.app.select_window(3);
     rig.keys(b""); // any input runs the focus sync
     rig.app.after_input();
     let cmds: Vec<Cmd> = rig.cmds.try_iter().collect();
@@ -591,7 +560,7 @@ fn focusing_a_pane_focuses_its_terminal() {
 #[test]
 fn draws_the_tree_tabs_connection_dot_and_size_marks() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2);
+    rig.app.select_window(1);
     let screen = rig.draw(120, 30);
     assert!(screen.contains("test ● auth-refactor ▸"), "{screen}");
     assert!(screen.contains("T-0002 api"));
@@ -711,8 +680,8 @@ fn the_view_state_is_saved_and_restored() {
     app.handle(Event::Stream(StreamEvent::State(Box::new(
         state_with_terms(),
     ))));
-    app.select_window(3);
-    app.windows[3].custom_name = None;
+    app.select_window(2);
+    app.windows[2].custom_name = None;
     app.rename_remote("perms!");
     app.shutdown();
     let saved = std::fs::read_to_string(&path).unwrap();
@@ -726,7 +695,7 @@ fn the_view_state_is_saved_and_restored() {
         state_with_terms(),
     ))));
     assert_eq!(app.windows[app.active].name(), "perms!");
-    assert_eq!(app.active, 3);
+    assert_eq!(app.active, 2);
 }
 
 #[test]
@@ -981,7 +950,7 @@ fn a_failed_delete_after_a_loose_terminal_exits_stays_quiet() {
     assert_eq!(rig.take_calls(), [Call::Delete("/v1/terminals/1".into())]);
     assert!(rig.app.message.is_none());
     // A deliberate close still reports its failure.
-    rig.app.select_window(4);
+    rig.app.select_window(3);
     rig.prefix(b"x");
     rig.keys(b"y");
     assert!(rig.app.message.is_some());
@@ -1069,7 +1038,7 @@ impl Rig {
 #[test]
 fn sub_agents_stack_beside_the_task_agent_in_a_main_vertical() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2);
+    rig.app.select_window(1);
     let names = ["tests", "docs", "lint"];
     for n in 1..=3 {
         rig.set_state(state_with_subs(&names[..n]));
@@ -1102,11 +1071,11 @@ fn sub_agents_stack_beside_the_task_agent_in_a_main_vertical() {
 #[test]
 fn a_user_chosen_layout_is_kept_until_a_sub_agent_joins() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2);
+    rig.app.select_window(1);
     rig.set_state(state_with_subs(&["tests"]));
     // The user picks even-vertical (prefix M-2 is the preset key; set it directly).
     {
-        let w = &mut rig.app.windows[2];
+        let w = &mut rig.app.windows[1];
         let ids = w.layout.leaves();
         w.layout = crate::layout::Node::preset("even-vertical", &ids).unwrap();
         w.preset = Some(1);
@@ -1125,7 +1094,7 @@ fn a_user_chosen_layout_is_kept_until_a_sub_agent_joins() {
 #[test]
 fn a_finished_sub_agent_is_drawn_dimmed_with_its_report() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2);
+    rig.app.select_window(1);
     let mut sv = state_with_subs(&["tests", "docs"]);
     // docs: exited after a successful report.
     let docs = sv
@@ -1143,7 +1112,7 @@ fn a_finished_sub_agent_is_drawn_dimmed_with_its_report() {
         supersedes_blocked: false,
     });
     rig.set_state(sv);
-    let w = &rig.app.windows[2];
+    let w = &rig.app.windows[1];
     let dim: Vec<(String, bool)> = w.panes.iter().map(|p| (p.name(), p.dim)).collect();
     assert_eq!(
         dim,
@@ -1160,7 +1129,7 @@ fn a_finished_sub_agent_is_drawn_dimmed_with_its_report() {
     let row = |y: u16| -> String { (0..120).map(|x| buf[(x, y)].symbol()).collect() };
     let text: Vec<String> = (0..30).map(row).collect();
     let all = text.join("\n");
-    assert!(all.contains("tests · /home/me/api"), "{all}");
+    assert!(all.contains("tests  /home/me/api"), "{all}");
     assert!(all.contains("docs · reported success"), "{all}");
 
     // Focus the finished pane: the active header is bold, unless dimmed.
@@ -1170,7 +1139,7 @@ fn a_finished_sub_agent_is_drawn_dimmed_with_its_report() {
     term.draw(|f| crate::ui::draw(f, &rig.app)).unwrap();
     let buf = term.backend().buffer().clone();
     let area = rig.app.body_area();
-    let w = &rig.app.windows[2];
+    let w = &rig.app.windows[1];
     assert_eq!(w.get(w.active).unwrap().name(), "docs");
     for a in w.areas(area) {
         let name = w.get(a.id).unwrap().name();
@@ -1267,7 +1236,7 @@ fn a_sub_agents_question_is_replied_to_from_the_overlay() {
     });
     rig.set_state(sv);
     // The sub-agent's pane header shows it needs you.
-    let w = &rig.app.windows[2];
+    let w = &rig.app.windows[1];
     let sub_pane = w
         .panes
         .iter()
@@ -1319,7 +1288,7 @@ fn sub_mut<'a>(sv: &'a mut StateView, name: &str) -> &'a mut cmux_proto::view::A
 fn a_sub_agent_that_resumed_after_a_blocked_report_is_not_dimmed() {
     use cmux_proto::view::{Activity, Life, ReportStatus};
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2);
+    rig.app.select_window(1);
     let mut sv = state_with_subs(&["tests"]);
     let a = sub_mut(&mut sv, "tests");
     a.life = Life::Running;
@@ -1327,7 +1296,7 @@ fn a_sub_agent_that_resumed_after_a_blocked_report_is_not_dimmed() {
     a.report = Some(report_of(ReportStatus::Blocked));
     rig.set_state(sv.clone());
     let dim = |rig: &Rig| {
-        rig.app.windows[2]
+        rig.app.windows[1]
             .panes
             .iter()
             .find(|p| p.name() == "tests")
@@ -1336,13 +1305,13 @@ fn a_sub_agent_that_resumed_after_a_blocked_report_is_not_dimmed() {
     };
     assert!(!dim(&rig));
     let s = rig.draw(120, 30);
-    let line = s.lines().find(|l| l.contains("tests ·")).unwrap_or("");
-    assert!(!line.contains("reported blocked"), "{s}");
+    let line = s.lines().find(|l| l.contains("tests")).unwrap_or("");
+    assert!(!line.contains("blocked"), "{s}");
     // Idle with the blocked report: it is waiting, dimmed with its report.
     sub_mut(&mut sv, "tests").activity = Activity::Idle;
     rig.set_state(sv);
     assert!(dim(&rig));
-    assert!(rig.draw(120, 30).contains("tests · reported blocked"));
+    assert!(rig.draw(120, 30).contains("tests · blocked"));
 }
 
 #[test]
@@ -1376,25 +1345,25 @@ fn a_reported_sub_agent_that_is_still_running_can_be_closed_locally() {
 #[test]
 fn showing_a_task_keeps_the_zoom_when_its_pane_is_already_focused() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2);
+    rig.app.select_window(1);
     rig.set_state(state_with_subs(&["tests"]));
     {
-        let w = &mut rig.app.windows[2];
+        let w = &mut rig.app.windows[1];
         let main = w.panes[0].id;
         w.focus(main);
         w.zoomed = true;
     }
     rig.app.show_node(&Node::Task(plan(), t2()));
-    assert!(rig.app.windows[2].zoomed);
+    assert!(rig.app.windows[1].zoomed);
     // Another pane focused: showing the task goes to its pane and un-zooms.
     {
-        let w = &mut rig.app.windows[2];
+        let w = &mut rig.app.windows[1];
         let other = w.panes[1].id;
         w.focus(other);
         w.zoomed = true;
     }
     rig.app.show_node(&Node::Task(plan(), t2()));
-    let w = &rig.app.windows[2];
+    let w = &rig.app.windows[1];
     assert!(!w.zoomed);
     assert_eq!(w.get(w.active).unwrap().name(), "T-0002");
 }
@@ -1403,7 +1372,7 @@ fn showing_a_task_keeps_the_zoom_when_its_pane_is_already_focused() {
 fn a_header_with_no_room_for_text_shows_just_the_name() {
     for cols in [30u16, 40] {
         let mut rig = Rig::new(cols, 30);
-        rig.app.select_window(2);
+        rig.app.select_window(1);
         rig.set_state(state_with_subs(&["docs"]));
         let s = rig.draw(cols, 30);
         // The docs pane is right of the main pane's header.
@@ -1419,10 +1388,10 @@ fn a_header_with_no_room_for_text_shows_just_the_name() {
 #[test]
 fn a_resumed_sub_agent_on_a_new_terminal_keeps_its_pane_and_layout() {
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2);
+    rig.app.select_window(1);
     rig.set_state(state_with_subs(&["tests", "docs"]));
     {
-        let w = &mut rig.app.windows[2];
+        let w = &mut rig.app.windows[1];
         let ids = w.layout.leaves();
         w.layout = crate::layout::Node::preset("even-vertical", &ids).unwrap();
         w.preset = None;
@@ -1439,7 +1408,7 @@ fn a_resumed_sub_agent_on_a_new_terminal_keeps_its_pane_and_layout() {
         .id = TermId(77);
     rig.set_state(sv);
     assert_eq!(rig.pane_rects(), before);
-    let w = &rig.app.windows[2];
+    let w = &rig.app.windows[1];
     assert_eq!(w.get(w.active).unwrap().name(), "docs");
 }
 
@@ -1448,7 +1417,7 @@ fn a_sub_agent_stopped_after_its_success_report_is_not_red() {
     use cmux_core::glyph::Glyph;
     use cmux_proto::view::{Activity, Life, ReportStatus};
     let mut rig = Rig::new(120, 30);
-    rig.app.select_window(2);
+    rig.app.select_window(1);
     let mut sv = state_with_subs(&["tests", "docs"]);
     let a = sub_mut(&mut sv, "docs");
     a.life = Life::Stopped;
@@ -1509,4 +1478,130 @@ fn killing_the_pane_of_a_reported_task_agent_stops_it() {
             .closed
             .contains(&task.to_string())
     );
+}
+
+/// T-0002 with `n` sub-agents: `tests` runs, `docs` has exited after its
+/// report, and a third one, `lint`, runs.
+fn task_window_with_subs(n: usize) -> StateView {
+    let mut sv = state_with_terms();
+    let docs = AgentId::new(plan(), AgentPath::sub(t2(), "docs").unwrap());
+    let tests = AgentId::new(plan(), AgentPath::sub(t2(), "tests").unwrap());
+    sv.agents.iter_mut().find(|a| a.id == docs).unwrap().life =
+        cmux_proto::view::Life::Exited { code: Some(0) };
+    if n == 1 {
+        sv.agents.retain(|a| a.id != tests);
+        sv.terminals.retain(|t| t.agent.as_ref() != Some(&tests));
+        sv.plans[0].agents.retain(|a| a != &tests);
+    }
+    if n == 3 {
+        let mut lint = sv.agents.iter().find(|a| a.id == tests).unwrap().clone();
+        lint.path = AgentPath::sub(t2(), "lint").unwrap();
+        lint.id = AgentId::new(plan(), lint.path.clone());
+        lint.term = Some(TermId(40));
+        sv.terminals.push(TerminalView {
+            id: TermId(40),
+            kind: TermKind::Claude,
+            agent: Some(lint.id.clone()),
+            cwd: "/home/me/api".into(),
+            rows: 24,
+            cols: 80,
+            size_owner: None,
+            title: None,
+        });
+        sv.plans[0].agents.push(lint.id.clone());
+        sv.agents.push(lint);
+    }
+    sv
+}
+
+fn draw_task_window(n: usize) -> (Rig, String) {
+    let mut rig = Rig::with_state(100, 30, task_window_with_subs(n));
+    rig.app.select_window(1);
+    assert_eq!(rig.app.windows[1].panes.len(), n + 1);
+    let screen = rig.draw(100, 30);
+    (rig, screen)
+}
+
+/// The style of the first cell of `text` on the 100×30 screen.
+fn style_at(rig: &Rig, text: &str) -> ratatui::style::Style {
+    let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    term.draw(|f| crate::ui::draw(f, &rig.app)).unwrap();
+    let screen = rig.draw(100, 30);
+    let (y, line) = screen
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains(text))
+        .unwrap_or_else(|| panic!("{text:?} not on the screen:\n{screen}"));
+    let x = line[..line.find(text).unwrap()].chars().count() as u16;
+    term.backend().buffer()[(x, y as u16)].style()
+}
+
+#[test]
+fn a_finished_sub_agent_is_dimmed_with_its_outcome() {
+    let (rig, screen) = draw_task_window(2);
+    assert!(screen.contains("✓ docs · reported success"), "{screen}");
+    let dimmed = style_at(&rig, "✓ docs");
+    assert_eq!(dimmed.fg, Some(ratatui::style::Color::Indexed(244)));
+    let running = style_at(&rig, "tests");
+    assert_ne!(running.fg, Some(ratatui::style::Color::Indexed(244)));
+}
+
+#[test]
+fn outcome_words_come_from_the_report() {
+    use cmux_proto::view::{Life, Report, ReportStatus};
+    let mut a = state_with_terms().agents[0].clone();
+    assert_eq!(outcome(&a), None);
+    a.life = Life::Exited { code: Some(1) };
+    assert_eq!(outcome(&a), Some(("○", "exited")));
+    let mut r = Report {
+        status: ReportStatus::Blocked,
+        summary: String::new(),
+        pr_url: None,
+        attempt: 1,
+        implicit: true,
+        supersedes_blocked: false,
+    };
+    // A report the server made up at exit is not the agent's word.
+    a.report = Some(r.clone());
+    assert_eq!(outcome(&a), Some(("○", "exited")));
+    r.implicit = false;
+    r.status = ReportStatus::Failed;
+    a.report = Some(r);
+    assert_eq!(outcome(&a), Some(("✗", "failed")));
+}
+
+#[test]
+fn task_window_with_one_sub_agent() {
+    insta::assert_snapshot!("task_window_1_sub_100x30", draw_task_window(1).1);
+}
+
+#[test]
+fn task_window_with_two_sub_agents() {
+    insta::assert_snapshot!("task_window_2_subs_100x30", draw_task_window(2).1);
+}
+
+#[test]
+fn task_window_with_three_sub_agents() {
+    insta::assert_snapshot!("task_window_3_subs_100x30", draw_task_window(3).1);
+}
+
+#[test]
+fn attach_opens_its_agent_on_the_first_state() {
+    let sv = state_with_terms();
+    let sub = sv
+        .agents
+        .iter()
+        .find(|a| a.path.sub_name().is_some())
+        .unwrap()
+        .id
+        .clone();
+    // Without a target the first window shows, not the sub-agent.
+    let rig = Rig::with_state(120, 40, sv.clone());
+    let w = &rig.app.windows[rig.app.active];
+    assert_ne!(w.pane().agent.as_ref(), Some(&sub));
+
+    let rig = Rig::opened_on(120, 40, sv, Some(Node::Sub(sub.clone())));
+    let w = &rig.app.windows[rig.app.active];
+    assert_eq!(w.pane().agent.as_ref(), Some(&sub), "{:?}", rig.names());
+    assert!(rig.app.remote.as_ref().unwrap().vs.focus == Focus::Pane);
 }

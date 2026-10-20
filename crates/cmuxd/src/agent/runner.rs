@@ -7,6 +7,7 @@
 //! ```ignore
 //! let rt = AgentRuntime::from_config(&config, hub.clone());
 //! ServerBuilder::new(config)
+//!     .transcripts(rt.transcripts().clone())
 //!     .runner(rt.runner())
 //!     .extra_routes(move || Extra { unix_only: rt.routes(), ..Extra::default() })
 //! ```
@@ -30,10 +31,11 @@ use crate::actor::{ActorHandle, EffectRunner};
 use crate::claude::spawn::{
     LevelOpts, SpawnConfig, SpawnRequest, SpawnSpec, build_spawn, digest_dir, write_files,
 };
+use crate::claude::transcript::Transcripts;
 use crate::claude::trust;
 use crate::config::Config;
 use crate::git::worktree::{WorktreePool, WorktreeRequest};
-use crate::term::hub::{Hub, TermConfig, term_key};
+use crate::term::hub::{Hub, PROGRESS_EVERY, TermConfig, term_key};
 use crate::term::pty::PtySpec;
 
 /// Initial size of an agent's terminal (columns by rows).
@@ -58,17 +60,25 @@ pub struct AgentRuntime {
     /// Terminals made but not yet listed by the engine: their `Spawned` is
     /// still queued in the actor, so they must not be taken for gone.
     unlisted: Mutex<HashSet<String>>,
+    /// Read at `Stop` (by the endpoint) and at exit; give the same one to
+    /// `ServerBuilder::transcripts`.
+    transcripts: Arc<Transcripts>,
 }
 
 impl AgentRuntime {
     pub fn new(hub: Arc<Hub>, spawn: SpawnConfig) -> Arc<AgentRuntime> {
+        AgentRuntime::with_pool(hub, spawn, WorktreePool::default())
+    }
+
+    fn with_pool(hub: Arc<Hub>, spawn: SpawnConfig, pool: WorktreePool) -> Arc<AgentRuntime> {
         Arc::new(AgentRuntime {
             hub,
             spawn,
-            pool: WorktreePool::default(),
+            pool,
             waiters: PermissionWaiters::default(),
             started: Mutex::new(Vec::new()),
             unlisted: Mutex::new(HashSet::new()),
+            transcripts: Transcripts::new(),
         })
     }
 
@@ -80,7 +90,7 @@ impl AgentRuntime {
         let mut spawn = SpawnConfig::new(exe, config.socket_path(), config.data_dir());
         let a = &config.agents;
         spawn.claude_bin = a.claude_bin.clone();
-        spawn.permission_wait = Duration::from_secs(a.permission_wait_secs.max(1));
+        spawn.permission_wait = Duration::from_secs(config.permission_wait_secs());
         spawn.pre_trust = a.pre_trust;
         let opts = |l: &crate::config::LevelConfig| LevelOpts {
             permission_mode: l.permission_mode.clone(),
@@ -89,11 +99,16 @@ impl AgentRuntime {
         spawn.executor = opts(&a.executor);
         spawn.task = opts(&a.task);
         spawn.sub = opts(&a.sub);
-        AgentRuntime::new(hub, spawn)
+        let pool = WorktreePool::new(config.limits.global().git_ops as usize);
+        AgentRuntime::with_pool(hub, spawn, pool)
     }
 
     pub fn hub(&self) -> &Arc<Hub> {
         &self.hub
+    }
+
+    pub fn transcripts(&self) -> &Arc<Transcripts> {
+        &self.transcripts
     }
 
     pub fn spawn_config(&self) -> &SpawnConfig {
@@ -170,7 +185,7 @@ impl AgentRuntime {
 /// This executable's path for the hooks and the MCP server. Linux reports
 /// `/path/cmuxd (deleted)` once the binary was replaced under a running
 /// server (an upgrade); the new binary sits at the plain path.
-fn running_exe() -> PathBuf {
+pub(crate) fn running_exe() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cmuxd"));
     strip_deleted(exe)
 }
@@ -284,8 +299,12 @@ impl EffectRunner for AgentRunner {
                 self.rt.waiters.resolve(*item, decision.clone());
                 true
             }
-            // Push notifications belong to a later step.
-            Effect::Notify { .. } | Effect::Persist { .. } | Effect::PersistGlobals => false,
+            // `push::PushRunner` sends notifications.
+            Effect::Notify { .. }
+            | Effect::NotifyPlanDone { .. }
+            | Effect::Persist { .. }
+            | Effect::DeletePlan { .. }
+            | Effect::PersistGlobals => false,
         }
     }
 
@@ -376,12 +395,22 @@ async fn start_agent(
     // The actor handles messages in order: once this query runs, `Spawned` has.
     let _ = handle.query(|_| ()).await;
     rt.listed(&id);
+    // Screen changes feed the stall watchdog, at most once per 30 s.
+    tokio::spawn({
+        let (terminal, handle) = (terminal.clone(), handle.clone());
+        async move {
+            let progress = || handle.send(Command::Runner(RunnerEvent::Progress { term }));
+            terminal.watch_progress(PROGRESS_EVERY, progress).await;
+        }
+    });
     let mut exited = terminal.exited();
     let info = match exited.wait_for(|e| e.is_some()).await {
         Ok(v) => v.clone(),
         Err(_) => None,
     };
     let code = info.and_then(|i| i.signal.is_none().then_some(i.code as i32));
+    // The last answer becomes the implicit report, so it must be read first.
+    rt.transcripts.report_turn(&handle, &agent).await;
     // The terminal stays in the hub with its final screen until the engine
     // drops its record or too many pile up (see `forget_gone_terminals`).
     handle.send(Command::Runner(RunnerEvent::Exited { agent, term, code }));

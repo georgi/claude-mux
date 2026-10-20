@@ -282,6 +282,30 @@ Tests:
   - `cmuxd` RSS (without the claude processes) under 150 MB.
 - A security pass over the checklist in architecture section 9, with one test per row where it can be automated.
 
+### Step 16 results (run 2026-10-18)
+
+**Performance.** `cargo run --release -p cmuxd --example load` ([`crates/cmuxd/examples/load.rs`](../../crates/cmuxd/examples/load.rs)): a real `cmuxd serve`, 10 fake-claude agents that each print one line every 100 ms, 3 WebSocket clients subscribed to every agent terminal (about 447 kB streamed to each), 200 echo samples on a raw `cat` terminal while the agents print, 30 s busy and 30 s idle.
+
+These numbers come from a development machine, **not** from the target 2-vCPU, 4 GB VPS, which was not available: Apple M4 Pro, 12 cores, 24 GB, macOS (Darwin 27.0.0), release build, client and server on the same host (loopback, no network latency).
+
+| Metric | Target | Measured | Result |
+|---|---|---|---|
+| Idle `cmuxd` CPU (agents idle, 3 clients attached) | < 1 % | 0.07 % | pass |
+| Busy `cmuxd` CPU (10 agents printing) | - | 2.13 % | - |
+| Input-to-echo, p50 / p95 / max | < 5 ms | 0.41 / 0.91 / 1.44 ms | pass |
+| `cmuxd` RSS at the end (children not counted) | < 150 MB | 19.2 MB | pass |
+
+The first run missed the echo target: p50 20.0 ms. The terminal hub held every output for one full 16 ms batch before the first flush. The hub now flushes on the leading edge: the first output after a quiet 16 ms goes out at once, and output that follows within the interval is still coalesced into one chunk (`term::hub::tests::an_echo_after_a_quiet_interval_waits_for_no_batch_timer`). On a 2-vCPU VPS expect a higher CPU share per core; with 0.07 % idle and 2.1 % busy on one fast core, the 1 % idle target has a wide margin. Run the example on the VPS to confirm.
+
+**Security.** [`crates/cmuxd/tests/security.rs`](../../crates/cmuxd/tests/security.rs) holds one test per automatable row of architecture section 9, and its doc comment maps every row to its tests. New checks: the WebSocket refuses a token in the URL (400, a code change), a cookie WebSocket from another origin is refused, pairing codes and tokens have the designed strength and only hashes are stored, every agent level and every plain Claude terminal starts in `auto` mode with Remote Control, and `POST /v1/repos {path}` registers only the canonical root of a git work tree for a full-scope caller. In `tests/agents.rs`: the diagnostics log holds no prompt, tool input, answer, message, device token or agent token; a push body stays within 4096 bytes and its summary within 60 characters. Not automatable: an agent process runs as the server's user, so it can open the client API on the Unix socket, which trusts the uid. The row holds for agent tokens, which open only `/v1/agent/*`.
+
+**Real-claude suite.** `cargo test --workspace -- --ignored` runs spikes S1 to S7 against the `claude` on `PATH` ([`crates/cmuxd/tests/real_claude.rs`](../../crates/cmuxd/tests/real_claude.rs)). The xterm.js half of S7 stays in `spikes/s7-vt100/xterm/`. Run on 2026-10-18 against Claude Code 2.1.302 on the machine above, with the user's own login: 7 of 7 pass in 105 s. Differences from the Step 0 results:
+
+- Without `--permission-mode`, the account default applies (here `auto`), so S5 and S6 saw no prompt. The suite passes `--permission-mode manual`. `default` is no longer a valid choice.
+- S7: this time Claude drew on the main screen, not the alt screen. All 7 captured screens had 0 cell diffs, but the `ESC[?1049h` prefix path was not exercised. On the main screen scrollback matters, which S7 does not check.
+- S1 in the default login mode does not write `~/.claude`, so it checks the project and flag hooks, the project rules, and the user's `defaultMode` instead of a user deny rule.
+- The environment had `CLAUDE_CODE_BRIDGE_SESSION_ID`. The session scrub (cmuxd and cmux) now removes the `CLAUDE_CODE_BRIDGE_` prefix too.
+
 ## Dependency graph
 
 ```

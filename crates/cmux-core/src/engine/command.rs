@@ -3,7 +3,9 @@
 use std::path::PathBuf;
 
 use crate::ids::{AgentId, ClientId, ItemId, PlanId, TaskId, TermId};
-use crate::model::{Level, PlanState, PrGithubState, Repo, ReportStatus, TaskState, TermKind};
+use crate::model::{
+    Level, PlanState, PrGithubState, Repo, ReportStatus, TaskState, TermKind, TokenUsage,
+};
 
 /// One input to the engine, grouped by who sends it.
 #[derive(Debug, Clone, PartialEq)]
@@ -29,6 +31,12 @@ pub enum Command {
     Runner(RunnerEvent),
     /// The 1 s timer.
     Tick,
+    /// Sent once by the server after the store loads, before it accepts
+    /// clients: the processes of the last run are gone (architecture 15a).
+    Recover {
+        /// Resume the agents that were working, from `config.toml`.
+        auto_resume: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,7 +44,9 @@ pub enum ClientAction {
     CreatePlan {
         title: String,
         repos: Vec<Repo>,
-        request: String,
+        /// The request for a planner agent. `None` starts no agent: the client
+        /// adds the tasks, and accepting the plan starts the executor.
+        request: Option<String>,
     },
     AcceptPlan {
         plan: PlanId,
@@ -48,6 +58,11 @@ pub enum ClientAction {
         plan: PlanId,
     },
     CancelPlan {
+        plan: PlanId,
+    },
+    /// Stops the plan's agents and forgets the plan, its terminals and its
+    /// inbox items. Worktrees and branches stay on disk.
+    DeletePlan {
         plan: PlanId,
     },
     CreateTask {
@@ -142,6 +157,8 @@ pub enum NotificationKind {
 pub enum Hook {
     SessionStart {
         session_id: String,
+        /// The payload's `transcript_path`, when Claude sends one.
+        transcript_path: Option<PathBuf>,
     },
     UserPromptSubmit {
         prompt: String,
@@ -309,6 +326,19 @@ pub enum RunnerEvent {
         term: TermId,
         title: Option<String>,
     },
+    /// The server read the agent's transcript (at a `Stop` or at exit; at
+    /// most once per turn): its token sums and its last assistant text, which
+    /// becomes the summary of an implicit report.
+    TokensUpdated {
+        agent: AgentId,
+        tokens: TokenUsage,
+        last_text: Option<String>,
+    },
+    /// The terminal's screen changed (not just a spinner redraw). The hub
+    /// sends this at most once per 30 s per terminal; it feeds the watchdog.
+    Progress {
+        term: TermId,
+    },
 }
 
 /// What the caller gets back for one command.
@@ -409,8 +439,12 @@ pub enum Effect {
     },
     /// Push and needs-you for a new human item.
     Notify { item: ItemId },
+    /// Push for a plan the executor marked done.
+    NotifyPlanDone { plan: PlanId },
     /// Save this plan.
     Persist { plan: PlanId },
+    /// Remove the plan's directory: its state, journal and `plan.md`.
+    DeletePlan { plan: PlanId },
     /// Save only what belongs to no plan (rev, terminals, inbox): a change
     /// that touched no plan still bumped `rev`.
     PersistGlobals,

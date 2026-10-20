@@ -3,13 +3,12 @@
 //! Everything here is pure. Errors are `error: ...` strings meant for the
 //! model (tools) or the log (hooks).
 
+use std::path::PathBuf;
+
 use cmux_core::engine::{Hook, NotificationKind, TaskPatch, ToolCall};
 use cmux_core::ids::{AgentId, AgentPath, PlanId, TaskId};
 use cmux_core::model::{PlanState, ReportStatus, TaskState};
 use serde_json::Value;
-
-/// Longest input summary shown to humans, in chars including the `…`.
-const SUMMARY_CHARS: usize = 60;
 
 /// Lines `peek` returns when the model names none.
 const PEEK_DEFAULT_LINES: usize = 40;
@@ -20,35 +19,8 @@ fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
 
-/// The text a permission rule is matched against, untruncated: the whole
-/// command for `Bash`, the path or URL for the file and web tools, and the
-/// compact JSON for anything else (MCP tools).
-pub fn match_input(tool: &str, input: &Value) -> String {
-    let key = match tool {
-        "Bash" => "command",
-        "Edit" | "Write" | "MultiEdit" | "Read" => "file_path",
-        "NotebookEdit" => "notebook_path",
-        "WebFetch" => "url",
-        "WebSearch" => "query",
-        "Glob" | "Grep" => "pattern",
-        _ => "",
-    };
-    match str_of(input, key) {
-        Some(s) if !key.is_empty() => s.to_string(),
-        _ => input.to_string(),
-    }
-}
-
-/// `match_input` on one line, cut to 60 chars with a trailing `…`.
-pub fn summarize(full: &str) -> String {
-    let one: String = full.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one.chars().count() <= SUMMARY_CHARS {
-        return one;
-    }
-    let mut s: String = one.chars().take(SUMMARY_CHARS - 1).collect();
-    s.push('…');
-    s
-}
+// The chat view summarizes tool calls the same way.
+pub use cmux_history::chat::{match_input, summarize};
 
 /// Claude's hook payload into a core [`Hook`]. `event` is the name the hook
 /// binary was started with.
@@ -58,6 +30,9 @@ pub fn parse_hook(event: &str, p: &Value) -> Result<Hook, String> {
     Ok(match event {
         "SessionStart" => Hook::SessionStart {
             session_id: str_of(p, "session_id").unwrap_or("").to_string(),
+            transcript_path: str_of(p, "transcript_path")
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
         },
         "UserPromptSubmit" => Hook::UserPromptSubmit {
             prompt: str_of(p, "prompt").unwrap_or("").to_string(),
@@ -354,7 +329,29 @@ mod tests {
         assert_eq!(
             h("SessionStart", json!({"session_id": "s1"})),
             Hook::SessionStart {
-                session_id: "s1".into()
+                session_id: "s1".into(),
+                transcript_path: None,
+            }
+        );
+        assert_eq!(
+            h(
+                "SessionStart",
+                json!({"session_id": "s2", "transcript_path": "/home/u/.claude/projects/-w/s2.jsonl"})
+            ),
+            Hook::SessionStart {
+                session_id: "s2".into(),
+                transcript_path: Some("/home/u/.claude/projects/-w/s2.jsonl".into()),
+            }
+        );
+        // An empty path is no path.
+        assert_eq!(
+            h(
+                "SessionStart",
+                json!({"session_id": "s3", "transcript_path": ""})
+            ),
+            Hook::SessionStart {
+                session_id: "s3".into(),
+                transcript_path: None,
             }
         );
         assert_eq!(

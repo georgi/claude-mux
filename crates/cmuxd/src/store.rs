@@ -194,42 +194,7 @@ impl Store {
 
     /// Reads everything. An empty directory gives a default `State`.
     pub fn load(&self) -> Result<State, StoreError> {
-        let mut st = State {
-            data_dir: self.dir.clone(),
-            ..State::default()
-        };
-        if let Some(g) = read_json::<Globals>(&self.dir.join("loose.json"))? {
-            st.rev = g.rev;
-            st.loose = g.loose;
-            st.terminals = g.terminals;
-            st.next_term_id = g.next_term_id;
-            st.global_limits = g.global_limits;
-            st.timeouts = g.timeouts;
-        }
-        if let Some(i) = read_json::<InboxFile>(&self.dir.join("inbox.json"))? {
-            st.inbox = i.inbox;
-            st.next_item_id = i.next_item_id;
-        }
-        let plans = self.dir.join("plans");
-        let rd = match fs::read_dir(&plans) {
-            Ok(rd) => rd,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(st),
-            Err(e) => return Err(StoreError::Io(plans, e)),
-        };
-        for entry in rd {
-            let entry = entry.map_err(|e| StoreError::Io(plans.clone(), e))?;
-            if let Some(plan) = read_json::<Plan>(&entry.path().join("state.json"))? {
-                st.plans.push(plan);
-            }
-        }
-        // Plan ids start with their date, so this is creation order.
-        st.plans.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
-        // A crash between the files must not let ids or rev run backwards.
-        let newest = st.inbox.iter().map(|i| i.id.0 + 1).max().unwrap_or(0);
-        st.next_item_id = st.next_item_id.max(newest);
-        let newest = st.terminals.keys().map(|t| t.0 + 1).max().unwrap_or(0);
-        st.next_term_id = st.next_term_id.max(newest);
-        Ok(st)
+        load_dir(&self.dir)
     }
 
     pub fn save_plan(&self, plan: &Plan) -> Result<(), StoreError> {
@@ -240,6 +205,15 @@ impl Store {
     pub fn save_globals(&self, g: &Globals, inbox: &InboxFile) -> Result<(), StoreError> {
         write_json(&self.dir.join("loose.json"), g)?;
         write_json(&self.dir.join("inbox.json"), inbox)
+    }
+
+    /// Removes the plan's directory. A missing directory is not an error.
+    pub fn delete_plan(&self, plan: &PlanId) -> Result<(), StoreError> {
+        let dir = self.plan_dir(plan);
+        match fs::remove_dir_all(&dir) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(StoreError::Io(dir, e)),
+            _ => Ok(()),
+        }
     }
 
     /// Appends one line to the plan's journal (or the global one).
@@ -258,6 +232,48 @@ impl Store {
         };
         go().map_err(|e| StoreError::Io(path, e))
     }
+}
+
+/// [`Store::load`] without the lock, for a reader such as `cmuxd doctor`
+/// while the server runs. Saves are atomic renames, so each file it reads is
+/// whole.
+pub fn load_dir(dir: &Path) -> Result<State, StoreError> {
+    let mut st = State {
+        data_dir: dir.to_path_buf(),
+        ..State::default()
+    };
+    if let Some(g) = read_json::<Globals>(&dir.join("loose.json"))? {
+        st.rev = g.rev;
+        st.loose = g.loose;
+        st.terminals = g.terminals;
+        st.next_term_id = g.next_term_id;
+        st.global_limits = g.global_limits;
+        st.timeouts = g.timeouts;
+    }
+    if let Some(i) = read_json::<InboxFile>(&dir.join("inbox.json"))? {
+        st.inbox = i.inbox;
+        st.next_item_id = i.next_item_id;
+    }
+    let plans = dir.join("plans");
+    let rd = match fs::read_dir(&plans) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(st),
+        Err(e) => return Err(StoreError::Io(plans, e)),
+    };
+    for entry in rd {
+        let entry = entry.map_err(|e| StoreError::Io(plans.clone(), e))?;
+        if let Some(plan) = read_json::<Plan>(&entry.path().join("state.json"))? {
+            st.plans.push(plan);
+        }
+    }
+    // Plan ids start with their date, so this is creation order.
+    st.plans.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+    // A crash between the files must not let ids or rev run backwards.
+    let newest = st.inbox.iter().map(|i| i.id.0 + 1).max().unwrap_or(0);
+    st.next_item_id = st.next_item_id.max(newest);
+    let newest = st.terminals.keys().map(|t| t.0 + 1).max().unwrap_or(0);
+    st.next_term_id = st.next_term_id.max(newest);
+    Ok(st)
 }
 
 fn read_json<T: for<'a> Deserialize<'a>>(path: &Path) -> Result<Option<T>, StoreError> {
@@ -309,6 +325,7 @@ enum Msg {
     Plan(Box<Plan>),
     Globals(Box<(Globals, InboxFile)>),
     Journal(Option<PlanId>, String),
+    DeletePlan(PlanId),
     Flush(mpsc::Sender<()>),
     /// Flush, release the data directory and end the thread.
     Close(mpsc::Sender<()>),
@@ -348,6 +365,12 @@ impl StoreWriter {
     /// One journal line, appended as soon as the thread gets to it.
     pub fn journal(&self, plan: Option<PlanId>, line: String) {
         let _ = self.tx.send(Msg::Journal(plan, line));
+    }
+
+    /// Drops a queued snapshot of the plan and removes its directory, after
+    /// everything queued before it.
+    pub fn delete_plan(&self, plan: PlanId) {
+        let _ = self.tx.send(Msg::DeletePlan(plan));
     }
 
     /// Flushes, then ends the writer thread and releases its hold on the
@@ -411,6 +434,12 @@ fn writer_loop(store: Arc<Store>, rx: mpsc::Receiver<Msg>, debounce: Duration) {
             Ok(Msg::Journal(plan, line)) => {
                 if let Err(e) = store.append_journal(plan.as_ref(), &line) {
                     tracing::error!(target: "store", "journal failed: {e}");
+                }
+            }
+            Ok(Msg::DeletePlan(plan)) => {
+                p.plans.remove(&plan);
+                if let Err(e) = store.delete_plan(&plan) {
+                    tracing::error!(target: "store", "delete plan failed: {e}");
                 }
             }
             Ok(Msg::Flush(ack)) => {
@@ -495,6 +524,26 @@ mod tests {
             })
             .count();
         assert_eq!(strays, 0);
+    }
+
+    #[test]
+    fn delete_plan_drops_the_queued_snapshot_and_the_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(tmp.path()).unwrap());
+        let w = StoreWriter::start(store.clone());
+        let (keep, gone) = (plan("keep"), plan("gone"));
+        w.save_plan(keep.clone());
+        w.save_plan(gone.clone());
+        w.flush();
+        w.journal(Some(gone.id.clone()), r#"{"k":1}"#.into());
+        w.save_plan(gone.clone());
+        w.delete_plan(gone.id.clone());
+        w.flush();
+        assert!(!store.plan_dir(&gone.id).exists());
+        assert!(store.plan_dir(&keep.id).join("state.json").exists());
+        let back = store.load().unwrap();
+        assert_eq!(back.plans.len(), 1);
+        assert_eq!(back.plans[0].id, keep.id);
     }
 
     #[test]

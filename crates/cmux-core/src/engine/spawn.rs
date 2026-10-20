@@ -5,9 +5,11 @@ use std::path::PathBuf;
 use super::*;
 use crate::ids::{AgentPath, TermId};
 use crate::model::{
-    Activity, Level, Plan, PlanState, PrRef, QueuedSpawn, TaskState, TermKind, Terminal,
-    TransitionSource, check_task_transition, pr_to_task_state,
+    Activity, CI_FAILURE_CAP, CiConclusion, CiMark, LAST_TEXT_CHARS, Level, Plan, PlanState,
+    QueuedSpawn, TaskState, TermKind, Terminal, TransitionSource, check_task_transition,
+    pr_to_task_state,
 };
+use crate::permissions::cut_chars;
 use crate::prompts::{Template, render, task_list_line};
 
 /// Terminal size until a client resizes it.
@@ -15,6 +17,11 @@ const DEFAULT_SIZE: (u16, u16) = (120, 40);
 /// First prompt of a resumed session; pending items ride along (path C).
 const RESUME_KICKOFF: &str =
     "[cmux] Your session was resumed. Continue your work where you left off.";
+/// First prompt of a session that `Recover` resumes.
+pub const RESTART_KICKOFF: &str =
+    "[cmux] resumed after a server restart; check the worktree and PR state before you continue";
+/// The reason `Recover` gives for the agents it ends.
+pub const SERVER_RESTART: &str = "server_restart";
 
 impl Ctx<'_> {
     // ---- prompts ----
@@ -191,7 +198,7 @@ impl Ctx<'_> {
         &mut self,
         title: String,
         repos: Vec<crate::model::Repo>,
-        request: String,
+        request: Option<String>,
     ) -> Result<Reply, EngineError> {
         if title.trim().is_empty() {
             return err(ErrorKind::Invalid, "a plan needs a title");
@@ -202,7 +209,9 @@ impl Ctx<'_> {
                 "a plan needs at least one repository; repos[0] is where the executor runs",
             );
         }
-        self.check_global_slot()?;
+        if request.is_some() {
+            self.check_global_slot()?;
+        }
         let (y, m, d) = civil_date(self.now);
         let mut id = PlanId::new(y, m, d, &title);
         let mut n = 1;
@@ -215,8 +224,13 @@ impl Ctx<'_> {
             id = PlanId::new(y, m, d, &format!("{}{suffix}", keep.trim_end_matches('-')));
         }
         let cwd = repos[0].path.clone();
-        self.st.plans.push(Plan::new(id.clone(), title, repos));
+        let mut plan = Plan::new(id.clone(), title, repos);
+        plan.limits = self.st.plan_limits;
+        self.st.plans.push(plan);
         self.touch(Change::Plan(id.clone()));
+        let Some(request) = request else {
+            return Ok(Reply::Text(id.to_string()));
+        };
         let pi = self.st.plans.len() - 1;
         let ai = self.register(pi, AgentId::new(id.clone(), AgentPath::Executor), cwd);
         let plan_file = self.plan_file(pi).display().to_string();
@@ -231,7 +245,7 @@ impl Ctx<'_> {
 
     // ---- limits ----
 
-    fn check_global_slot(&self) -> Result<(), EngineError> {
+    pub fn check_global_slot(&self) -> Result<(), EngineError> {
         let (n, max) = (self.live_processes(), self.st.global_limits.live_processes);
         if n >= max {
             return err(
@@ -575,6 +589,7 @@ impl Ctx<'_> {
             a.activity = Activity::Unknown;
             a.idle_since = None;
             a.consecutive_stop_blocks = 0;
+            a.stalled = false;
             if implicit {
                 a.report = None;
                 a.landed = false;
@@ -607,11 +622,100 @@ impl Ctx<'_> {
         Ok(Reply::Ok)
     }
 
+    /// After a server restart no process of the last run exists. Ends every
+    /// live agent, returns unconfirmed pastes to pending, fails sub-agents to
+    /// their task agent, and (with `auto_resume`) resumes the agents that
+    /// were working. Idle agents stay stopped until someone resumes them.
+    pub fn recover(&mut self, auto_resume: bool) {
+        let mut resume = Vec::new();
+        let mut ended = Vec::new();
+        for pi in 0..self.st.plans.len() {
+            for ai in 0..self.plan(pi).agents.len() {
+                let a = self.agent(pi, ai);
+                if !a.unconfirmed.is_empty() {
+                    let ids = std::mem::take(&mut self.agent_mut(pi, ai).unconfirmed);
+                    for item in ids {
+                        let pasted = self.item_idx(item).is_some_and(|i| {
+                            matches!(self.st.inbox[i].status, Delivery::Delivered { .. })
+                        });
+                        if pasted {
+                            self.set_status(item, Delivery::Pending);
+                        }
+                    }
+                }
+                let a = self.agent(pi, ai);
+                if !a.is_live() {
+                    continue;
+                }
+                let working = a.life == Life::Running && a.activity == Activity::Working;
+                let (id, level, started) = (a.id.clone(), a.level, !a.session_id.is_empty());
+                {
+                    let a = self.agent_mut(pi, ai);
+                    a.life = Life::Exited { code: None };
+                    a.activity = Activity::Unknown;
+                    a.stalled = false;
+                }
+                self.expire_held_for(&id);
+                if level == Level::Sub || !started {
+                    // Landing below may start queued tasks, so it waits for the resumes.
+                    ended.push((id, level));
+                } else if working && auto_resume {
+                    resume.push(id);
+                }
+            }
+        }
+        for id in resume {
+            // Refused only by a limit or a finished plan: it then stays stopped.
+            let _ = self.resume_agent(&id, Some(RESTART_KICKOFF.to_string()));
+        }
+        for (id, level) in ended {
+            let Ok((pi, ai)) = self.agent_idx(&id) else {
+                continue;
+            };
+            if level == Level::Sub {
+                self.fail_sub(pi, ai);
+            } else {
+                // Never started, so nothing can resume it: an implicit report.
+                let why = format!("{SERVER_RESTART}: the server restarted before it started");
+                self.end_agent(pi, ai, Life::Exited { code: None }, &why);
+            }
+        }
+        self.drain_queue();
+    }
+
+    /// A sub-agent is never resumed automatically: its task agent gets a
+    /// failed report and decides.
+    fn fail_sub(&mut self, pi: usize, ai: usize) {
+        let a = self.agent(pi, ai);
+        if a.report.is_none() {
+            let attempt = a
+                .task
+                .and_then(|t| self.plan(pi).task(t))
+                .map_or(0, |t| t.attempt);
+            self.agent_mut(pi, ai).report = Some(crate::model::Report {
+                status: crate::model::ReportStatus::Failed,
+                summary: format!(
+                    "{SERVER_RESTART}: the server restarted while it ran; sub-agents are not resumed automatically"
+                ),
+                pr_url: None,
+                attempt,
+                implicit: false,
+                supersedes_blocked: false,
+            });
+        }
+        self.land(pi, ai);
+    }
+
     /// Accepting hands the executor the execute kickoff: as a message when it
     /// runs, as the first prompt of a resumed session when it does not.
     pub fn hand_executor_kickoff(&mut self, pi: usize, kickoff: String) {
         let id = AgentId::new(self.plan(pi).id.clone(), AgentPath::Executor);
         let Ok((_, ai)) = self.agent_idx(&id) else {
+            // A plan the client wrote itself has no executor yet.
+            let cwd = self.plan(pi).repos[0].path.clone();
+            let ai = self.register(pi, id, cwd);
+            let fx = self.spawn_fx(pi, ai, false, kickoff);
+            self.fx.push(fx);
             return;
         };
         if self.agent(pi, ai).is_live() || self.resume_agent(&id, Some(kickoff.clone())).is_err() {
@@ -688,7 +792,14 @@ impl Ctx<'_> {
                 session_id,
                 token_hash,
             } => {
-                let (pi, ai) = self.agent_idx(&agent)?;
+                // The plan was deleted while the process started.
+                let Ok((pi, ai)) = self.agent_idx(&agent) else {
+                    self.fx.push(Effect::KillAgent {
+                        agent,
+                        term: Some(term),
+                    });
+                    return Ok(());
+                };
                 if self.agent(pi, ai).life == Life::Stopped {
                     self.fx.push(Effect::KillAgent {
                         agent,
@@ -697,10 +808,12 @@ impl Ctx<'_> {
                     return Ok(());
                 }
                 let cwd = self.agent(pi, ai).cwd.clone();
+                let now = self.now;
                 let a = self.agent_mut(pi, ai);
                 a.term = Some(term);
                 a.session_id = session_id;
                 a.token_hash = token_hash;
+                a.last_progress = Some(now);
                 self.st.next_term_id = self.st.next_term_id.max(term.0 + 1);
                 self.st.terminals.insert(
                     term,
@@ -771,19 +884,57 @@ impl Ctx<'_> {
                     self.touch(Change::Terminal(term));
                 }
             }
+            RunnerEvent::TokensUpdated {
+                agent,
+                tokens,
+                last_text,
+            } => {
+                let (pi, ai) = self.agent_idx(&agent)?;
+                let last_text = last_text.map(|t| cut_chars(&t, LAST_TEXT_CHARS));
+                let a = self.agent(pi, ai);
+                if a.tokens != tokens || (last_text.is_some() && a.last_text != last_text) {
+                    let a = self.agent_mut(pi, ai);
+                    a.tokens = tokens;
+                    if last_text.is_some() {
+                        a.last_text = last_text;
+                    }
+                }
+            }
+            RunnerEvent::Progress { term } => {
+                let agent = self.st.terminals.get(&term).and_then(|t| t.agent.clone());
+                if let Some((pi, ai)) = agent.and_then(|a| self.agent_idx(&a).ok())
+                    && self.agent(pi, ai).term == Some(term)
+                    && self.agent(pi, ai).is_live()
+                {
+                    self.progress(pi, ai);
+                }
+            }
             RunnerEvent::Pr { plan, task, state } => {
                 let pi = self.plan_idx(&plan)?;
                 let ti = self.task_idx(pi, task)?;
+                let capped = self.record_ci(pi, ti, state.ci);
                 let to = pr_to_task_state(&state);
                 let t = &self.plan(pi).tasks[ti];
-                if t.state == to || check_task_transition(t, to, TransitionSource::GitHub).is_err()
-                {
+                let moved =
+                    t.state != to && check_task_transition(t, to, TransitionSource::GitHub).is_ok();
+                let (from, agent) = (t.state, t.agent.clone());
+                let pr = t.pr.clone();
+                let number = pr
+                    .as_ref()
+                    .map_or(String::new(), |p| format!(" #{}", p.number));
+                if let Some(failures) = capped {
+                    let url = pr.as_ref().map_or("", |p| p.url.as_str());
+                    self.post(NewItem {
+                        to: Recipient::Human,
+                        kind: ItemKind::CiFailing,
+                        from: agent.clone(),
+                        body: format!("{task} PR{number}: CI failed {failures} times\n{url}"),
+                        dedupe: Some(format!("ci:{plan}:{task}:{failures}")),
+                    });
+                }
+                if !moved {
                     return Ok(());
                 }
-                let (from, agent) = (t.state, t.agent.clone());
-                let number =
-                    t.pr.as_ref()
-                        .map_or(String::new(), |p: &PrRef| format!(" #{}", p.number));
                 self.task_mut(pi, ti).state = to;
                 if to == TaskState::Merged {
                     self.stop_subs(pi, task);
@@ -793,6 +944,8 @@ impl Ctx<'_> {
                     state.merged, state.closed, state.ci
                 );
                 let executor = AgentId::new(plan, AgentPath::Executor);
+                // Past the red-CI cap the human has it, not the task agent.
+                let agent = agent.filter(|_| capped.is_none());
                 for target in agent.into_iter().chain([executor]) {
                     self.post(NewItem {
                         to: Recipient::Agent(target.clone()),
@@ -806,5 +959,30 @@ impl Ctx<'_> {
             }
         }
         Ok(())
+    }
+}
+
+impl Ctx<'_> {
+    /// Records the PR's CI mark and counts each move into red; green resets
+    /// the count. Returns the count when this red run is at or past
+    /// [`CI_FAILURE_CAP`].
+    fn record_ci(&mut self, pi: usize, ti: usize, ci: CiConclusion) -> Option<u8> {
+        let mark = CiMark::from_conclusion(ci);
+        let pr = self.plan(pi).tasks[ti].pr.as_ref()?;
+        let mut next = pr.clone();
+        next.ci = mark;
+        match mark {
+            Some(CiMark::Failing) if pr.ci != Some(CiMark::Failing) => {
+                next.ci_failures = pr.ci_failures.saturating_add(1);
+            }
+            Some(CiMark::Passing) => next.ci_failures = 0,
+            _ => {}
+        }
+        let capped = (next.ci_failures >= CI_FAILURE_CAP && next.ci_failures != pr.ci_failures)
+            .then_some(next.ci_failures);
+        if next != *pr {
+            self.task_mut(pi, ti).pr = Some(next);
+        }
+        capped
     }
 }

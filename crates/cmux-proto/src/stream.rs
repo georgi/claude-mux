@@ -11,14 +11,19 @@
 //! still in the ring, else `Snapshot`.
 //!
 //! Terminal input is a binary [`Frame::Input`], not a JSON message, so
-//! keystrokes cost no escaping. Chat messages are not part of M2.
+//! keystrokes cost no escaping.
+//!
+//! Chat: `sub_chat` answers with one `chat` message holding the entries after
+//! `after` (the whole kept conversation without it), then one `chat` message
+//! per batch of new entries until `unsub_chat`.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::api::{ErrorCode, Scope, ServerInfo};
-use crate::view::{ClientId, DeltaView, StateView, TermId};
+use crate::view::{AgentId, ChatEntry, ClientId, DeltaView, StateView, TermId};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientKind {
     Tui,
@@ -27,14 +32,14 @@ pub enum ClientKind {
 }
 
 /// A terminal the client already has bytes of, up to (not including) `seq`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct TermPos {
     pub id: TermId,
     pub since_seq: u64,
 }
 
 /// Client to server.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
     Hello {
@@ -74,10 +79,20 @@ pub enum ClientMsg {
         #[serde(default)]
         nonce: u64,
     },
+    /// Start streaming an agent's conversation. `after` is the uuid of the
+    /// last entry the client has.
+    SubChat {
+        agent: AgentId,
+        #[serde(default)]
+        after: Option<String>,
+    },
+    UnsubChat {
+        agent: AgentId,
+    },
 }
 
 /// Server to client.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
     Welcome {
@@ -117,13 +132,18 @@ pub enum ServerMsg {
         code: ErrorCode,
         message: String,
     },
+    /// Conversation entries of a `sub_chat` agent, oldest first.
+    Chat {
+        agent: AgentId,
+        entries: Vec<ChatEntry>,
+    },
     Pong {
         #[serde(default)]
         nonce: u64,
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PresenceEntry {
     pub id: ClientId,
     pub kind: ClientKind,
@@ -286,6 +306,18 @@ mod tests {
             cols: 80,
         });
         rt(ClientMsg::Ping { nonce: 3 });
+        let agent: AgentId = "P-20261018-demo/T-0001".parse().unwrap();
+        let sub = rt(ClientMsg::SubChat {
+            agent: agent.clone(),
+            after: Some("u-1".into()),
+        });
+        assert!(sub.contains(r#""type":"sub_chat""#), "{sub}");
+        rt(ClientMsg::UnsubChat { agent });
+        // `after` may be left out.
+        let m: ClientMsg =
+            serde_json::from_str(r#"{"type":"sub_chat","agent":"P-20261018-demo/executor"}"#)
+                .unwrap();
+        assert!(matches!(m, ClientMsg::SubChat { after: None, .. }));
     }
 
     #[test]
@@ -329,6 +361,24 @@ mod tests {
             rev: 5,
             items: vec![],
         });
+        let chat = rt(ServerMsg::Chat {
+            agent: "P-20261018-demo/executor".parse().unwrap(),
+            entries: vec![crate::view::ChatEntry {
+                uuid: "u-1".into(),
+                ts: 1,
+                role: crate::view::ChatRole::Assistant,
+                kind: crate::view::ChatKind::ToolCall,
+                text: "cargo test".into(),
+                tool: Some(crate::view::ChatTool {
+                    name: "Bash".into(),
+                    summary: "cargo test".into(),
+                }),
+            }],
+        });
+        assert!(
+            chat.contains(r#""type":"chat""#) && chat.contains(r#""kind":"tool_call""#),
+            "{chat}"
+        );
         rt(ServerMsg::Exit {
             term: TermId(1),
             code: 0,

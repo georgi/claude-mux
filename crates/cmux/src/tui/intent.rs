@@ -18,9 +18,6 @@ pub enum TreeIntent {
     /// `Space`: show the node's window, keep tree focus.
     Preview(Node),
     Filter,
-    NewPlan,
-    /// `t`: new task in the plan of the selection.
-    NewTask(PlanId),
     /// `A`: accept the plan and start it, or accept a task.
     Accept(Node),
     /// `S`: pause (or resume) the plan.
@@ -33,6 +30,8 @@ pub enum TreeIntent {
     Resume(AgentId),
     /// `c`: cancel the task (the client asks first).
     Cancel(PlanId, TaskId),
+    /// `X`: delete the plan of the selection (the client asks first).
+    Delete(PlanId),
     /// `e`: edit `plan.md` or the task body on the server.
     Edit(Node),
     /// `o`: open the task's PR in the local browser.
@@ -74,8 +73,6 @@ pub fn handle_tree_key(sv: &StateView, vs: &mut ViewState, key: Key) -> Option<T
         Key::Enter => sel.map(TreeIntent::Open),
         Key::Char(' ') => sel.map(TreeIntent::Preview),
         Key::Char('/') => Some(TreeIntent::Filter),
-        Key::Char('n') => Some(TreeIntent::NewPlan),
-        Key::Char('t') => plan.map(TreeIntent::NewTask),
         Key::Char('A') => sel
             .filter(|n| matches!(n, Node::Plan(_) | Node::Task(..)))
             .map(TreeIntent::Accept),
@@ -84,6 +81,7 @@ pub fn handle_tree_key(sv: &StateView, vs: &mut ViewState, key: Key) -> Option<T
         Key::Char('x') => agent.map(TreeIntent::Stop),
         Key::Char('R') => agent.map(TreeIntent::Resume),
         Key::Char('c') => task.map(|(p, t)| TreeIntent::Cancel(p, t)),
+        Key::Char('X') => plan.map(TreeIntent::Delete),
         Key::Char('e') => sel
             .filter(|n| matches!(n, Node::Plan(_) | Node::Task(..)))
             .map(TreeIntent::Edit),

@@ -1,0 +1,17 @@
+---
+source: crates/cmuxd/src/setup.rs
+expression: "unit_file(Path::new(\"/home/me/.local/bin/cmuxd\"), None,\n\"/home/me/.local/bin:/usr/local/bin:/usr/bin:/bin\",)"
+---
+# Written by `cmuxd setup`. Run it again after you move the binary.
+[Unit]
+Description=cmux server
+
+[Service]
+Type=simple
+ExecStart=/home/me/.local/bin/cmuxd serve
+Restart=on-failure
+RestartSec=2
+Environment=PATH=/home/me/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

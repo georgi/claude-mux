@@ -14,6 +14,7 @@ use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use cmux_core::engine::{ClientAction, Reply};
 use cmux_core::ids::TermId;
+use cmux_proto::CLAUDE_DEFAULT_ARGS;
 use cmux_proto::api::{
     CreateTerminalReq, CreateTerminalResp, ErrorCode, NewTerminalKind, ScrollbackResp, route,
 };
@@ -22,6 +23,9 @@ use serde::Deserialize;
 
 use super::auth::Principal;
 use super::{ApiError, ApiResult, AppState};
+use crate::agent::runner::running_exe;
+use crate::claude::spawn;
+use crate::store::atomic_write;
 use crate::term::hub::{TermConfig, term_key};
 use crate::term::pty::PtySpec;
 
@@ -39,9 +43,12 @@ pub fn routes() -> Router<AppState> {
 }
 
 /// What to run for a request.
+/// `CLAUDE_DEFAULT_ARGS`, then `session_args`, go before a Claude terminal's
+/// own arguments.
 fn spec_for(
     req: &CreateTerminalReq,
     claude_bin: &str,
+    session_args: &[String],
     cwd: PathBuf,
     rows: u16,
     cols: u16,
@@ -49,7 +56,11 @@ fn spec_for(
     let mut spec = match &req.kind {
         NewTerminalKind::Claude { args } => {
             let mut s = PtySpec::new(claude_bin, &[]);
-            s.args = args.clone();
+            s.args = CLAUDE_DEFAULT_ARGS
+                .iter()
+                .map(|a| a.to_string())
+                .chain(session_args.iter().chain(args).cloned())
+                .collect();
             s
         }
         NewTerminalKind::Shell => {
@@ -73,6 +84,18 @@ fn spec_for(
     spec.rows = rows;
     spec.cols = cols;
     Ok(spec)
+}
+
+/// Writes the session MCP config (cheap, and it follows a moved binary or
+/// socket) and returns the flags that load it.
+async fn session_tools(app: &AppState) -> ApiResult<Vec<String>> {
+    let file = spawn::session_mcp_file(&app.data_dir);
+    let json = spawn::session_mcp_json(&running_exe(), &app.config.socket_path());
+    let path = file.clone();
+    tokio::task::spawn_blocking(move || atomic_write(&path, json.as_bytes()))
+        .await
+        .map_err(|e| ApiError::new(ErrorCode::Internal, format!("error: {e}")))??;
+    Ok(spawn::session_args(&file))
 }
 
 fn parse_id(s: &str) -> ApiResult<TermId> {
@@ -112,7 +135,18 @@ async fn create(
     if rows > MAX_DIM || cols > MAX_DIM {
         return Err(ApiError::invalid("error: rows and cols must be 1..=1000"));
     }
-    let spec = spec_for(&req, &app.config.agents.claude_bin, cwd.clone(), rows, cols)?;
+    let session_args = match req.kind {
+        NewTerminalKind::Claude { .. } => session_tools(&app).await?,
+        _ => Vec::new(),
+    };
+    let spec = spec_for(
+        &req,
+        &app.config.agents.claude_bin,
+        &session_args,
+        cwd.clone(),
+        rows,
+        cols,
+    )?;
     let reply = app
         .actor
         .client(

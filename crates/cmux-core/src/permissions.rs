@@ -187,7 +187,7 @@ pub fn summarize_input(tool: &str, input_json: &str) -> String {
     cut_chars(&collapsed, SUMMARY_CHARS)
 }
 
-fn cut_chars(s: &str, max: usize) -> String {
+pub(crate) fn cut_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }

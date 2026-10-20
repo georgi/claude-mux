@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use cmux_proto::CLAUDE_DEFAULT_ARGS;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use crate::Event;
@@ -62,6 +63,8 @@ const SESSION_ENV_PREFIXES: &[&str] = &[
     "CCR_",
     "CLAUDE_COWORK_",
     "CLAUDE_CODE_SYNC_",
+    // The real-claude suite found `CLAUDE_CODE_BRIDGE_SESSION_ID` (Remote Control).
+    "CLAUDE_CODE_BRIDGE_",
 ];
 
 /// Whether `name` is on the scrub lists.
@@ -173,6 +176,8 @@ pub struct Pane {
     pub label: Option<String>,
     /// Remote panes: a finished sub-agent, drawn dimmed until it is closed.
     pub dim: bool,
+    /// Remote panes: the agent's process is over; the pane is drawn dimmed.
+    pub finished: bool,
 }
 
 /// Where a pane's bytes come from and go to.
@@ -223,6 +228,9 @@ impl Pane {
             .context("openpty failed")?;
 
         let mut cmd = CommandBuilder::new(&spec.program);
+        if spec.kind == Kind::Claude {
+            cmd.args(CLAUDE_DEFAULT_ARGS);
+        }
         cmd.args(&spec.args);
         cmd.cwd(&spec.cwd);
         cmd.env("TERM", "xterm-256color");
@@ -302,6 +310,7 @@ impl Pane {
             agent: None,
             label: None,
             dim: false,
+            finished: false,
         })
     }
 
@@ -327,6 +336,7 @@ impl Pane {
             agent: None,
             label: None,
             dim: false,
+            finished: false,
         }
     }
 

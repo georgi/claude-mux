@@ -86,7 +86,7 @@ fn draw_remote_body(f: &mut Frame, app: &App, full: Rect, body: Rect) {
         draw_window(f, app, w, body);
     } else {
         let msg = if sv.plans.is_empty() && sv.terminals.is_empty() {
-            "nothing on this server yet - n new plan, prefix c new Claude, prefix t shell"
+            "nothing on this server yet - prefix c new Claude (ask it for a plan), prefix t shell"
         } else {
             "no windows yet - open a node of the tree"
         };
@@ -127,9 +127,9 @@ fn draw_window(f: &mut Frame, app: &App, w: &Window, area: Rect) {
         let p = pane.parser.lock().unwrap();
         let screen = p.screen();
         f.render_widget(Screen(screen), a.body);
-        if pane.dim {
+        if pane.finished {
             f.buffer_mut()
-                .set_style(a.body, Style::default().add_modifier(Modifier::DIM));
+                .set_style(a.body, Style::default().fg(DIM).add_modifier(Modifier::DIM));
         }
         if let Some(h) = a.header {
             draw_pane_header(f, app, pane, focused, screen.scrollback(), h);
@@ -191,9 +191,12 @@ fn draw_pane_header(
     scrolled: usize,
     area: Rect,
 ) {
+    let outcome = app.remote.as_ref().and_then(|r| r.pane_outcome(pane));
     let style = if pane.dim {
         let bg = if focused { Color::Indexed(238) } else { BAR_BG };
         Style::default().bg(bg).fg(DIM)
+    } else if pane.finished && !focused {
+        Style::default().bg(BAR_BG).fg(DIM)
     } else if focused {
         Style::default()
             .bg(Color::Indexed(238))
@@ -208,10 +211,17 @@ fn draw_pane_header(
         Style::default().bg(BAR_BG).fg(BAR_FG)
     };
     let w = area.width as usize;
-    let name = truncate(&pane.name(), w.saturating_sub(4).max(1));
+    let end = outcome.map_or(String::new(), |(_, words)| format!(" · {words}"));
+    let name = truncate(&format!("{}{end}", pane.name()), w.saturating_sub(4).max(1));
+    let glyph = match outcome {
+        Some((g, _)) => Span::styled(g, style.remove_modifier(Modifier::BOLD)),
+        None => {
+            status_glyph(app, pane).patch_style(Style::default().bg(style.bg.unwrap_or(BAR_BG)))
+        }
+    };
     let mut spans = vec![
         Span::styled(" ", style),
-        status_glyph(app, pane).patch_style(Style::default().bg(style.bg.unwrap_or(BAR_BG))),
+        glyph,
         Span::styled(format!(" {name} "), style),
     ];
     let mut used = 4 + name.width();
@@ -230,27 +240,12 @@ fn draw_pane_header(
             format!(" +{scrolled} "),
             Style::default().bg(Color::Cyan).fg(Color::Black),
         ));
-    } else if w > used + 4 {
-        // An agent that reported says so instead of showing its directory.
-        let report = app
-            .remote
-            .as_ref()
-            .and_then(|r| r.mirror.sv.agent(pane.agent.as_ref()?))
-            .and_then(marks::report_mark);
-        let (sep, what) = match (&pane.agent, report) {
-            (_, Some(r)) => ("· ", r),
-            (Some(_), None) => ("· ", tilde(&pane.cwd)),
-            (None, None) => (" ", tilde(&pane.cwd)),
-        };
-        // Columns left after the separator and the bar's closing space.
-        let room = (w - used).saturating_sub(sep.width() + 1);
-        if room >= 4 {
-            let text = truncate(&what, room);
-            spans.push(Span::styled(
-                format!("{sep}{text}"),
-                style.fg(DIM).remove_modifier(Modifier::BOLD),
-            ));
-        }
+    } else if w > used + 6 {
+        let dir = truncate(&tilde(&pane.cwd), w - used - 2);
+        spans.push(Span::styled(
+            format!(" {dir}"),
+            style.fg(DIM).remove_modifier(Modifier::BOLD),
+        ));
     }
     f.render_widget(Paragraph::new(Line::from(spans)).style(style), area);
 }

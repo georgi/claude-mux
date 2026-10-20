@@ -84,10 +84,7 @@ fn parse_pr(url: &str) -> Result<PrRef, EngineError> {
         })
         .and_then(|n| n.parse().ok());
     match number {
-        Some(number) => Ok(PrRef {
-            url: url.to_string(),
-            number,
-        }),
+        Some(number) => Ok(PrRef::new(url, number)),
         None => err(
             ErrorKind::Invalid,
             format!(
@@ -253,7 +250,8 @@ impl Ctx<'_> {
             ToolCall::SetTaskPr { url } => {
                 let pr = parse_pr(&url)?;
                 let ti = self.task_idx(pi, own.expect("task agent"))?;
-                if self.plan(pi).tasks[ti].pr.as_ref() != Some(&pr) {
+                // The same URL again keeps the CI state the poller recorded.
+                if self.plan(pi).tasks[ti].pr.as_ref().map(|p| &p.url) != Some(&pr.url) {
                     self.task_mut(pi, ti).pr = Some(pr.clone());
                 }
                 text(format!("PR #{} recorded", pr.number))
@@ -450,6 +448,8 @@ impl Ctx<'_> {
                         self.stop_agent(pi, ai);
                     }
                 }
+                let plan = self.plan(pi).id.clone();
+                self.fx.push(Effect::NotifyPlanDone { plan });
                 text("the plan is done")
             }
             _ => text("plan updated"),
@@ -505,7 +505,7 @@ impl Ctx<'_> {
             _ => None,
         };
         if let Some(pr) = pr
-            && self.plan(pi).tasks[ti].pr.as_ref() != Some(&pr)
+            && self.plan(pi).tasks[ti].pr.as_ref().map(|p| &p.url) != Some(&pr.url)
         {
             self.task_mut(pi, ti).pr = Some(pr);
         }

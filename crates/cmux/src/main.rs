@@ -58,6 +58,9 @@ cmux - a terminal multiplexer for Claude Code sessions
 USAGE:
     cmux [OPTIONS] [DIR...] [-- CLAUDE_ARGS...]
     cmux login URL | logout [NAME] | servers    Pair with and manage cmuxd servers
+    cmux [-s NAME] VERB ARGS...                 plans, board, new-plan, accept, pause,
+                                                inbox, allow, deny, reply, send, stop,
+                                                resume, tail, attach (`cmux plans -h`)
 
 With a server (-s, a default in client.toml, or a cmuxd socket on this machine)
 cmux attaches to it: plans, agents and terminals live on the server and keep
@@ -97,7 +100,7 @@ fn parse_prefix(s: &str) -> Result<u8> {
     }
 }
 
-fn parse_args() -> Result<Options> {
+fn parse_args(argv: impl IntoIterator<Item = String>) -> Result<Options> {
     let mut o = Options {
         prefix: parse_prefix(&std::env::var("CMUX_PREFIX").unwrap_or_else(|_| "b".into()))?,
         claude: std::env::var("CMUX_CLAUDE").unwrap_or_else(|_| "claude".into()),
@@ -110,7 +113,7 @@ fn parse_args() -> Result<Options> {
         server: None,
         local: false,
     };
-    let mut args = std::env::args().skip(1);
+    let mut args = argv.into_iter();
     while let Some(a) = args.next() {
         match a.as_str() {
             "-h" | "--help" => {
@@ -161,6 +164,20 @@ fn restore_terminal() {
     let _ = terminal::disable_raw_mode();
 }
 
+/// Takes a leading `-s NAME` off `argv`, so `cmux -s home plans` reaches
+/// the verb.
+fn split_server(mut argv: Vec<String>) -> (Option<String>, Vec<String>) {
+    match argv.first().map(String::as_str) {
+        Some("-s" | "--server")
+            if argv.len() >= 3 && conn::verbs::VERBS.contains(&argv[2].as_str()) =>
+        {
+            let rest = argv.split_off(2);
+            (argv.pop(), rest)
+        }
+        _ => (None, argv),
+    }
+}
+
 fn main() -> Result<()> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     match argv.first().map(String::as_str) {
@@ -169,7 +186,15 @@ fn main() -> Result<()> {
         Some("logout") => return conn::cli::servers(&argv[1..], true),
         _ => {}
     }
-    let opts = parse_args()?;
+    let (server_name, argv) = split_server(argv);
+    match argv.first().map(String::as_str) {
+        Some("attach") => return attach(server_name, &argv[1..]),
+        Some(v) if conn::verbs::VERBS.contains(&v) => {
+            std::process::exit(conn::verbs::main(server_name.as_deref(), v, &argv[1..]))
+        }
+        _ => {}
+    }
+    let opts = parse_args(argv)?;
     let server = conn::servers::pick(
         &conn::servers::ClientConfig::load(&conn::servers::client_toml())?,
         opts.server.as_deref(),
@@ -177,6 +202,38 @@ fn main() -> Result<()> {
         &conn::servers::local_socket(),
         conn::servers::socket_alive,
     )?;
+    start_tui(opts, server, None)
+}
+
+/// `cmux attach [<agent>] [OPTIONS]`: the TUI on a server, opened on that
+/// agent. Exit codes as for the other verbs.
+fn attach(server_name: Option<String>, args: &[String]) -> Result<()> {
+    let (agent, rest) = match args.first() {
+        Some(a) if !a.starts_with('-') => (Some(a.as_str()), &args[1..]),
+        _ => (None, args),
+    };
+    let fail = |e: conn::verbs::VerbError| -> ! {
+        eprintln!("{}", e.line());
+        std::process::exit(e.code())
+    };
+    let mut opts = parse_args(rest.to_vec())
+        .unwrap_or_else(|e| fail(conn::verbs::VerbError::Usage(e.to_string())));
+    if server_name.is_some() {
+        opts.server = server_name;
+    }
+    let server = conn::servers::ClientConfig::load(&conn::servers::client_toml())
+        .and_then(|c| c.resolve(opts.server.as_deref(), &conn::servers::local_socket()))
+        .unwrap_or_else(|e| fail(conn::verbs::VerbError::Server(format!("{e:#}"))));
+    let http = conn::http::Http::new(server.endpoint.clone());
+    let target = conn::verbs::attach_target(&http, agent).unwrap_or_else(|e| fail(e));
+    start_tui(opts, Some(server), target)
+}
+
+fn start_tui(
+    opts: Options,
+    server: Option<conn::servers::Server>,
+    target: Option<tui::state::Node>,
+) -> Result<()> {
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         bail!("cmux needs an interactive terminal");
     }
@@ -195,7 +252,7 @@ fn main() -> Result<()> {
     }
     let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
 
-    let result = run(&mut term, opts, server);
+    let result = run(&mut term, opts, server, target);
     restore_terminal();
     result
 }
@@ -204,6 +261,7 @@ fn run(
     term: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     opts: Options,
     server: Option<conn::servers::Server>,
+    target: Option<tui::state::Node>,
 ) -> Result<()> {
     let (tx, rx) = mpsc::channel::<Event>();
 
@@ -263,7 +321,9 @@ fn run(
             let rest = std::sync::Arc::new(tui::remote::HttpRest(conn::http::Http::new(
                 s.endpoint.clone(),
             )));
-            let remote = app::remote::RemoteState::connect(s.name, s.endpoint, rest, tx.clone());
+            let mut remote =
+                app::remote::RemoteState::connect(s.name, s.endpoint, rest, tx.clone());
+            remote.open_on_start = target;
             App::new_remote(opts, tx, rows, cols, remote)
         }
     };

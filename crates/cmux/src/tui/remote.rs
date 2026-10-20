@@ -13,7 +13,7 @@ use cmux_proto::view::{AgentId, ItemId, PlanId, PlanState, StateView, TaskId, Ta
 use serde::Serialize;
 use serde_json::Value;
 
-use super::forms::{FormEvent, FormView, MessageForm, NewPlanForm, NewTaskForm, NoteForm};
+use super::forms::{FormEvent, FormView, MessageForm, NoteForm};
 use super::intent::{InboxIntent, TreeIntent};
 use super::state::Node;
 use crate::conn::http::Http;
@@ -149,6 +149,8 @@ pub enum Pending {
     Stop(AgentId),
     /// `c`: cancel the task.
     Cancel(PlanId, TaskId),
+    /// `X`: delete the plan.
+    Delete(PlanId),
 }
 
 impl Pending {
@@ -156,6 +158,7 @@ impl Pending {
         match self {
             Pending::Stop(a) => format!("stop {}? (y/n)", a.path()),
             Pending::Cancel(_, t) => format!("cancel {t}? (y/n)"),
+            Pending::Delete(p) => format!("delete {p} and stop its agents? (y/n)"),
         }
     }
 
@@ -166,14 +169,13 @@ impl Pending {
                 route::task(&p.to_string(), &t.to_string()),
                 &serde_json::json!({ "state": TaskState::Cancelled }),
             ),
+            Pending::Delete(p) => Request::delete(format!("{}/{p}", route::PLANS)),
         }
     }
 }
 
 /// The open form of tree and overlay keys.
 pub enum ActiveForm {
-    Plan(NewPlanForm),
-    Task(NewTaskForm),
     Message(MessageForm),
     Note(NoteForm),
 }
@@ -196,10 +198,6 @@ impl ActiveForm {
             }
         }
         match self {
-            ActiveForm::Plan(f) => conv(f.handle(key), |req| Request::post(route::PLANS, &req)),
-            ActiveForm::Task(f) => conv(f.handle(key), |(plan, req)| {
-                Request::post(route::plan(&plan.to_string(), "tasks"), &req)
-            }),
             ActiveForm::Message(f) => conv(f.handle(key), |(agent, req): (AgentId, MessageReq)| {
                 Request::post(agent_route(&agent, "messages"), &req)
             }),
@@ -209,8 +207,6 @@ impl ActiveForm {
 
     fn inner(&self) -> &dyn FormView {
         match self {
-            ActiveForm::Plan(f) => f,
-            ActiveForm::Task(f) => f,
             ActiveForm::Message(f) => f,
             ActiveForm::Note(f) => f,
         }
@@ -263,17 +259,11 @@ pub enum Action {
     Flash(String),
 }
 
-/// `default_repo` fills the new-plan form.
-pub fn action_for(sv: &StateView, default_repo: &str, intent: TreeIntent) -> Action {
+pub fn action_for(sv: &StateView, intent: TreeIntent) -> Action {
     match intent {
         TreeIntent::Open(n) => Action::Open(n),
         TreeIntent::Preview(n) => Action::Preview(n),
         TreeIntent::Filter => Action::Flash("filter is not available yet".into()),
-        TreeIntent::NewPlan => Action::Form(ActiveForm::Plan(NewPlanForm::new(default_repo))),
-        TreeIntent::NewTask(plan) => {
-            let repos = sv.plan(&plan).map_or(1, |p| p.repos.len().max(1));
-            Action::Form(ActiveForm::Task(NewTaskForm::new(plan, repos)))
-        }
         TreeIntent::Accept(Node::Plan(plan)) => match sv.plan(&plan).map(|p| p.state) {
             Some(PlanState::Draft | PlanState::Proposed) => Action::Send(Request::post_empty(
                 route::plan(&plan.to_string(), "accept"),
@@ -301,6 +291,7 @@ pub fn action_for(sv: &StateView, default_repo: &str, intent: TreeIntent) -> Act
         TreeIntent::Stop(a) => Action::Confirm(Pending::Stop(a)),
         TreeIntent::Resume(a) => Action::Send(Request::post_empty(agent_route(&a, "resume"))),
         TreeIntent::Cancel(p, t) => Action::Confirm(Pending::Cancel(p, t)),
+        TreeIntent::Delete(p) => Action::Confirm(Pending::Delete(p)),
         TreeIntent::Edit(_) => Action::Flash(
             "edit is not available yet: the server has no editor pane for plan.md".into(),
         ),

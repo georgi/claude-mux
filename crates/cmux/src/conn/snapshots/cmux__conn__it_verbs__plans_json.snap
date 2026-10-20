@@ -1,0 +1,31 @@
+---
+source: crates/cmux/src/conn/it_verbs.rs
+expression: "fx.stable(&plan, &json)"
+---
+[
+  {
+    "agents": [
+      "P-[DATE]-demo/executor"
+    ],
+    "id": "P-[DATE]-demo",
+    "limits": {
+      "subagents_per_task": 2,
+      "tasks_per_plan": 2
+    },
+    "paused": false,
+    "queue": [],
+    "repos": [
+      {
+        "base_branch": "main",
+        "path": "[ROOT]/repo",
+        "remote_url": null
+      }
+    ],
+    "state": "proposed",
+    "tasks": [
+      "T-0001",
+      "T-0002"
+    ],
+    "title": "demo"
+  }
+]

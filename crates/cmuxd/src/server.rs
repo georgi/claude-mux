@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use cmux_core::engine::ClientAction;
+use cmux_core::engine::{ClientAction, Command};
 use cmux_core::ids::ClientId;
 use tokio::net::{TcpListener, UnixListener};
 use tokio::sync::watch;
@@ -23,9 +23,12 @@ use crate::actor::{
 };
 use crate::api::auth::PeerCred;
 use crate::api::{self, AppState, Extra, Transport};
+use crate::claude::transcript::Transcripts;
 use crate::config::{self, Config, ConfigError};
 use crate::devices::Devices;
 use crate::diag::{Diag, DiagLayer};
+use crate::git::github::{self, Gh, GhCli};
+use crate::push::{Push, PushRunner};
 use crate::store::{Store, StoreError, StoreWriter};
 use crate::term::hub::Hub;
 
@@ -76,8 +79,10 @@ pub struct ServerBuilder {
     tick: Option<Duration>,
     runners: Vec<RunnerFactory>,
     hub: Arc<Hub>,
+    transcripts: Arc<Transcripts>,
     extra: Option<Box<dyn Fn() -> Extra + Send>>,
     global_tracing: bool,
+    gh: Option<Arc<dyn Gh>>,
 }
 
 impl ServerBuilder {
@@ -88,8 +93,10 @@ impl ServerBuilder {
             tick: Some(Duration::from_secs(1)),
             runners: Vec::new(),
             hub: Arc::new(Hub::new()),
+            transcripts: Transcripts::new(),
             extra: None,
             global_tracing: false,
+            gh: None,
         }
     }
 
@@ -100,12 +107,20 @@ impl ServerBuilder {
         self.hub.clone()
     }
 
+    /// The transcript tailer, shared with the agent runtime so its reads at
+    /// `Stop` and at exit reach chat subscribers too.
+    pub fn transcripts(mut self, t: Arc<Transcripts>) -> Self {
+        self.transcripts = t;
+        self
+    }
+
     pub fn clock(mut self, clock: Clock) -> Self {
         self.clock = clock;
         self
     }
 
-    /// `None` stops the 1 s ticker (tests that drive time by hand).
+    /// `None` stops the 1 s ticker and the GitHub poller (tests that drive
+    /// time by hand; [`gh`](Self::gh) turns the poller back on).
     pub fn tick(mut self, every: Option<Duration>) -> Self {
         self.tick = every;
         self
@@ -127,6 +142,12 @@ impl ServerBuilder {
         self
     }
 
+    /// The `gh` the PR poller uses instead of `[github] gh_bin` (tests).
+    pub fn gh(mut self, gh: Arc<dyn Gh>) -> Self {
+        self.gh = Some(gh);
+        self
+    }
+
     /// Send `tracing` events to the diagnostics log (once per process).
     pub fn global_tracing(mut self, on: bool) -> Self {
         self.global_tracing = on;
@@ -140,8 +161,10 @@ impl ServerBuilder {
             tick,
             runners,
             hub,
+            transcripts,
             extra,
             global_tracing,
+            gh,
         } = self;
         // Fail on bad configuration before touching the disk.
         let tcp_addr = config.tcp_addr()?;
@@ -152,19 +175,26 @@ impl ServerBuilder {
         let store = Arc::new(Store::open(&data_dir)?);
         let mut state = store.load()?;
         state.data_dir = data_dir.clone();
-        // The config is the source of truth for the wait, not the saved copy.
-        state.timeouts.permission_wait = config
-            .agents
-            .permission_wait_secs
-            .max(1)
-            .saturating_mul(1000);
+        // The config is the source of truth for timers and limits, not the saved copy.
+        state.timeouts = config.engine_timeouts();
+        state.global_limits = config.limits.global();
+        state.plan_limits = config.limits.plan();
         let diag = Diag::open(&data_dir).map_err(|e| ServerError::Io("diagnostics".into(), e))?;
         if global_tracing {
             use tracing_subscriber::layer::SubscriberExt;
             let sub = tracing_subscriber::registry().with(DiagLayer(diag.clone()));
             let _ = tracing::subscriber::set_global_default(sub);
         }
+        let push = Push::open(
+            &data_dir,
+            &config.push,
+            config.public_url.as_deref(),
+            diag.clone(),
+        )
+        .map(Arc::new)
+        .map_err(|e| ServerError::Io("push".into(), e))?;
         let writer = StoreWriter::start(store.clone());
+        let push_runner = PushRunner(push.clone());
         let actor = actor::spawn(
             state,
             ActorOptions {
@@ -176,26 +206,20 @@ impl ServerBuilder {
             move |handle| {
                 let mut all: Vec<Box<dyn EffectRunner>> = vec![Box::new(PersistRunner(writer))];
                 all.extend(runners.into_iter().map(|make| make(handle.clone())));
+                all.push(Box::new(push_runner));
                 Box::new(CompositeRunner(all))
             },
         );
         let devices = Devices::open(&data_dir, clock.clone())
             .map_err(|e| ServerError::Io("devices.json".into(), e))?;
-        let app = AppState::new(actor, devices, config.clone(), diag, data_dir, hub);
+        let app = AppState::new(actor, devices, config.clone(), diag, hub, transcripts, push);
         close_orphan_terminals(&app).await;
         let extra = extra.unwrap_or_else(|| Box::new(Extra::default));
 
-        let (stop_tx, stop_rx) = watch::channel(false);
-        let mut tasks = Vec::new();
-
-        // The Unix socket.
+        // Bind first: a resumed agent's hooks queue on the socket until it serves.
         let socket_path = config.socket_path();
-        let listener = bind_unix(&socket_path)?;
-        let router = api::router_with(app.clone(), Transport::Unix, extra());
-        tasks.push(tokio::spawn(serve_unix(listener, router, stop_rx.clone())));
-
-        // TCP.
-        let mut bound = None;
+        let unix = bind_unix(&socket_path)?;
+        let mut tcp = None;
         if let Some(addr) = tcp_addr {
             let listener = TcpListener::bind(addr)
                 .await
@@ -203,9 +227,56 @@ impl ServerBuilder {
             let local = listener
                 .local_addr()
                 .map_err(|e| ServerError::Io("local_addr".into(), e))?;
+            tcp = Some((listener, local));
+        }
+
+        // The processes of the last run are gone; settle that before any client acts.
+        let recover = Command::Recover {
+            auto_resume: config.auto_resume,
+        };
+        if let Ok(Err(e)) = app.actor.call(recover).await {
+            app.diag.log(
+                "error",
+                "recover",
+                serde_json::json!({ "error": e.to_string() }),
+            );
+        }
+
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let mut tasks = Vec::new();
+        tasks.push(tokio::spawn(
+            app.transcripts
+                .clone()
+                .poll(app.actor.clone(), stop_rx.clone()),
+        ));
+        let router = api::router_with(app.clone(), Transport::Unix, extra());
+        tasks.push(tokio::spawn(serve_unix(unix, router, stop_rx.clone())));
+        let mut bound = None;
+        if let Some((listener, local)) = tcp {
             bound = Some(local);
             let router = api::router_with(app.clone(), Transport::Tcp, extra());
             tasks.push(serve_tcp(&config, listener, router, stop_rx.clone()).await?);
+        }
+        // The poller is a timer: a server without the ticker has none, unless
+        // the builder was given a `gh` on purpose.
+        let gh = gh.or_else(|| {
+            tick.map(|_| -> Arc<dyn Gh> {
+                Arc::new(GhCli {
+                    bin: config.github.gh_bin.clone(),
+                })
+            })
+        });
+        match gh {
+            Some(gh) if config.github.enabled => tasks.push(github::spawn(
+                app.actor.clone(),
+                gh,
+                config.github.cadence(),
+                Duration::from_secs(1),
+                app.github.clone(),
+                stop_rx.clone(),
+            )),
+            Some(_) => app.github.off("disabled in config"),
+            None => app.github.off("no ticker"),
         }
         if let Ok(mut b) = app.base_url.write() {
             *b = config.base_url(bound);

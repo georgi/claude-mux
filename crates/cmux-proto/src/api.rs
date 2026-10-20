@@ -7,8 +7,11 @@
 use cmux_core::engine::{ErrorKind, HookReply, ItemAction, PermissionDecision};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use ts_rs::TS;
 
-use crate::view::{AgentId, Repo, TaskId, TaskState, TermId, TermKind, TerminalView, Timestamp};
+use crate::view::{
+    AgentId, ChatEntry, Level, Repo, TaskId, TaskState, TermId, TermKind, TerminalView, Timestamp,
+};
 
 /// Header on mutating requests; a retry with the same key replays the first
 /// response instead of acting twice.
@@ -36,12 +39,23 @@ pub mod route {
     pub const PAIR_START: &str = "/v1/pair/start";
     pub const PAIR_COMPLETE: &str = "/v1/pair/complete";
     pub const DEVICES: &str = "/v1/devices";
+    /// `GET` (ReposResp); `POST` (AddRepoReq) clones or registers one.
+    pub const REPOS: &str = "/v1/repos";
+    /// `GET` (SettingsResp): the server's limits and Claude options.
+    pub const SETTINGS: &str = "/v1/settings";
     /// `POST` (bearer token) sets the web session cookie; `DELETE` clears it.
     pub const SESSION: &str = "/v1/session";
+    /// `GET` (VapidResp): the server's Web Push key.
+    pub const PUSH_VAPID: &str = "/v1/push/vapid";
+    /// `POST` (PushSubscribeReq): add or update this browser's subscription.
+    pub const PUSH_SUBSCRIBE: &str = "/v1/push/subscribe";
+    /// `POST` (PushUnsubscribeReq): drop a subscription.
+    pub const PUSH_UNSUBSCRIBE: &str = "/v1/push/unsubscribe";
     pub const AGENT_HOOK: &str = "/v1/agent/hook";
     pub const AGENT_TOOL: &str = "/v1/agent/tool";
 
     // plan: POST accept|pause|resume|cancel; GET/PUT body; POST tasks
+    // DELETE PLANS/{plan}: stop its agents and forget it
     pub fn plan(plan: &str, action: &str) -> String {
         format!("/v1/plans/{plan}/{action}")
     }
@@ -68,6 +82,10 @@ pub mod route {
     pub fn scrollback(term: u32) -> String {
         format!("/v1/terminals/{term}/scrollback")
     }
+    // GET ?after=<uuid>&limit= (TranscriptResp)
+    pub fn transcript(agent: &str) -> String {
+        format!("/v1/agents/{agent}/transcript")
+    }
     // GET / DELETE
     pub fn device(id: &str) -> String {
         format!("/v1/devices/{id}")
@@ -78,7 +96,7 @@ pub mod route {
 // Errors, scopes, status
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     /// Missing, bad or expired credentials. 401.
@@ -125,13 +143,14 @@ impl From<ErrorKind> for ErrorCode {
 }
 
 /// Body of every non-2xx response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ErrorBody {
     pub code: ErrorCode,
     /// Human text; engine errors start with `error:`.
     pub message: String,
     /// Seconds to wait, for `rate_limited`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub retry_after: Option<u64>,
 }
 
@@ -146,7 +165,7 @@ impl ErrorBody {
 }
 
 /// What a device token may do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
     /// Everything, including terminals and pairing (shell-equivalent).
@@ -162,14 +181,14 @@ impl Scope {
 }
 
 /// Also the `server` field of the stream `welcome`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ServerInfo {
     pub version: String,
     pub name: String,
 }
 
 /// `GET /status`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct StatusResp {
     pub server: ServerInfo,
     pub uptime_secs: u64,
@@ -179,16 +198,19 @@ pub struct StatusResp {
     pub live_processes: u32,
     pub clients: u32,
     pub agents: Vec<AgentStatus>,
+    /// The PR poller: `on`, `starting` or `off (<reason>)`.
+    #[serde(default)]
+    pub github: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct AgentStatus {
     pub agent: AgentId,
     pub rss_kb: Option<u64>,
 }
 
 /// Response to creating a plan (`id` is the plan id) or a task.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct Created {
     pub id: String,
 }
@@ -198,15 +220,18 @@ pub struct Created {
 // ---------------------------------------------------------------------------
 
 /// `POST /plans`. `repos[0]` is where the executor runs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct CreatePlanReq {
     pub title: String,
     pub repos: Vec<RepoSpec>,
-    /// The user's request, given to the executor.
-    pub request: String,
+    /// The user's request for a planner agent. Absent: no agent starts, the
+    /// caller adds the tasks, and accepting the plan starts the executor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub request: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct RepoSpec {
     pub path: String,
     /// The server detects the default branch when absent.
@@ -224,13 +249,13 @@ impl From<&Repo> for RepoSpec {
 }
 
 /// `GET /plans/:id/body` and `PUT /plans/:id/body` (the `plan.md` text).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PlanBody {
     pub text: String,
 }
 
 /// `POST /plans/:id/tasks`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct CreateTaskReq {
     pub title: String,
     #[serde(default)]
@@ -245,7 +270,7 @@ pub struct CreateTaskReq {
 
 /// `PATCH /tasks/:plan/:task`. Absent fields are left alone; `state` is a
 /// transition checked against the table.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PatchTaskReq {
     #[serde(default)]
     pub title: Option<String>,
@@ -260,7 +285,7 @@ pub struct PatchTaskReq {
 }
 
 /// `POST /tasks/:plan/:task/spawn` (queued when paused or at a limit).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SpawnTaskReq {
     #[serde(default)]
     pub instructions: Option<String>,
@@ -268,8 +293,17 @@ pub struct SpawnTaskReq {
     pub force: bool,
 }
 
+/// `GET /agents/:id/transcript?after=<uuid>&limit=`: the entries after
+/// `after` (oldest first, at most `limit`), or without `after` the last
+/// `limit` entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TranscriptResp {
+    pub agent: AgentId,
+    pub entries: Vec<ChatEntry>,
+}
+
 /// `POST /agents/:id/messages`: `steer` interrupts, otherwise it is queued.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct MessageReq {
     pub text: String,
     #[serde(default)]
@@ -280,7 +314,7 @@ pub struct MessageReq {
 // Items
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum AnswerAction {
     Allow,
@@ -293,7 +327,7 @@ pub enum AnswerAction {
 }
 
 /// `POST /items/:id/answer`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct AnswerReq {
     pub action: AnswerAction,
     /// The note for `deny` and `send_back`, the text for `reply`.
@@ -330,7 +364,7 @@ impl AnswerReq {
 // ---------------------------------------------------------------------------
 
 /// What `POST /terminals` starts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NewTerminalKind {
     /// A plain interactive Claude; `args` are extra arguments such as
@@ -350,7 +384,7 @@ pub enum NewTerminalKind {
 }
 
 /// `POST /terminals`. The response is a [`TerminalView`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct CreateTerminalReq {
     #[serde(flatten)]
     pub kind: NewTerminalKind,
@@ -382,7 +416,7 @@ impl NewTerminalKind {
 pub type CreateTerminalResp = TerminalView;
 
 /// One past Claude session of the server user, from its transcript.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct SessionSummary {
     pub id: String,
     pub cwd: String,
@@ -398,14 +432,14 @@ pub struct SessionSummary {
 }
 
 /// `GET /projects`: newest session first.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ProjectsResp {
     pub sessions: Vec<SessionSummary>,
 }
 
 /// `GET /terminals/:id/scrollback?lines=`: plain text lines of the history
 /// above the visible screen, oldest first.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ScrollbackResp {
     pub term: TermId,
     pub lines: Vec<String>,
@@ -418,14 +452,14 @@ pub struct ScrollbackResp {
 // ---------------------------------------------------------------------------
 
 /// `POST /pair/start` (Unix socket or full scope).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PairStartReq {
     /// Scope of the device that will pair; defaults to `full`.
     #[serde(default)]
     pub scope: Option<Scope>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PairStartResp {
     /// 8 characters, single use.
     pub code: String,
@@ -436,13 +470,13 @@ pub struct PairStartResp {
 }
 
 /// `POST /pair/complete` (no auth; rate limited).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PairCompleteReq {
     pub code: String,
     pub device_name: String,
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PairCompleteResp {
     pub device_id: String,
     /// 256-bit token, shown once; the server keeps only its hash.
@@ -461,7 +495,7 @@ impl std::fmt::Debug for PairCompleteResp {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct DeviceView {
     pub id: String,
     pub name: String,
@@ -473,17 +507,158 @@ pub struct DeviceView {
 }
 
 /// `GET /devices`. `DELETE /devices/:id` revokes and answers 204.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct DevicesResp {
     pub devices: Vec<DeviceView>,
 }
+
+// ---------------------------------------------------------------------------
+// Repositories and settings
+// ---------------------------------------------------------------------------
+
+/// One repository the server knows: used by a plan, cloned or registered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RepoInfo {
+    /// Absolute path on the server.
+    pub path: String,
+    /// The branch new plans start from (`origin/HEAD`, else the checked-out one).
+    pub base_branch: String,
+    /// `origin`'s URL, if it has one.
+    pub remote_url: Option<String>,
+}
+
+/// `GET /repos`, sorted by path.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ReposResp {
+    pub repos: Vec<RepoInfo>,
+}
+
+/// `POST /repos`: give exactly one. `url` runs `git clone` into the data
+/// directory; `path` registers an existing repository on the server.
+/// The response is 201 with the [`RepoInfo`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct AddRepoReq {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub path: Option<String>,
+}
+
+/// The `claude` options for one agent level.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct LevelSettings {
+    pub level: Level,
+    /// `None`: Claude's own default model.
+    pub model: Option<String>,
+    pub permission_mode: String,
+}
+
+/// `GET /settings` (read only; `config.toml` sets them).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SettingsResp {
+    pub tasks_per_plan: u32,
+    pub subagents_per_task: u32,
+    /// Claude processes on the whole server.
+    pub live_processes: u32,
+    pub permission_wait_secs: u64,
+    pub claude: Vec<LevelSettings>,
+}
+
+// ---------------------------------------------------------------------------
+// Push notifications (architecture 11.3)
+// ---------------------------------------------------------------------------
+
+/// What a device can choose to be notified about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum NotifyKind {
+    Permission,
+    Question,
+    PlanReview,
+    /// A stalled agent, or one that exited without a report.
+    Stalled,
+    CiFailing,
+    PlanDone,
+}
+
+impl NotifyKind {
+    pub const ALL: [NotifyKind; 6] = [
+        NotifyKind::Permission,
+        NotifyKind::Question,
+        NotifyKind::PlanReview,
+        NotifyKind::Stalled,
+        NotifyKind::CiFailing,
+        NotifyKind::PlanDone,
+    ];
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NotifyKind::Permission => "permission",
+            NotifyKind::Question => "question",
+            NotifyKind::PlanReview => "plan_review",
+            NotifyKind::Stalled => "stalled",
+            NotifyKind::CiFailing => "ci_failing",
+            NotifyKind::PlanDone => "plan_done",
+        }
+    }
+}
+
+/// `GET /push/vapid`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct VapidResp {
+    /// The uncompressed P-256 public key, URL-safe base64 without padding:
+    /// the `applicationServerKey` for `PushManager.subscribe`.
+    pub public_key: String,
+}
+
+/// The `keys` of a browser `PushSubscription`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PushKeys {
+    /// URL-safe base64.
+    pub p256dh: String,
+    /// URL-safe base64.
+    pub auth: String,
+}
+
+/// `POST /push/subscribe`. The same endpoint again replaces the kinds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PushSubscribeReq {
+    pub endpoint: String,
+    pub keys: PushKeys,
+    /// What this device wants; empty means nothing.
+    pub kinds: Vec<NotifyKind>,
+}
+
+/// `POST /push/unsubscribe`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PushUnsubscribeReq {
+    pub endpoint: String,
+}
+
+/// What a push carries: never a message body or a tool input beyond the
+/// summary. The service worker answers `item` with its actions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct PushPayload {
+    pub kind: NotifyKind,
+    /// The item to answer; `None` for `plan_done`.
+    pub item: Option<u64>,
+    /// The plan id, for `plan_done`.
+    pub plan: Option<String>,
+    /// At most [`PUSH_SUMMARY_MAX`] characters.
+    pub summary: String,
+}
+
+/// The longest push summary, in characters.
+pub const PUSH_SUMMARY_MAX: usize = 60;
 
 // ---------------------------------------------------------------------------
 // Agent endpoint (Unix socket only; agent tokens only)
 // ---------------------------------------------------------------------------
 
 /// `POST /v1/agent/hook`, sent by `cmuxd hook <event>`.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct AgentHookReq {
     /// `CMUX_AGENT`.
     pub agent: AgentId,
@@ -505,7 +680,7 @@ impl std::fmt::Debug for AgentHookReq {
 }
 
 /// What the hook binary prints to stdout. `None` prints nothing.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 pub struct AgentHookResp {
     pub output: Option<Value>,
 }
@@ -551,7 +726,7 @@ fn permission_output(d: &PermissionDecision) -> Value {
 }
 
 /// `POST /v1/agent/tool`, sent by `cmuxd mcp` for a `tools/call`.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct AgentToolReq {
     pub agent: AgentId,
     pub token: String,
@@ -572,7 +747,7 @@ impl std::fmt::Debug for AgentToolReq {
 }
 
 /// The MCP tool result: short plain text; errors start with `error:`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct AgentToolResp {
     pub text: String,
     #[serde(default)]
@@ -640,7 +815,7 @@ mod tests {
                 path: "/r".into(),
                 base_branch: None,
             }],
-            request: "do it".into(),
+            request: Some("do it".into()),
         });
         rt(PlanBody {
             text: "# plan".into(),
@@ -805,6 +980,7 @@ mod tests {
                 agent: agent(),
                 rss_kb: Some(100),
             }],
+            github: "off (gh not found)".into(),
         });
     }
 

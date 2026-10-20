@@ -9,6 +9,7 @@ use cmux_proto::api::Scope;
 use cmuxd::ServerBuilder;
 use cmuxd::api::Extra;
 use cmuxd::config::{Config, Overrides};
+use cmuxd::setup::{Report, SetupOpts, System};
 
 #[derive(Parser)]
 #[command(name = "cmuxd", version, about = "The cmux server")]
@@ -41,10 +42,22 @@ enum Cmd {
     },
     /// Claude Code hook entry point; always exits 0.
     Hook { event: Option<String> },
-    /// Stdio MCP server for an agent.
-    Mcp,
-    /// Check the installation (not yet implemented).
-    Doctor,
+    /// Stdio MCP server for an agent, or with `--session` for a plain Claude
+    /// session (plan tools).
+    Mcp {
+        #[arg(long)]
+        session: bool,
+    },
+    /// Install the systemd user service, turn on linger, and check that
+    /// `claude` and `gh` are logged in. Safe to run twice.
+    Setup {
+        /// Print what it would do; write and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Check the installation, or with an agent (`T-0003`, `executor` or a
+    /// full id) print its state, pending items and last diagnostics lines.
+    Doctor { agent: Option<String> },
 }
 
 fn parse_scope(s: &str) -> Result<Scope, String> {
@@ -81,13 +94,24 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Cmd::Mcp => {
-            cmuxd::agent::mcp::run()?;
+        Cmd::Mcp { session } => {
+            if session {
+                cmuxd::agent::session::run()?;
+            } else {
+                cmuxd::agent::mcp::run()?;
+            }
             Ok(ExitCode::SUCCESS)
         }
-        Cmd::Doctor => {
-            println!("cmuxd doctor: not yet implemented");
+        Cmd::Setup { dry_run } => setup(&overrides, dry_run),
+        Cmd::Doctor { agent: Some(agent) } => {
+            let config = Config::load(&overrides).map_err(|e| e.to_string())?;
+            print!("{}", cmuxd::doctor::agent(&config.data_dir(), &agent)?);
             Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Doctor { agent: None } => {
+            let report = runtime()?.block_on(cmuxd::doctor::system(&overrides, &System));
+            print!("{}", report.render());
+            Ok(exit_code(&report))
         }
         Cmd::Pair { scope } => {
             let config = Config::load(&overrides).map_err(|e| e.to_string())?;
@@ -99,6 +123,38 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             let config = Config::load(&overrides).map_err(|e| e.to_string())?;
             runtime()?.block_on(serve(config))?;
             Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+fn setup(overrides: &Overrides, dry_run: bool) -> Result<ExitCode, String> {
+    // A broken config must not stop the install; `doctor` reports it.
+    let config = Config::load(overrides).unwrap_or_default();
+    let exe = std::env::current_exe().map_err(|e| format!("cannot find this binary: {e}"))?;
+    let config_file = match &overrides.config {
+        Some(p) => Some(std::path::absolute(p).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let opts = SetupOpts {
+        home: cmuxd::config::home(),
+        exe,
+        config: config_file,
+        path_env: std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
+        claude_bin: config.agents.claude_bin,
+        gh_bin: config.github.gh_bin,
+        dry_run,
+    };
+    let report = cmuxd::setup::run(&opts, &System);
+    print!("{}", report.render());
+    Ok(exit_code(&report))
+}
+
+fn exit_code(report: &Report) -> ExitCode {
+    match report.failed() {
+        0 => ExitCode::SUCCESS,
+        n => {
+            eprintln!("cmuxd: {n} check(s) failed");
+            ExitCode::FAILURE
         }
     }
 }
@@ -115,6 +171,7 @@ async fn serve(config: Config) -> Result<(), String> {
     let agents = cmuxd::agent::AgentRuntime::from_config(&config, builder.hub());
     let routes = agents.clone();
     let server = builder
+        .transcripts(agents.transcripts().clone())
         .runner(agents.runner())
         .extra_routes(move || Extra {
             unix_only: routes.routes(),

@@ -32,6 +32,9 @@ pub struct State {
     pub data_dir: PathBuf,
     #[serde(default)]
     pub timeouts: Timeouts,
+    /// Limits a new plan starts with. Set by the server from `config.toml`.
+    #[serde(skip)]
+    pub plan_limits: Limits,
     /// `(request_id, untruncated match input)` of each held `PermissionRequest`
     /// hook, by its inbox item. Transient: a restart kills the held hooks.
     #[serde(skip)]
@@ -43,6 +46,7 @@ pub struct State {
 
 /// Engine timers, in milliseconds (architecture sections 7.2, 8.1, 8.3 and 10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Timeouts {
     /// A held permission request falls back to Claude's own prompt after this.
     pub permission_wait: u64,
@@ -52,6 +56,8 @@ pub struct Timeouts {
     pub idle_without_report: u64,
     /// A steer waits this long for `Stop` before it is pasted.
     pub steer: u64,
+    /// A working agent with no progress for this long is stalled.
+    pub stall: u64,
 }
 
 impl Default for Timeouts {
@@ -61,6 +67,7 @@ impl Default for Timeouts {
             question: 60 * 60_000,
             idle_without_report: 10 * 60_000,
             steer: 10_000,
+            stall: 15 * 60_000,
         }
     }
 }
@@ -83,6 +90,7 @@ impl Default for GlobalLimits {
 
 /// Per-plan limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Limits {
     pub tasks_per_plan: u32,
     pub subagents_per_task: u32,
@@ -117,6 +125,7 @@ pub struct Plan {
 
 /// A `spawn_task` from a client that could not start yet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct QueuedSpawn {
     pub task: TaskId,
     pub instructions: Option<String>,
@@ -147,6 +156,7 @@ impl Plan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Repo {
     pub path: PathBuf,
     pub base_branch: String,
@@ -203,12 +213,14 @@ impl Task {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Criterion {
     pub text: String,
     pub checked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Note {
     pub at: Timestamp,
     pub by: Option<AgentId>,
@@ -216,9 +228,62 @@ pub struct Note {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct PrRef {
     pub url: String,
     pub number: u64,
+    /// The last CI rollup the GitHub poller saw; `None` before the first poll
+    /// and for a PR without checks.
+    #[serde(default)]
+    pub ci: Option<CiMark>,
+    /// Transitions into a failing rollup since CI was last green. At
+    /// [`CI_FAILURE_CAP`] the item goes to the human instead of the task agent.
+    #[serde(default)]
+    pub ci_failures: u8,
+}
+
+impl PrRef {
+    pub fn new(url: impl Into<String>, number: u64) -> Self {
+        PrRef {
+            url: url.into(),
+            number,
+            ci: None,
+            ci_failures: 0,
+        }
+    }
+}
+
+/// Red CI runs after which the task agent is no longer asked to fix them.
+pub const CI_FAILURE_CAP: u8 = 3;
+
+/// The CI mark shown next to a PR number (`#41 ✓`, `#41 ✗`, `#41 …`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum CiMark {
+    Pending,
+    Passing,
+    Failing,
+}
+
+impl CiMark {
+    /// `None` for a PR without checks.
+    pub fn from_conclusion(ci: CiConclusion) -> Option<CiMark> {
+        match ci {
+            CiConclusion::Success => Some(CiMark::Passing),
+            CiConclusion::Failure => Some(CiMark::Failing),
+            CiConclusion::Pending => Some(CiMark::Pending),
+            CiConclusion::None => None,
+        }
+    }
+
+    pub fn glyph(self) -> char {
+        match self {
+            CiMark::Pending => '…',
+            CiMark::Passing => '✓',
+            CiMark::Failing => '✗',
+        }
+    }
 }
 
 /// A tool pattern the user approved for a task (`"Bash"`, `"cargo test*"`).
@@ -229,6 +294,7 @@ pub struct AllowRule {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
     Executor,
@@ -237,6 +303,7 @@ pub enum Level {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Life {
     /// Registered by the engine; waiting for the worktree or the process.
@@ -249,6 +316,7 @@ pub enum Life {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Activity {
     Working,
@@ -292,7 +360,24 @@ pub struct Agent {
     /// a sub-agent saved before this field reads as) belongs to the current one.
     #[serde(default)]
     pub attempt: u32,
+    /// Last hook, tool call or screen change, to within 30 s (the watchdog clock).
+    #[serde(default)]
+    pub last_progress: Option<Timestamp>,
+    /// Working with no progress for `Timeouts::stall`; progress clears it.
+    #[serde(default)]
+    pub stalled: bool,
+    /// Claude's transcript file, from `SessionStart` (it changes after `/clear`).
+    /// `None` means the default place for `cwd` and `session_id`.
+    #[serde(default)]
+    pub transcript: Option<PathBuf>,
+    /// The last assistant text in the transcript, cut to
+    /// [`LAST_TEXT_CHARS`]: the summary of an implicit report.
+    #[serde(default)]
+    pub last_text: Option<String>,
 }
+
+/// The longest implicit-report summary taken from the transcript, in chars.
+pub const LAST_TEXT_CHARS: usize = 2000;
 
 impl Agent {
     /// Whether this (sub-)agent was spawned in the given attempt of its task.
@@ -335,6 +420,10 @@ impl Agent {
             landed: false,
             unconfirmed: Vec::new(),
             attempt: 0,
+            last_progress: None,
+            stalled: false,
+            transcript: None,
+            last_text: None,
         }
     }
 }
@@ -364,6 +453,7 @@ mod hex32 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ReportStatus {
     Success,
@@ -372,6 +462,7 @@ pub enum ReportStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct Report {
     pub status: ReportStatus,
     pub summary: String,
@@ -386,6 +477,7 @@ pub struct Report {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct TokenUsage {
     pub input: u64,
     pub output: u64,
@@ -406,6 +498,7 @@ pub struct Terminal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum TermKind {
     Claude,
@@ -434,6 +527,7 @@ impl InboxItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Recipient {
     Agent(AgentId),
@@ -441,6 +535,7 @@ pub enum Recipient {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ItemKind {
     ChildReport,
@@ -449,11 +544,17 @@ pub enum ItemKind {
     UserMessage,
     Steer,
     PrChanged,
-    Permission { tool: String, input_summary: String },
+    Permission {
+        tool: String,
+        input_summary: String,
+    },
     Question,
     PlanReview,
     Stalled,
     ExitedWithoutReport,
+    /// A PR's CI went red [`CI_FAILURE_CAP`] times (UI design 2.3: Open PR,
+    /// Message the task agent).
+    CiFailing,
 }
 
 impl ItemKind {
@@ -466,11 +567,13 @@ impl ItemKind {
                 | ItemKind::PlanReview
                 | ItemKind::Stalled
                 | ItemKind::ExitedWithoutReport
+                | ItemKind::CiFailing
         )
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Delivery {
     Pending,
@@ -482,6 +585,7 @@ pub enum Delivery {
 
 /// Architecture 8.1: A = Stop continuation, B = PTY paste, C = prompt piggyback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryPath {
     StopBlock,
@@ -520,6 +624,7 @@ macro_rules! state_enum {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
     Todo,
@@ -557,6 +662,7 @@ impl TaskState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum PlanState {
     Draft,
@@ -1097,10 +1203,7 @@ mod tests {
             by: Some(exec.clone()),
             text: "n".into(),
         });
-        t.pr = Some(PrRef {
-            url: "https://github.com/a/b/pull/1".into(),
-            number: 1,
-        });
+        t.pr = Some(PrRef::new("https://github.com/a/b/pull/1", 1));
         t.agent = Some(aid.clone());
         t.allow_rules.push(AllowRule {
             tool: "Bash".into(),

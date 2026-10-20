@@ -8,7 +8,7 @@
 //! - [`rows`]: the flat list of visible tree rows, glyphs and needs-you labels.
 //! - [`nav`]: tree and board movement, jump to the next needs-you item.
 //! - [`intent`]: key to intent mappings for tree focus and the overlay.
-//! - [`forms`]: new plan, new task, message and note forms as state machines.
+//! - [`forms`]: message and note forms as state machines.
 //! - [`hit`]: mouse (x, y) to tree row, board card or inbox item.
 //! - [`draw`]: ratatui rendering of the tree, strip, board, overlay and forms.
 

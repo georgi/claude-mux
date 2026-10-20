@@ -1,24 +1,30 @@
 //! API tests against an in-process server on a real Unix socket and a real
 //! TCP port: auth, pairing, idempotency, REST and the store.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::connect_info::ConnectInfo;
 use axum::http::Request;
+use cmux_core::ids::TermId;
+use cmux_core::model::{Activity, Level, Life};
 use cmux_proto::api::{
     Created, DevicesResp, ErrorBody, ErrorCode, PairCompleteReq, PairCompleteResp, PairStartReq,
-    PairStartResp, PatchTaskReq, Scope, route,
+    PairStartResp, PatchTaskReq, RepoInfo, ReposResp, Scope, SettingsResp, route,
 };
 use cmux_proto::view::{StateView, TaskDetail, TaskState};
+use cmuxd::agent::AgentRuntime;
 use cmuxd::api::auth::PeerCred;
-use cmuxd::api::{self, Transport};
+use cmuxd::api::{self, Extra, Transport};
+use cmuxd::claude::spawn::SpawnConfig;
 use cmuxd::client::{Endpoint, Response};
 use cmuxd::config::{Config, ConfigError};
 use cmuxd::server::{Server, ServerBuilder, ServerError};
 use serde::Serialize;
 use tower::ServiceExt;
+
+const CMUXD: &str = env!("CARGO_BIN_EXE_cmuxd");
 
 struct Harness {
     server: Server,
@@ -39,6 +45,91 @@ fn config(tmp: &Path) -> Config {
 async fn start_with(tmp: &Path, cfg: Config) -> Result<Server, ServerError> {
     let _ = tmp;
     ServerBuilder::new(cfg).tick(None).start().await
+}
+
+/// `examples/fake-claude`, built on demand (as `tests/agents.rs` does).
+fn fake_claude_path() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let p = exe
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .join("examples")
+        .join("fake-claude");
+    if !p.exists() {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+        let ok = std::process::Command::new(cargo)
+            .args(["build", "-p", "cmuxd", "--example", "fake-claude"])
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok && p.exists(), "cannot build {}", p.display());
+    }
+    p
+}
+
+/// A `claude` that runs the fake with the scripts in `<tmp>/scripts`.
+fn fake_claude(tmp: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmp.join("scripts");
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = tmp.join("claude");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\nFAKE_CLAUDE_SCRIPTS='{}' exec '{}' \"$@\"\n",
+            dir.display(),
+            fake_claude_path().display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// A server whose agents run `claude_bin`.
+async fn start_agents(cfg: Config, claude_bin: &Path) -> Result<Server, ServerError> {
+    let builder = ServerBuilder::new(cfg.clone()).tick(None);
+    let mut spawn = SpawnConfig::new(CMUXD.into(), cfg.socket_path(), cfg.data_dir());
+    spawn.claude_bin = claude_bin.display().to_string();
+    let rt = AgentRuntime::new(builder.hub(), spawn);
+    let routes = rt.clone();
+    builder
+        .transcripts(rt.transcripts().clone())
+        .runner(rt.runner())
+        .extra_routes(move || Extra {
+            unix_only: routes.routes(),
+            ..Extra::default()
+        })
+        .start()
+        .await
+}
+
+/// Polls `f` for up to 20 s.
+async fn eventually<T>(what: &str, mut f: impl AsyncFnMut() -> Option<T>) -> T {
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(v) = f().await {
+            return v;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// The executor's life, activity, session id and terminal.
+async fn executor(s: &Server) -> (Life, Activity, String, Option<TermId>) {
+    s.app
+        .actor
+        .query(|st| {
+            let a = &st.plans[0].agents[0];
+            (a.life, a.activity, a.session_id.clone(), a.term)
+        })
+        .await
+        .unwrap()
 }
 
 async fn harness() -> Harness {
@@ -542,18 +633,32 @@ async fn creating_a_plan_shows_up_in_state() {
 #[tokio::test]
 async fn state_survives_a_restart_and_a_second_server_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
-    let cfg = config(tmp.path());
-    let server = start_with(tmp.path(), cfg.clone()).await.unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let cfg = config(&root);
+    let claude = fake_claude(&root);
+    // The executor works on its kickoff until the file appears (never).
+    std::fs::write(
+        root.join("scripts/executor.json"),
+        serde_json::json!({"first": [{"wait_file": root.join("never").display().to_string()}]})
+            .to_string(),
+    )
+    .unwrap();
+    let server = start_agents(cfg.clone(), &claude).await.unwrap();
     let ep = Endpoint::Unix(server.socket_path.clone());
     let plan = serde_json::json!({
         "title": "persist me",
-        "repos": [{"path": tmp.path().display().to_string(), "base_branch": "trunk"}],
+        "repos": [{"path": root.display().to_string(), "base_branch": "trunk"}],
         "request": "x",
     });
     let created: Created = send(&ep, "POST", route::PLANS, &[], &plan)
         .await
         .json()
         .unwrap();
+    let (_, _, session, _) = eventually("the executor to work", async || {
+        let e = executor(&server).await;
+        (e.0 == Life::Running && e.1 == Activity::Working).then_some(e)
+    })
+    .await;
 
     // A second cmuxd on the same data dir refuses to start.
     let mut other = cfg.clone();
@@ -576,13 +681,29 @@ async fn state_survives_a_restart_and_a_second_server_is_refused() {
     let lines = std::fs::read_to_string(journal).unwrap();
     assert!(lines.contains("client.CreatePlan"), "{lines}");
 
-    let server = start_with(tmp.path(), cfg).await.unwrap();
+    // The shutdown killed the process without the engine seeing it exit,
+    // as a crash would. The next start finds the executor "running".
+    let server = start_agents(cfg, &claude).await.unwrap();
     let ep = Endpoint::Unix(server.socket_path.clone());
     let view: StateView = req(&ep, "GET", route::STATE, &[]).await.json().unwrap();
     assert_eq!(view.plans.len(), 1);
     assert_eq!(view.plans[0].id.to_string(), created.id);
     assert_eq!(view.plans[0].repos[0].base_branch, "trunk");
     assert!(view.rev >= 1);
+    // It was working, so it is resumed in its old session with the note.
+    let (_, _, resumed, term) = eventually("the executor to be resumed", async || {
+        let e = executor(&server).await;
+        (e.0 == Life::Running && e.1 == Activity::Working).then_some(e)
+    })
+    .await;
+    assert_eq!(resumed, session);
+    let term = server.app.hub.get_term(term.unwrap()).unwrap();
+    eventually("the restart note on its screen", async || {
+        term.screen_text()
+            .contains("KICKOFF: [cmux] resumed after a server restart; check the worktree")
+            .then_some(())
+    })
+    .await;
     server.shutdown().await;
 }
 
@@ -710,4 +831,337 @@ async fn huge_terminal_sizes_are_refused() {
     )
     .await;
     assert_eq!(r.status, 400, "{}", r.text());
+}
+
+async fn github_status(ep: &Endpoint) -> String {
+    let st: cmux_proto::api::StatusResp = req(ep, "GET", route::STATUS, &[]).await.json().unwrap();
+    st.github
+}
+
+/// Waits until the poller has left `starting`.
+async fn settled_github_status(ep: &Endpoint) -> String {
+    for _ in 0..200 {
+        let s = github_status(ep).await;
+        if s != "starting" {
+            return s;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the GitHub poller never started");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_gh_missing_the_server_starts_and_status_says_github_is_off() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = config(tmp.path());
+    cfg.github.gh_bin = tmp.path().join("no-such-gh").display().to_string();
+    // The real ticker, so the poller runs as in production.
+    let server = ServerBuilder::new(cfg).start().await.unwrap();
+    let ep = Endpoint::Unix(server.socket_path.clone());
+    let s = settled_github_status(&ep).await;
+    assert!(s.starts_with("off ("), "{s}");
+    assert!(s.contains("no-such-gh not found"), "{s}");
+    // The server still serves.
+    assert_eq!(req(&ep, "GET", route::STATE, &[]).await.status, 200);
+    server.shutdown().await;
+}
+
+struct LoggedIn;
+
+impl cmuxd::git::github::Gh for LoggedIn {
+    fn auth_status(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn pr_view(&self, _: &str) -> Result<String, String> {
+        Err("no PRs here".into())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn github_status_is_on_after_a_good_auth_check_and_off_when_disabled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = ServerBuilder::new(config(tmp.path()))
+        .tick(None)
+        .gh(std::sync::Arc::new(LoggedIn))
+        .start()
+        .await
+        .unwrap();
+    let ep = Endpoint::Unix(server.socket_path.clone());
+    assert_eq!(settled_github_status(&ep).await, "on");
+    server.shutdown().await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = config(tmp.path());
+    cfg.github.enabled = false;
+    let server = ServerBuilder::new(cfg)
+        .gh(std::sync::Arc::new(LoggedIn))
+        .start()
+        .await
+        .unwrap();
+    let ep = Endpoint::Unix(server.socket_path.clone());
+    assert_eq!(github_status(&ep).await, "off (disabled in config)");
+    server.shutdown().await;
+
+    // Tests that drive time by hand get no poller.
+    let tmp = tempfile::tempdir().unwrap();
+    let server = start_with(tmp.path(), config(tmp.path())).await.unwrap();
+    let ep = Endpoint::Unix(server.socket_path.clone());
+    assert_eq!(github_status(&ep).await, "off (no ticker)");
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_web_app_is_served_with_a_strict_csp() {
+    let h = harness().await;
+    // No token: the page itself is public; the API behind it is not.
+    for path in ["/", "/pair?code=ABCD2345"] {
+        let r = req(&h.tcp, "GET", path, &[]).await;
+        assert_eq!(r.status, 200, "{path}");
+        assert_eq!(r.header("content-security-policy"), Some(api::web::CSP));
+        assert!(api::web::CSP.contains("script-src 'self';"));
+        assert!(api::web::CSP.contains("default-src 'none'"));
+        assert_eq!(r.header("cache-control"), Some(api::web::REVALIDATE));
+        assert_eq!(r.header("x-content-type-options"), Some("nosniff"));
+        assert!(r.header("content-type").unwrap().starts_with("text/html"));
+        let body = String::from_utf8(r.body).unwrap();
+        assert!(body.contains("<html"), "{body}");
+    }
+    // Unknown API routes and missing assets stay 404s, not the page.
+    assert_eq!(req(&h.tcp, "GET", "/v1/nope", &[]).await.status, 404);
+    assert_eq!(
+        req(&h.tcp, "GET", "/assets/nope-1234.js", &[]).await.status,
+        404
+    );
+    assert_eq!(req(&h.tcp, "POST", "/", &[]).await.status, 405);
+    // With a build in web/dist/, the hashed entry script is cached for a year.
+    let index = String::from_utf8(req(&h.tcp, "GET", "/", &[]).await.body).unwrap();
+    if let Some(at) = index.find("/assets/") {
+        let src = &index[at..at + index[at..].find('"').unwrap()];
+        let r = req(&h.tcp, "GET", src, &[]).await;
+        assert_eq!(r.status, 200, "{src}");
+        assert_eq!(r.header("cache-control"), Some(api::web::IMMUTABLE));
+        assert_eq!(r.header("content-security-policy"), Some(api::web::CSP));
+    }
+    h.server.shutdown().await;
+}
+
+/// Runs `git` in `dir` without the user's branch-name default.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args([
+            "-c",
+            "init.defaultBranch=main",
+            "-c",
+            "user.email=t@example.com",
+        ])
+        .args(["-c", "user.name=Test", "-C"])
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// A repository with one commit at `<dir>/work` and its bare clone at
+/// `<dir>/origin.git`. Returns both.
+fn origin_repo(dir: &Path) -> (PathBuf, PathBuf) {
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    git(&work, &["init", "--quiet"]);
+    std::fs::write(work.join("README"), "hi\n").unwrap();
+    git(&work, &["add", "README"]);
+    git(&work, &["commit", "--quiet", "-m", "first"]);
+    let bare = dir.join("origin.git");
+    git(dir, &["clone", "--quiet", "--bare", "work", "origin.git"]);
+    (work, bare)
+}
+
+async fn repos(ep: &Endpoint) -> Vec<RepoInfo> {
+    let r: ReposResp = req(ep, "GET", route::REPOS, &[]).await.json().unwrap();
+    r.repos
+}
+
+#[tokio::test]
+async fn repos_lists_the_plans_repositories() {
+    let h = harness().await;
+    assert!(repos(&h.unix).await.is_empty());
+    let r = send(&h.unix, "POST", route::PLANS, &[], &plan_req(&h, "x")).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let listed = repos(&h.unix).await;
+    assert_eq!(listed.len(), 1);
+    let tmp = h._tmp.path().canonicalize().unwrap();
+    assert_eq!(listed[0].path, tmp.display().to_string());
+    assert_eq!(listed[0].base_branch, "main");
+
+    // A plan's repo and the same repo registered through a subdirectory
+    // (and, on macOS, `/var` against `/private/var`) are one entry.
+    let (work, _) = origin_repo(h._tmp.path());
+    std::fs::create_dir(work.join("sub")).unwrap();
+    let plan = serde_json::json!({
+        "title": "y",
+        "repos": [{"path": work.display().to_string()}],
+    });
+    let r = send(&h.unix, "POST", route::PLANS, &[], &plan).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let sub = serde_json::json!({ "path": work.join("sub").display().to_string() });
+    let r = send(&h.unix, "POST", route::REPOS, &[], &sub).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let canonical = work.canonicalize().unwrap().display().to_string();
+    assert_eq!(r.json::<RepoInfo>().unwrap().path, canonical);
+    let paths: Vec<String> = repos(&h.unix).await.into_iter().map(|r| r.path).collect();
+    assert_eq!(paths, vec![tmp.display().to_string(), canonical]);
+    h.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn repos_can_be_cloned_from_a_url() {
+    let h = harness().await;
+    let (_, bare) = origin_repo(h._tmp.path());
+    let url = bare.display().to_string();
+    let body = serde_json::json!({ "url": url });
+    let r = send(&h.unix, "POST", route::REPOS, &[], &body).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let info: RepoInfo = r.json().unwrap();
+    assert!(info.path.ends_with("/repos/origin"), "{}", info.path);
+    let dest = PathBuf::from(&info.path);
+    assert_eq!(git(&dest, &["log", "--format=%s"]), "first");
+    assert_eq!(
+        info.base_branch,
+        git(&bare, &["symbolic-ref", "--short", "HEAD"])
+    );
+    assert_eq!(info.remote_url.as_deref(), Some(url.as_str()));
+    assert_eq!(repos(&h.unix).await, vec![info.clone()]);
+
+    // The destination is taken now.
+    let r = send(&h.unix, "POST", route::REPOS, &[], &body).await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(r.text().contains("already exists"), "{}", r.text());
+    assert!(dest.join("README").exists());
+
+    // A failed clone leaves nothing behind.
+    let missing = h._tmp.path().join("missing.git").display().to_string();
+    let r = send(
+        &h.unix,
+        "POST",
+        route::REPOS,
+        &[],
+        &serde_json::json!({ "url": missing }),
+    )
+    .await;
+    assert_eq!(r.status, 400, "{}", r.text());
+    assert!(!dest.with_file_name("missing").exists());
+    for bad in [
+        serde_json::json!({}),
+        serde_json::json!({ "url": url, "path": url }),
+        serde_json::json!({ "url": "" }),
+        serde_json::json!({ "url": "--upload-pack=touch x" }),
+        serde_json::json!({ "url": "https://example.com/.." }),
+    ] {
+        let r = send(&h.unix, "POST", route::REPOS, &[], &bad).await;
+        assert_eq!(r.status, 400, "{bad}: {}", r.text());
+    }
+    assert_eq!(repos(&h.unix).await, vec![info]);
+    h.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn repos_can_be_registered_by_path() {
+    let h = harness().await;
+    let (work, _) = origin_repo(h._tmp.path());
+    for bad in ["relative/path", "/nonexistent/repo"] {
+        let r = send(
+            &h.unix,
+            "POST",
+            route::REPOS,
+            &[],
+            &serde_json::json!({ "path": bad }),
+        )
+        .await;
+        assert_eq!(r.status, 400, "{bad}: {}", r.text());
+    }
+    let body = serde_json::json!({ "path": work.display().to_string() });
+    let r = send(&h.unix, "POST", route::REPOS, &[], &body).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let info: RepoInfo = r.json().unwrap();
+    let canonical = work.canonicalize().unwrap().display().to_string();
+    assert_eq!(info.path, canonical);
+    assert_eq!(info.base_branch, "main");
+    assert_eq!(info.remote_url, None);
+    // Registering it again keeps one entry.
+    let r = send(&h.unix, "POST", route::REPOS, &[], &body).await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    assert_eq!(repos(&h.unix).await, vec![info]);
+    let file = h._tmp.path().join("data").join("repos.json");
+    let registered: Vec<String> = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    assert_eq!(registered, vec![canonical]);
+
+    // A deleted repository drops out of the list.
+    std::fs::remove_dir_all(&work).unwrap();
+    assert!(repos(&h.unix).await.is_empty());
+    h.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn read_scope_cannot_add_repos() {
+    let h = harness().await;
+    let (work, _) = origin_repo(h._tmp.path());
+    let a = bearer(&pair(&h, Scope::Read).await.token);
+    let auth = [("Authorization", a.as_str())];
+    assert_eq!(req(&h.tcp, "GET", route::REPOS, &auth).await.status, 200);
+    let body = serde_json::json!({ "path": work.display().to_string() });
+    let r = send(&h.tcp, "POST", route::REPOS, &auth, &body).await;
+    assert_eq!(r.status, 403, "{}", r.text());
+    assert_eq!(r.json::<ErrorBody>().unwrap().code, ErrorCode::Forbidden);
+    assert!(repos(&h.unix).await.is_empty());
+    h.server.shutdown().await;
+}
+
+#[tokio::test]
+async fn settings_show_the_limits_and_claude_options() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = config(tmp.path());
+    cfg.limits.tasks_per_plan = 7;
+    cfg.limits.subagents_per_task = 3;
+    cfg.limits.live_processes = 11;
+    cfg.agents.permission_wait_secs = 90;
+    cfg.agents.task.model = Some("opus".into());
+    cfg.agents.sub.permission_mode = Some("plan".into());
+    let server = start_with(tmp.path(), cfg).await.unwrap();
+    let ep = Endpoint::Unix(server.socket_path.clone());
+    let s: SettingsResp = req(&ep, "GET", route::SETTINGS, &[]).await.json().unwrap();
+    assert_eq!(
+        (s.tasks_per_plan, s.subagents_per_task, s.live_processes),
+        (7, 3, 11)
+    );
+    assert_eq!(s.permission_wait_secs, 90);
+    let levels: Vec<_> = s
+        .claude
+        .iter()
+        .map(|l| (l.level, l.model.as_deref(), l.permission_mode.as_str()))
+        .collect();
+    assert_eq!(
+        levels,
+        vec![
+            (Level::Executor, None, "auto"),
+            (Level::Task, Some("opus"), "auto"),
+            (Level::Sub, None, "plan"),
+        ]
+    );
+    server.shutdown().await;
+
+    // `timeouts.permission_wait_secs` wins over the agents' one.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = config(tmp.path());
+    cfg.agents.permission_wait_secs = 90;
+    cfg.timeouts.permission_wait_secs = Some(30);
+    let server = start_with(tmp.path(), cfg).await.unwrap();
+    let ep = Endpoint::Unix(server.socket_path.clone());
+    let s: SettingsResp = req(&ep, "GET", route::SETTINGS, &[]).await.json().unwrap();
+    assert_eq!(s.permission_wait_secs, 30);
+    server.shutdown().await;
 }

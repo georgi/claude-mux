@@ -1,0 +1,12 @@
+---
+source: crates/cmuxd/src/setup.rs
+expression: text
+---
+[--  ] would write $HOME/.config/systemd/user/cmuxd.service
+[--  ] would run `systemctl --user daemon-reload`
+[--  ] would run `systemctl --user enable --now cmuxd`
+[--  ] would run `systemctl --user try-restart cmuxd`
+[--  ] would run `loginctl enable-linger`
+[ok  ] claude 2.1.0 (Claude Code)
+[ok  ] claude is logged in (claude.ai)
+[FAIL] gh is not logged in (You are not logged into any GitHub hosts.): run `gh auth login`

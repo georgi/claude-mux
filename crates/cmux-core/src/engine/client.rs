@@ -35,6 +35,11 @@ impl Ctx<'_> {
                 self.cancel_plan(pi);
                 Ok(Reply::Ok)
             }
+            ClientAction::DeletePlan { plan } => {
+                let pi = self.plan_idx(&plan)?;
+                self.delete_plan(pi);
+                Ok(Reply::Ok)
+            }
             ClientAction::CreateTask {
                 plan,
                 title,
@@ -147,6 +152,15 @@ impl Ctx<'_> {
     pub fn accept_plan(&mut self, pi: usize, by: &ClientId) -> Result<(), EngineError> {
         check_plan_transition(self.plan(pi), PlanState::Accepted).map_err(transition)?;
         let exec = AgentId::new(self.plan(pi).id.clone(), AgentPath::Executor);
+        if self.agent_idx(&exec).is_err() {
+            if self.plan(pi).tasks.is_empty() {
+                return err(
+                    ErrorKind::Invalid,
+                    format!("plan {} has no tasks; add them first", self.plan(pi).id),
+                );
+            }
+            self.check_global_slot()?;
+        }
         let reviews: Vec<ItemId> = self
             .st
             .inbox
@@ -186,6 +200,49 @@ impl Ctx<'_> {
                 self.task_mut(pi, ti).state = TaskState::Cancelled;
             }
         }
+    }
+
+    fn delete_plan(&mut self, pi: usize) {
+        // Close the plan first, so that stopping an agent below starts nothing.
+        let p = self.plan_mut(pi);
+        p.spawn_queue.clear();
+        if !p.state.is_terminal() {
+            p.state = PlanState::Cancelled;
+        }
+        for ai in 0..self.plan(pi).agents.len() {
+            self.stop_agent(pi, ai);
+        }
+        let plan = self.st.plans.remove(pi);
+        let id = plan.id;
+        for t in plan.agents.iter().filter_map(|a| a.term) {
+            if self.st.terminals.remove(&t).is_some() {
+                self.touch(Change::Removed(ObjectRef::Terminal(t)));
+            }
+        }
+        let ours = |a: &AgentId| a.plan() == &id;
+        let gone: Vec<ItemId> = self
+            .st
+            .inbox
+            .iter()
+            .filter(|i| {
+                i.from.as_ref().is_some_and(ours) || matches!(&i.to, Recipient::Agent(a) if ours(a))
+            })
+            .map(|i| i.id)
+            .collect();
+        self.st.inbox.retain(|i| !gone.contains(&i.id));
+        self.st.held_permissions.retain(|i, _| !gone.contains(i));
+        // Deltas for the plan's objects would name things that no longer exist.
+        self.changes.retain(|c| match c {
+            Change::Plan(p) | Change::Task(p, _) => p != &id,
+            Change::Agent(a) => !ours(a),
+            Change::Item(i) => !gone.contains(i),
+            _ => true,
+        });
+        for i in gone {
+            self.touch(Change::Removed(ObjectRef::Item(i)));
+        }
+        self.touch(Change::Removed(ObjectRef::Plan(id.clone())));
+        self.fx.push(Effect::DeletePlan { plan: id });
     }
 
     // ---- task edits (shared with the tools) ----

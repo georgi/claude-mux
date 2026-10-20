@@ -26,19 +26,19 @@ const LATEST_PROTOCOL: &str = "2025-06-18";
 const PROTOCOLS: &[&str] = &["2024-11-05", "2025-03-26", "2025-06-18"];
 
 /// How long one tool call may take.
-const CALL_TIMEOUT: Duration = Duration::from_secs(60);
+pub(super) const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 use Level::{Executor, Sub, Task};
 
 /// One tool: its name, what it does, its arguments and who may call it
 /// (the table in architecture 7.3).
-struct ToolDef {
-    name: &'static str,
-    about: &'static str,
+pub(super) struct ToolDef {
+    pub name: &'static str,
+    pub about: &'static str,
     /// `(name, type, description)`; a type ending in `?` is optional. Types:
     /// `string`, `integer`, `boolean`, `strings`.
-    args: &'static [(&'static str, &'static str, &'static str)],
-    levels: &'static [Level],
+    pub args: &'static [(&'static str, &'static str, &'static str)],
+    pub levels: &'static [Level],
 }
 
 const TOOLS: &[ToolDef] = &[
@@ -293,7 +293,7 @@ pub fn tool_levels(name: &str) -> Option<&'static [Level]> {
     TOOLS.iter().find(|t| t.name == name).map(|t| t.levels)
 }
 
-fn input_schema(t: &ToolDef) -> Value {
+pub(super) fn input_schema(t: &ToolDef) -> Value {
     let mut props = serde_json::Map::new();
     let mut required = Vec::new();
     for (name, ty, about) in t.args {
@@ -341,16 +341,32 @@ impl<F: FnMut(&str, &Value) -> (String, bool)> ToolCaller for F {
     }
 }
 
-fn rpc_result(id: &Value, result: Value) -> Value {
+pub(super) fn rpc_result(id: &Value, result: Value) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "result": result})
 }
 
-fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
+pub(super) fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-fn tool_result(text: &str, is_error: bool) -> Value {
+pub(super) fn tool_result(text: &str, is_error: bool) -> Value {
     json!({"content": [{"type": "text", "text": text}], "isError": is_error})
+}
+
+/// The `initialize` answer, in the newest protocol revision both sides speak.
+pub(super) fn initialize(id: &Value, params: &Value) -> Value {
+    let asked = params.get("protocolVersion").and_then(Value::as_str);
+    let version = asked
+        .filter(|v| PROTOCOLS.contains(v))
+        .unwrap_or(LATEST_PROTOCOL);
+    rpc_result(
+        id,
+        json!({
+            "protocolVersion": version,
+            "capabilities": {"tools": {"listChanged": false}},
+            "serverInfo": {"name": "cmux", "version": env!("CARGO_PKG_VERSION")},
+        }),
+    )
 }
 
 /// Answers one JSON-RPC message; `None` for notifications and responses.
@@ -363,20 +379,7 @@ pub fn handle(level: Option<Level>, msg: &Value, caller: &mut impl ToolCaller) -
     };
     let params = msg.get("params").unwrap_or(&Value::Null);
     Some(match method {
-        "initialize" => {
-            let asked = params.get("protocolVersion").and_then(Value::as_str);
-            let version = asked
-                .filter(|v| PROTOCOLS.contains(v))
-                .unwrap_or(LATEST_PROTOCOL);
-            rpc_result(
-                id,
-                json!({
-                    "protocolVersion": version,
-                    "capabilities": {"tools": {"listChanged": false}},
-                    "serverInfo": {"name": "cmux", "version": env!("CARGO_PKG_VERSION")},
-                }),
-            )
-        }
+        "initialize" => initialize(id, params),
         "ping" => rpc_result(id, json!({})),
         "tools/list" => rpc_result(id, tools_list(level)),
         "tools/call" => {

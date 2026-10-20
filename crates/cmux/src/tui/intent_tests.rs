@@ -138,14 +138,6 @@ fn tree_keys_move_and_emit_intents() {
         Some(TreeIntent::Preview(t2.clone()))
     );
     assert_eq!(
-        handle_tree_key(&sv, &mut vs, Key::Char('n')),
-        Some(TreeIntent::NewPlan)
-    );
-    assert_eq!(
-        handle_tree_key(&sv, &mut vs, Key::Char('t')),
-        Some(TreeIntent::NewTask(plan_id()))
-    );
-    assert_eq!(
         handle_tree_key(&sv, &mut vs, Key::Char('A')),
         Some(TreeIntent::Accept(t2.clone()))
     );
@@ -172,6 +164,10 @@ fn tree_keys_move_and_emit_intents() {
             plan_id(),
             cmux_proto::view::TaskId::new(2)
         ))
+    );
+    assert_eq!(
+        handle_tree_key(&sv, &mut vs, Key::Char('X')),
+        Some(TreeIntent::Delete(plan_id()))
     );
     assert_eq!(
         handle_tree_key(&sv, &mut vs, Key::Char('o')),

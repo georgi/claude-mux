@@ -43,6 +43,8 @@ pub const RING_BYTES: usize = 1 << 20;
 pub const BATCH: Duration = Duration::from_millis(16);
 /// Events queued per subscriber before it is dropped as stalled.
 const SUB_QUEUE: usize = 1024;
+/// How often [`Terminal::watch_progress`] compares the screen.
+pub const PROGRESS_EVERY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct TermConfig {
@@ -331,8 +333,12 @@ impl Shared {
         self.exit_tx.send_replace(Some(info));
     }
 
-    /// Flusher thread: one coalesced chunk per batch interval.
+    /// Flusher thread: at most one coalesced chunk per batch interval. The
+    /// first output after a quiet interval goes out at once (a typed key's
+    /// echo waits for no timer); output that follows within the interval
+    /// waits for its end, so a burst still costs one chunk per interval.
     fn flush_loop(&self) {
+        let mut last: Option<std::time::Instant> = None;
         loop {
             let mut st = self.lock();
             while st.pending.is_empty() && !st.closed {
@@ -341,9 +347,14 @@ impl Shared {
             if st.pending.is_empty() {
                 return;
             }
-            drop(st);
-            std::thread::sleep(self.batch);
-            self.lock().flush();
+            let wait = last.map_or(Duration::ZERO, |t| self.batch.saturating_sub(t.elapsed()));
+            if !wait.is_zero() {
+                drop(st);
+                std::thread::sleep(wait);
+                st = self.lock();
+            }
+            st.flush();
+            last = Some(std::time::Instant::now());
         }
     }
 
@@ -542,6 +553,34 @@ impl Terminal {
         self.shared.lock().parser.screen().contents()
     }
 
+    /// A hash of the screen without what redraws by itself (see
+    /// [`progress_hash`]). The same hash means no progress.
+    pub fn progress_hash(&self) -> u64 {
+        progress_hash(&self.screen_text())
+    }
+
+    /// Calls `on_progress` at most once per `every`, and only when the
+    /// screen's [`progress_hash`] changed since the last look. Returns when
+    /// the child exits.
+    pub async fn watch_progress(&self, every: Duration, mut on_progress: impl FnMut()) {
+        let mut exited = self.exited();
+        let mut last = self.progress_hash();
+        let mut tick = tokio::time::interval(every);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tick.tick().await;
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = exited.wait_for(|e| e.is_some()) => return,
+            }
+            let now = self.progress_hash();
+            if now != last {
+                last = now;
+                on_progress();
+            }
+        }
+    }
+
     /// The window title the program set, if any.
     pub fn title(&self) -> Option<String> {
         self.shared.lock().parser.callbacks().title.clone()
@@ -589,6 +628,25 @@ impl Terminal {
             pty.kill();
         }
     }
+}
+
+/// A hash of screen text for the stall watchdog. Redraws are not progress,
+/// so it skips the top row (a status line) and Claude's spinner line, whose
+/// glyph, verb and timer change while nothing else does.
+pub fn progress_hash(contents: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for line in contents.lines().skip(1).filter(|l| !is_spinner_line(l)) {
+        line.trim_end().hash(&mut h);
+    }
+    h.finish()
+}
+
+/// `✻ Pondering… (12s · ↑ 1.2k tokens · esc to interrupt)` and its kin.
+fn is_spinner_line(line: &str) -> bool {
+    const GLYPHS: [char; 8] = ['·', '✢', '✳', '✶', '✻', '✽', '*', '∗'];
+    let t = line.trim_start();
+    t.contains("esc to interrupt") || (t.starts_with(GLYPHS) && t.contains('…'))
 }
 
 /// The hub id of an engine terminal. The engine's `TermId` (the `u32` in

@@ -23,6 +23,9 @@ use cmuxd::config::Config;
 use cmuxd::server::{Server, ServerBuilder};
 use serde_json::{Value, json};
 
+#[path = "support/mock_http.rs"]
+mod mock_http;
+
 const CMUXD: &str = env!("CARGO_BIN_EXE_cmuxd");
 
 // ---------------------------------------------------------------------------
@@ -209,16 +212,28 @@ impl Env {
     }
 
     async fn screen_has(&self, agent: &str, needle: &str) {
+        let what = format!("{needle:?} on the screen of {agent}");
+        self.wait_async(&what, async || {
+            self.screen(agent).await.contains(needle).then_some(())
+        })
+        .await;
+    }
+
+    /// Like [`eventually`], but a timeout shows every agent's screen.
+    async fn wait_async<T>(&self, what: &str, mut f: impl AsyncFnMut() -> Option<T>) -> T {
         let until = Instant::now() + Duration::from_secs(20);
         loop {
-            let screen = self.screen(agent).await;
-            if screen.contains(needle) {
-                return;
+            if let Some(v) = f().await {
+                return v;
             }
-            assert!(
-                Instant::now() < until,
-                "timed out waiting for {needle:?} on the screen of {agent}:\n{screen}"
-            );
+            if Instant::now() >= until {
+                let v = self.view().await;
+                let mut screens = String::new();
+                for a in &v.agents {
+                    screens += &format!("--- {}\n{}\n", a.id, self.screen(&a.id.to_string()).await);
+                }
+                panic!("timed out waiting for {what}\n{:#?}\n{screens}", v.items);
+            }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     }
@@ -288,6 +303,7 @@ async fn start_fake(scripts: &[(&str, Value)], permission_wait: Duration) -> Env
     let rt = AgentRuntime::new(builder.hub(), spawn);
     let routes = rt.clone();
     let server = builder
+        .transcripts(rt.transcripts().clone())
         .runner(rt.runner())
         .extra_routes(move || Extra {
             unix_only: routes.routes(),
@@ -948,6 +964,56 @@ async fn a_held_permission_hook_is_answered_over_rest() {
     env.shutdown().await;
 }
 
+/// What the phone does: the permission arrives as a push, and the
+/// notification's Allow answers it with an `Idempotency-Key`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_permission_is_pushed_and_allow_from_the_notification_lets_the_agent_go_on() {
+    use cmux_proto::api::{NotifyKind, PushSubscribeReq};
+    let env = start_fake(
+        &[("executor", permission_script(&["cargo test -p x"]))],
+        Duration::from_secs(600),
+    )
+    .await;
+    let mock = mock_http::MockHttp::start().await;
+    let browser = mock_http::Browser::new();
+    let sub = PushSubscribeReq {
+        endpoint: format!("{}/push/phone", mock.base),
+        keys: browser.keys(),
+        kinds: vec![NotifyKind::Permission],
+    };
+    let r = env.post(route::PUSH_SUBSCRIBE, &sub).await;
+    assert_eq!(r.status, 204, "{}", r.text());
+    let plan = env.create_plan().await;
+    let exec = format!("{plan}/executor");
+    let hit = mock.wait_for(1).await;
+    let p = browser.open(&hit.body);
+    assert_eq!(p.kind, NotifyKind::Permission);
+    assert_eq!(p.summary, "executor: Bash cargo test -p x");
+    let item = p.item.unwrap();
+    let held = env
+        .wait("a permission item", |v| Env::pending_permissions(v).pop())
+        .await;
+    assert_eq!(held.id.0, item);
+
+    let allow = AnswerReq {
+        action: AnswerAction::Allow,
+        text: None,
+    };
+    let key = [("Idempotency-Key", "notification-1")];
+    // A retried tap acts once.
+    for _ in 0..2 {
+        let r = env
+            .unix
+            .json("POST", &route::item_answer(item), &key, &allow)
+            .await
+            .unwrap();
+        assert_eq!(r.status, 204, "{}", r.text());
+    }
+    env.screen_has(&exec, "PERM allow").await;
+    assert_eq!(env.rt.as_ref().unwrap().waiters().waiting(), 0);
+    env.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_allow_rule_answers_a_later_request_at_once() {
     let env = start_fake(
@@ -1314,6 +1380,7 @@ async fn a_sub_agent_asks_its_parent_and_the_answer_comes_back() {
     let sub = json!({
         "first": [{"tool": "ask_parent", "args": {"question": "which config?"}}],
         "later": [
+            {"when": "use strict.toml", "print": "CONFIG: strict.toml"},
             {"when": "use strict.toml", "tool": "report_result",
              "args": {"status": "success", "summary": "linted with strict.toml"}},
         ],
@@ -1338,7 +1405,9 @@ async fn a_sub_agent_asks_its_parent_and_the_answer_comes_back() {
     // reported, and that report finished the task.
     env.screen_has(&format!("{plan}/T-0001"), "TOOL answer_child: answer sent")
         .await;
-    env.screen_has(&lint, "ECHO").await;
+    // The answer can arrive by a paste or a Stop-hook block, depending on
+    // whether the sub-agent already idled. Both must run the matching steps.
+    env.screen_has(&lint, "CONFIG: strict.toml").await;
     env.wait("the question to be answered", |v| {
         v.items
             .iter()
@@ -1430,14 +1499,11 @@ async fn a_sub_agents_git_push_is_denied_by_the_pre_tool_use_hook() {
     let (env, plan) = plan_with_task(task, &[("T-0001/lint", sub)]).await;
     let lint = format!("{plan}/T-0001/lint");
     // The reason reaches Claude in the hook's real output format.
+    env.screen_has(&lint, "PRE deny: error: sub-agents may not run git push")
+        .await;
     env.screen_has(
         &lint,
-        "PRETOOL deny: error: sub-agents may not run git push",
-    )
-    .await;
-    env.screen_has(
-        &lint,
-        "PRETOOL deny: error: do not check out the base branch main",
+        "PRE deny: error: do not check out the base branch main",
     )
     .await;
     // `git status` is fine: the hook prints nothing and the permission flow
@@ -1458,5 +1524,352 @@ async fn a_sub_agents_git_push_is_denied_by_the_pre_tool_use_hook() {
             .any(|i| i.body.contains("git push"))
     );
     env.answer(held.id.0, AnswerAction::Allow, None).await;
+    env.shutdown().await;
+}
+
+/// The executor starts T-0001, and T-0001 spawns the sub-agent `name`.
+fn sub_agent_scripts(name: &str, task_later: Value, sub: Value) -> Vec<(String, Value)> {
+    vec![
+        (
+            "executor".into(),
+            executor_script(json!([
+                {"when": "plan was accepted", "tool": "spawn_task", "args": {"task": "T-0001"}},
+            ])),
+        ),
+        (
+            "T-0001".into(),
+            json!({
+                "first": [
+                    {"tool": "spawn_subagent", "args": {"name": name, "prompt": "help out"}},
+                ],
+                "later": task_later,
+            }),
+        ),
+        (format!("T-0001/{name}"), sub),
+    ]
+}
+
+async fn start_with(scripts: &[(String, Value)]) -> Env {
+    let scripts: Vec<(&str, Value)> = scripts
+        .iter()
+        .map(|(n, s)| (n.as_str(), s.clone()))
+        .collect();
+    start_fake(&scripts, Duration::from_secs(600)).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_agent_git_push_is_denied_through_the_hook() {
+    let env = start_with(&sub_agent_scripts(
+        "pusher",
+        json!([]),
+        permission_script(&["git push origin HEAD"]),
+    ))
+    .await;
+    let (plan, _) = accepted_plan(&env).await;
+    let sub = format!("{plan}/T-0001/pusher");
+    // `cmuxd hook` answered `PreToolUse` with the guard rail's deny.
+    env.screen_has(&sub, "PRE deny: error: sub-agents may not run git push")
+        .await;
+    // The deny needs no person: no permission item, no held hook.
+    assert!(Env::pending_permissions(&env.view().await).is_empty());
+    assert_eq!(env.rt.as_ref().unwrap().waiters().waiting(), 0);
+    env.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ask_parent_and_answer_child_round_trip() {
+    let flag = tempfile::tempdir().unwrap();
+    let flag_file = flag.path().join("ask");
+    let answer_file = flag.path().join("answer");
+    let env = start_with(&sub_agent_scripts(
+        "db",
+        json!([
+            // Answer only once the sub-agent idles, so the answer is pasted.
+            {"when": "Which database", "wait_file": answer_file.display().to_string()},
+            {"when": "Which database", "tool": "answer_child",
+             "args": {"agent": "T-0001/db", "answer": "use postgres"}},
+        ]),
+        json!({
+            // Ask only once the task agent idles, so the question is pasted.
+            "first": [
+                {"wait_file": flag_file.display().to_string()},
+                {"tool": "ask_parent", "args": {"question": "Which database?"}},
+            ],
+            "later": [
+                {"when": "use postgres", "tool": "report_result",
+                 "args": {"status": "success", "summary": "went with postgres"}},
+            ],
+        }),
+    ))
+    .await;
+    let (plan, _) = accepted_plan(&env).await;
+    let task = format!("{plan}/T-0001");
+    let sub = format!("{plan}/T-0001/db");
+    env.wait("the task agent to idle with its sub-agent", |v| {
+        let idle = v
+            .agents
+            .iter()
+            .any(|a| a.id.to_string() == task && a.activity == Activity::Idle);
+        let sub_up = v.agents.iter().any(|a| a.id.to_string() == sub);
+        (idle && sub_up).then_some(())
+    })
+    .await;
+    std::fs::write(&flag_file, "").unwrap();
+    env.wait("the sub-agent to ask and idle", |v| {
+        let asked = v.items.iter().any(|i| i.kind == ItemKind::ChildQuestion);
+        let idle = v
+            .agents
+            .iter()
+            .any(|a| a.id.to_string() == sub && a.activity == Activity::Idle);
+        (asked && idle).then_some(())
+    })
+    .await;
+    std::fs::write(&answer_file, "").unwrap();
+
+    // The question reaches the task agent (its digest names a file, which the
+    // fake reads; its `when` matches the question), and it calls answer_child.
+    env.screen_has(&task, "TOOL answer_child: answer sent to T-0001/db")
+        .await;
+    let question = env
+        .wait("the question to be answered", |v| {
+            v.items
+                .iter()
+                .find(|i| {
+                    i.kind == ItemKind::ChildQuestion
+                        && matches!(i.status, Delivery::Answered { .. })
+                })
+                .cloned()
+        })
+        .await;
+    assert_eq!(question.to, Recipient::Agent(task.parse().unwrap()));
+    assert!(matches!(&question.status,
+        Delivery::Answered { answer, .. } if answer == "use postgres"));
+
+    // The answer is pasted into the idle sub-agent (path B). The sub-agent
+    // reads it and reports, which its `when` allows only on the answer.
+    let answer = env
+        .wait("the answer to be delivered", |v| {
+            v.items
+                .iter()
+                .find(|i| {
+                    i.to == Recipient::Agent(sub.parse().unwrap())
+                        && i.body.contains("use postgres")
+                        && matches!(i.status, Delivery::Delivered { .. })
+                })
+                .cloned()
+        })
+        .await;
+    assert!(matches!(
+        answer.status,
+        Delivery::Delivered {
+            via: DeliveryPath::PtyPaste,
+            ..
+        }
+    ));
+    env.screen_has(&sub, "TOOL report_result: report recorded")
+        .await;
+    env.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_exits_without_a_report_hands_its_last_answer_to_the_parent() {
+    let last = "I could not finish: the build is red on main.";
+    let env = start_fake(
+        &[
+            (
+                "executor",
+                executor_script(json!([
+                    {"when": "plan was accepted", "tool": "spawn_task", "args": {"task": "T-0001"}},
+                ])),
+            ),
+            (
+                "T-0001",
+                json!({"first": [
+                    {"tool": "get_task", "args": {}},
+                    {"say": "Looking at the build first."},
+                    {"say": last},
+                    {"exit": 0},
+                ]}),
+            ),
+        ],
+        Duration::from_secs(600),
+    )
+    .await;
+    let (plan, exec) = accepted_plan(&env).await;
+    let tid = format!("{plan}/T-0001");
+    // The task agent ends its session without `report_result`; the parent's
+    // item carries the last assistant text of its transcript.
+    let item = env
+        .wait("the exit to reach the executor", |v| {
+            v.items
+                .iter()
+                .find(|i| {
+                    i.kind == ItemKind::ChildExited
+                        && matches!(&i.to, Recipient::Agent(a) if a.to_string() == exec)
+                })
+                .cloned()
+        })
+        .await;
+    assert!(item.body.contains(last), "{}", item.body);
+    let v = env.view().await;
+    let agent = v.agents.iter().find(|a| a.id.to_string() == tid).unwrap();
+    let report = agent.report.as_ref().unwrap();
+    assert!(report.implicit);
+    assert_eq!(report.summary, last);
+    // The token sums came from the same read: three assistant messages (a
+    // tool call and two texts) at 10 in, 5 out each.
+    assert_eq!(agent.tokens.input, 30, "{:?}", agent.tokens);
+    assert_eq!(agent.tokens.output, 15);
+    // The executor sees it in its terminal: the item was pasted.
+    env.screen_has(&exec, "ECHO [cmux]").await;
+    env.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Security (architecture 9; the index is in tests/security.rs)
+// ---------------------------------------------------------------------------
+
+/// Logs row: a session with a prompt, a tool call, a permission request with
+/// its answer, a message and a pairing, and not one of their texts or tokens
+/// in the diagnostics log, which still records each event.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_diagnostics_log_holds_no_prompt_tool_input_or_token() {
+    let env = start_fake(
+        &[(
+            "executor",
+            json!({
+                "first": [
+                    {"permission": {"tool": "Bash", "input": {"command": "echo SECRET-TOOL-INPUT"}}},
+                    {"tool": "create_task", "args": {"title": "SECRET-TOOL-ARG"}},
+                    {"say": "SECRET-ANSWER"},
+                ],
+                "later": [{"say": "SECRET-LATER-ANSWER"}],
+            }),
+        )],
+        Duration::from_secs(600),
+    )
+    .await;
+    let r = env
+        .post(
+            route::PLANS,
+            &json!({"title": "demo", "repos": [{"path": env.repo.display().to_string()}],
+                    "request": "build it SECRET-PROMPT"}),
+        )
+        .await;
+    assert_eq!(r.status, 201, "{}", r.text());
+    let plan = r.json::<Created>().unwrap().id;
+    let exec = format!("{plan}/executor");
+    let held = env
+        .wait("a permission item", |v| Env::pending_permissions(v).pop())
+        .await;
+    env.answer(held.id.0, AnswerAction::Deny, Some("SECRET-DENY-REASON"))
+        .await;
+    env.screen_has(&exec, "PERM deny: SECRET-DENY-REASON").await;
+    env.wait("the executor to idle", |v| {
+        v.agents
+            .iter()
+            .any(|a| a.id.to_string() == exec && a.activity == Activity::Idle)
+            .then_some(())
+    })
+    .await;
+    let r = env
+        .post(
+            &route::agent(&exec.replace('/', "%2F"), "messages"),
+            &json!({"text": "SECRET-MESSAGE", "steer": false}),
+        )
+        .await;
+    assert!(r.status < 300, "{}", r.text());
+    // A user message reaches the agent as a digest file it is told to read.
+    env.screen_has(&exec, "ECHO [cmux] 1 new message").await;
+
+    // A device token, too.
+    let start: cmux_proto::api::PairStartResp = env
+        .post(route::PAIR_START, &json!({}))
+        .await
+        .json()
+        .unwrap();
+    let done: cmux_proto::api::PairCompleteResp = env
+        .post(
+            route::PAIR_COMPLETE,
+            &json!({"code": start.code, "device_name": "SECRET-DEVICE-NAME"}),
+        )
+        .await
+        .json()
+        .unwrap();
+    let mcp = std::fs::read_to_string(
+        agent_dir(&env.app().data_dir, &exec.parse().unwrap()).join("mcp.json"),
+    )
+    .unwrap();
+    let mcp: Value = serde_json::from_str(&mcp).unwrap();
+    let agent_token = mcp["mcpServers"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()["env"]["CMUX_TOKEN"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!agent_token.is_empty());
+    let log_text = env.app().diag.path();
+    let mut log = std::fs::read_to_string(&log_text).unwrap();
+    if let Ok(old) = std::fs::read_to_string(log_text.with_extension("jsonl.1")) {
+        log += &old;
+    }
+    for event in ["agent_hook", "agent_tool", "paired"] {
+        assert!(
+            log.contains(&format!("\"event\":\"{event}\"")),
+            "{event}:\n{log}"
+        );
+    }
+    for secret in [
+        "SECRET",
+        "build it",
+        "echo ",
+        done.token.as_str(),
+        agent_token.as_str(),
+    ] {
+        assert!(!log.contains(secret), "{secret:?} in the log:\n{log}");
+    }
+    env.shutdown().await;
+}
+
+/// A push stays inside the 4096 bytes every push service must take
+/// (RFC 8030 7.2), however long the tool input, and carries a summary of at
+/// most 60 characters that leaves the rest of the input out.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_push_stays_inside_the_web_push_payload_limit() {
+    use cmux_proto::api::{NotifyKind, PUSH_SUMMARY_MAX, PushSubscribeReq};
+    let long = format!("echo {} SECRET-TAIL", "ü€😀".repeat(2000));
+    let env = start_fake(
+        &[("executor", permission_script(&[long.as_str()]))],
+        Duration::from_secs(600),
+    )
+    .await;
+    let mock = mock_http::MockHttp::start().await;
+    let browser = mock_http::Browser::new();
+    let sub = PushSubscribeReq {
+        endpoint: format!("{}/push/phone", mock.base),
+        keys: browser.keys(),
+        kinds: vec![NotifyKind::Permission],
+    };
+    let r = env.post(route::PUSH_SUBSCRIBE, &sub).await;
+    assert_eq!(r.status, 204, "{}", r.text());
+    env.create_plan().await;
+    let hit = mock.wait_for(1).await;
+    assert!(hit.body.len() <= 4096, "{} bytes", hit.body.len());
+    let p = browser.open(&hit.body);
+    assert_eq!(p.kind, NotifyKind::Permission);
+    assert!(
+        p.summary.chars().count() <= PUSH_SUMMARY_MAX,
+        "{}",
+        p.summary
+    );
+    assert!(
+        p.summary.starts_with("executor: Bash echo "),
+        "{}",
+        p.summary
+    );
+    assert!(!p.summary.contains("SECRET"), "{}", p.summary);
     env.shutdown().await;
 }

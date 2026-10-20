@@ -103,6 +103,7 @@ impl EffectRunner for PersistRunner {
                     self.0.save_plan(p.clone());
                 }
             }
+            Effect::DeletePlan { plan } => self.0.delete_plan(plan.clone()),
             Effect::PersistGlobals => {}
             _ => return false,
         }
@@ -459,6 +460,7 @@ fn label(cmd: &Command) -> String {
         Command::Tool { call, .. } => format!("tool.{}", variant(&format!("{call:?}"))),
         Command::Runner(ev) => format!("runner.{}", variant(&format!("{ev:?}"))),
         Command::Tick => "tick".into(),
+        Command::Recover { .. } => "recover".into(),
     }
 }
 
@@ -509,7 +511,7 @@ mod tests {
                 base_branch: "main".into(),
                 remote_url: None,
             }],
-            request: "do".into(),
+            request: Some("do".into()),
         }
     }
 

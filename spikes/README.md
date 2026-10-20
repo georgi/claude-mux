@@ -2,8 +2,10 @@
 
 Throwaway harness used to answer spikes S1 to S7 of
 [docs/design/03-implementation-plan.md](../docs/design/03-implementation-plan.md)
-against a real `claude`. The results live in that document. These scripts are
-kept so the spikes can later become a `cargo test --ignored` suite.
+against a real `claude`. The results live in that document. The spikes now
+run as a `cargo test --ignored` suite: `crates/cmuxd/tests/real_claude.rs`.
+These scripts stay as the record of how the spikes were first run, and for the
+xterm.js half of S7.
 
 Setup: the settings and MCP files use the placeholder `__SPIKES_DIR__`.
 Replace it with this directory's absolute path before use:

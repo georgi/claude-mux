@@ -6,12 +6,14 @@
 //! - [`endpoint`]: `/v1/agent/hook` and `/v1/agent/tool` (Unix socket only)
 //! - [`hook`]: `cmuxd hook <Event>`
 //! - [`mcp`]: `cmuxd mcp`, the stdio MCP server
+//! - [`session`]: `cmuxd mcp --session`, plan tools for a plain Claude session
 //! - [`runner`]: the [`AgentRuntime`] effect runner (worktrees, spawn, paste, kill)
 
 pub mod endpoint;
 pub mod hook;
 pub mod mcp;
 pub mod runner;
+pub mod session;
 pub mod wire;
 
 pub use runner::AgentRuntime;

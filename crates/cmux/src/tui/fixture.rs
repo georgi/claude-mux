@@ -4,8 +4,8 @@
 
 use cmux_core::ids::AgentPath;
 use cmux_proto::view::{
-    Activity, AgentId, AgentView, Delivery, ItemId, ItemKind, ItemView, Life, Limits, PlanId,
-    PlanState, PlanView, PrRef, Recipient, Repo, Report, ReportStatus, StateView, TaskId,
+    Activity, AgentId, AgentView, CiMark, Delivery, ItemId, ItemKind, ItemView, Life, Limits,
+    PlanId, PlanState, PlanView, PrRef, Recipient, Repo, Report, ReportStatus, StateView, TaskId,
     TaskState, TaskView, TermId, TermKind, TerminalView, TokenUsage,
 };
 
@@ -36,6 +36,7 @@ fn agent(plan: &PlanId, path: AgentPath, life: Life, activity: Activity) -> Agen
             ..TokenUsage::default()
         },
         idle_since: None,
+        stalled: false,
         path,
     }
 }
@@ -130,18 +131,14 @@ pub fn state() -> StateView {
 
     let mut t1 = task(&plan, 1, "schema", TaskState::Merged, &[]);
     t1.agent = Some(a1.id.clone());
-    t1.pr = Some(PrRef {
-        url: "https://example.com/38".into(),
-        number: 38,
-    });
+    t1.pr = Some(PrRef::new("https://example.com/38", 38));
+    t1.pr.as_mut().unwrap().ci = Some(CiMark::Passing);
     t1.criteria_done = 4;
     t1.criteria_total = 4;
     let mut t2 = task(&plan, 2, "api", TaskState::Testing, &[1]);
     t2.agent = Some(a2.id.clone());
-    t2.pr = Some(PrRef {
-        url: "https://example.com/41".into(),
-        number: 41,
-    });
+    t2.pr = Some(PrRef::new("https://example.com/41", 41));
+    t2.pr.as_mut().unwrap().ci = Some(CiMark::Pending);
     t2.criteria_done = 2;
     t2.criteria_total = 5;
     let t3 = task(&plan, 3, "ui", TaskState::Todo, &[2]);
@@ -151,10 +148,8 @@ pub fn state() -> StateView {
     t4.criteria_total = 2;
     let t5 = task(&plan, 5, "rollout", TaskState::Todo, &[3]);
     let mut t6 = task(&plan, 6, "metrics dashboard", TaskState::Passing, &[]);
-    t6.pr = Some(PrRef {
-        url: "https://example.com/43".into(),
-        number: 43,
-    });
+    t6.pr = Some(PrRef::new("https://example.com/43", 43));
+    t6.pr.as_mut().unwrap().ci = Some(CiMark::Passing);
     t6.criteria_done = 3;
     t6.criteria_total = 3;
 

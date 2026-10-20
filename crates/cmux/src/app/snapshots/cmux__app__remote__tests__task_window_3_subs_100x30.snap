@@ -1,0 +1,34 @@
+---
+source: crates/cmux/src/app/remote_tests.rs
+expression: draw_task_window(3).1
+---
+ test ● auth-refactor ▸   1 ⚑ executor  2 ⠹ T-000… ⊞4  3 ⚑ T-0004 p…  4 ▸ zsh  5 ▸ lazygit          
+┌ plans ─────────────────────┐ ⠹ T-0002  /home/me/api                  │ ⠹ tests  /home/me/api      
+│▾◆ auth-refactor    accepted│                                         │                            
+│   ⚑ ◆ executor             │                                         │                            
+│   ✓ T-0001 schema     #38 ✓│                                         │                            
+│  ▾⠹ T-0002 api     ✉1 #41 …│                                         │                            
+│   ├ ⠹ tests                │                                         │                            
+│   ├ ● docs                 │                                         │                            
+│   └ ⠹ lint                 │                                         │                            
+│   ○ T-0003 ui      ← T-0002│                                         │                            
+│   ⚑ T-0004 perms       asks│                                         │ ✓ docs · reported success  
+│   ○ T-0005 rollout ← T-0003│                                         │                            
+│   ○ T-0006 metrics d… #43 ✓│                                         │                            
+│▾○ docs-site           draft│                                         │                            
+│▾✓ ci-migration         done│                                         │                            
+│ $ loose                   2│                                         │                            
+│                            │                                         │                            
+│                            │                                         │                            
+│                            │                                         │                            
+│                            │                                         │                            
+│                            │                                         │ ⠹ lint  /home/me/api       
+│                            │                                         │                            
+│                            │                                         │                            
+│                            │                                         │                            
+│                            │                                         │                            
+├─ needs you  2 ─────────────┤                                         │                            
+│⚑ T-0004 allow Bash?        │                                         │                            
+│⚑ auth-refactor Which datab…│                                         │                            
+└────────────────────────────┘                                         │                            
+ /home/me/api                                          ● test · 3 working · 2 need you · C-b ? help

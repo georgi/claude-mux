@@ -12,7 +12,9 @@
 //!    `Output` frame with the missed bytes (omitted when there are none) or a
 //!    `Snapshot` frame, as for `subscribe` (the size comes first so the client
 //!    parser has the terminal's size before it replays a snapshot);
-//! 4. live: `deltas`, `presence`, `size`, `exit` and binary `Output` frames.
+//! 4. live: `deltas`, `presence`, `size`, `exit` and binary `Output` frames,
+//!    and `chat` for each `sub_chat` agent (one with the entries after
+//!    `after` at once, then one per batch the tailer reads).
 //!
 //! Terminal ids on the wire are the engine's `TermId`s; the hub names the
 //! same terminal `t<N>` ([`term_key`](crate::term::hub::term_key)).
@@ -20,6 +22,10 @@
 //! A subscriber that falls behind is dropped by the hub; this connection
 //! resubscribes at the next byte it owes the client and the client sees either
 //! the missing bytes or a `Snapshot` frame (reset the parser on those).
+//!
+//! A token is never taken from the URL (architecture 9): URLs end up in proxy
+//! and browser logs, so an upgrade with a `token` or `access_token` query
+//! parameter is refused before it is looked at.
 //!
 //! WebSocket compression (permessage-deflate) is not offered: the tungstenite
 //! version axum uses does not implement it.
@@ -29,8 +35,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -146,8 +152,13 @@ async fn upgrade(
     State(app): State<AppState>,
     Extension(transport): Extension<Transport>,
     headers: HeaderMap,
+    RawQuery(query): RawQuery,
     ws: WebSocketUpgrade,
 ) -> Response {
+    if query.as_deref().is_some_and(token_in_query) {
+        return ApiError::invalid("error: send the token in hello or a header, never in the URL")
+            .into_response();
+    }
     // A bearer header or cookie authenticates the upgrade itself; otherwise
     // the token comes in `hello`.
     let pre = auth::authenticate(&app, transport, &headers).ok();
@@ -161,6 +172,12 @@ async fn upgrade(
     ws.max_message_size(MAX_MESSAGE)
         .max_frame_size(MAX_MESSAGE)
         .on_upgrade(move |socket| connection(app, socket, pre))
+}
+
+/// A query string that carries a credential.
+fn token_in_query(q: &str) -> bool {
+    url::form_urlencoded::parse(q.as_bytes())
+        .any(|(k, _)| k.eq_ignore_ascii_case("token") || k.eq_ignore_ascii_case("access_token"))
 }
 
 /// Browsers send cookies on cross-site WebSocket upgrades; require the
@@ -391,6 +408,7 @@ async fn run(
         next_gen: 0,
         touched: HashSet::new(),
         agents: HashMap::new(),
+        chats: HashMap::new(),
         human_input: HashMap::new(),
         ctl: ctl_tx,
         input: input_tx,
@@ -529,6 +547,8 @@ struct Conn {
     touched: HashSet<TermId>,
     /// The agent behind a terminal, if any (cached; a terminal's agent is fixed).
     agents: HashMap<TermId, Option<AgentId>>,
+    /// One forwarding task per `sub_chat` agent.
+    chats: HashMap<AgentId, JoinHandle<()>>,
     human_input: HashMap<TermId, Instant>,
     ctl: mpsc::UnboundedSender<Ctl>,
     input: mpsc::Sender<InputJob>,
@@ -537,6 +557,9 @@ struct Conn {
 impl Conn {
     async fn cleanup(self, input_worker: JoinHandle<()>) {
         for (_, (_, h)) in self.subs {
+            h.abort();
+        }
+        for (_, h) in self.chats {
             h.abort();
         }
         for id in self.touched {
@@ -601,7 +624,62 @@ impl Conn {
                 }
             }
             ClientMsg::Ping { nonce } => send_msg(&self.out, &ServerMsg::Pong { nonce }).await,
+            ClientMsg::SubChat { agent, after } => self.sub_chat(agent, after).await,
+            ClientMsg::UnsubChat { agent } => {
+                if let Some(h) = self.chats.remove(&agent) {
+                    h.abort();
+                }
+                true
+            }
         }
+    }
+
+    /// Sends the entries after `after`, then forwards new ones until
+    /// `unsub_chat` or the end of the connection.
+    async fn sub_chat(&mut self, agent: AgentId, after: Option<String>) -> bool {
+        if let Some(h) = self.chats.remove(&agent) {
+            h.abort();
+        }
+        let tails = self.app.transcripts.clone();
+        let Some(mut sub) = tails
+            .subscribe(&self.app.actor, &agent, after.as_deref())
+            .await
+        else {
+            return self
+                .error(ErrorCode::NotFound, format!("error: no agent {agent}"))
+                .await;
+        };
+        let out = self.out.clone();
+        let a = agent.clone();
+        let task = tokio::spawn(async move {
+            use tokio::sync::broadcast::error::RecvError;
+            let mut entries = std::mem::take(&mut sub.catchup);
+            let mut last = after;
+            loop {
+                if let Some(e) = entries.last() {
+                    last = Some(e.uuid.clone());
+                }
+                let msg = ServerMsg::Chat {
+                    agent: a.clone(),
+                    entries,
+                };
+                if !send_msg(&out, &msg).await {
+                    return;
+                }
+                entries = match sub.rx.recv().await {
+                    Ok(batch) => batch,
+                    // Too slow for the broadcast: catch up from what we sent
+                    // (an entry read meanwhile may come twice; same uuid).
+                    Err(RecvError::Lagged(_)) => {
+                        sub.rx = sub.rx.resubscribe();
+                        tails.since(&a, last.as_deref())
+                    }
+                    Err(RecvError::Closed) => return,
+                };
+            }
+        });
+        self.chats.insert(agent, task);
+        true
     }
 
     async fn on_binary(&mut self, b: &[u8]) -> bool {

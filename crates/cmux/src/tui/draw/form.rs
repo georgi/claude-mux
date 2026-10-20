@@ -103,7 +103,7 @@ mod tests {
     use super::*;
     use crate::keys::Key;
     use crate::tui::draw::testutil::dump;
-    use crate::tui::forms::{MessageForm, NewTaskForm};
+    use crate::tui::forms::MessageForm;
 
     #[test]
     fn message_form_shows_text_and_cursor() {
@@ -123,12 +123,12 @@ mod tests {
 
     #[test]
     fn form_shows_validation_error_and_fits_small_screens() {
-        let mut f = NewTaskForm::new("P-20261018-auth".parse().unwrap(), 1);
-        f.handle(Key::AltEnter);
+        let mut f = MessageForm::new("P-20261018-auth/T-0002".parse().unwrap());
+        f.handle(Key::Enter);
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
         render_form(&mut buf, area, &f);
-        assert!(dump(&buf).contains("title is empty"));
+        assert!(dump(&buf).contains("message is empty"));
         let tiny = Rect::new(0, 0, 20, 6);
         render_form(&mut Buffer::empty(tiny), tiny, &f);
     }
