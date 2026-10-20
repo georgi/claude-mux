@@ -35,7 +35,7 @@ import { PendingRequest, pendingFor } from "./chat/Pending";
 import { copyText } from "./chat/Turn";
 import type { ToolContext } from "./chat/tools/parts";
 import { SplitView, TermView } from "./lazy";
-import { ContextMeter } from "./shell/context-meter";
+import { TokenUsageSummary } from "./shell/token-usage";
 import { STATUS_TEXT, StatusIcon } from "./shell/status";
 
 interface Props {
@@ -166,7 +166,7 @@ export function AgentPane({ view, agent, mode, phone, conn, store, api, readOnly
             {task.pr.ci && <StatusIcon status={ciStatus(task.pr.ci)} />}
           </Button>
         )}
-        <ContextMeter tokens={agent.tokens} />
+        <TokenUsageSummary tokens={agent.tokens} />
         <ToggleGroup
           aria-label="View"
           variant="outline"
