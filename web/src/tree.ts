@@ -267,7 +267,7 @@ export function rowActions(n: TreeNode, readOnly: boolean): RowAction[] {
   if (a && !readOnly) {
     const ended = typeof a.life === "object" || a.life === "stopped";
     if (!ended) out.push({ id: "stop", label: "Stop" });
-    if (ended || a.stalled) out.push({ id: "resume", label: "Resume" });
+    if (ended) out.push({ id: "resume", label: "Resume" });
   }
   if (n.task?.branch) out.push({ id: "copy_branch", label: "Copy branch" });
   if (rowPath(n)) out.push({ id: "copy_path", label: "Copy path" });
