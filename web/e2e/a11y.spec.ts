@@ -37,6 +37,12 @@ test.afterEach(async ({}, info) => {
   if (info.status !== info.expectedStatus) await info.attach("cmuxd.log", { body: server.log(), contentType: "text/plain" });
 });
 
+// The UI shows "Ctrl" instead of "⌘" off a Mac, and axe ignores the symbol
+// but not the word: audit the Linux text (as in CI) on every host.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(Navigator.prototype, "platform", { get: () => "Linux x86_64" }));
+});
+
 async function pair(page: Page) {
   await page.context().addCookies(cookies);
   await page.goto(server.url);

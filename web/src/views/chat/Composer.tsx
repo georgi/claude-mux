@@ -191,11 +191,14 @@ export function Composer({ agent, api, queued, readOnly }: ComposerProps) {
                 <Tooltip>
                   <TooltipTrigger
                     render={
-                      <ToggleGroupItem value="steer" aria-label="Steer: interrupt the agent" disabled={readOnly} className="gap-1.5 max-sm:h-11 max-sm:min-w-11" />
+                      <ToggleGroupItem value="steer" disabled={readOnly} className="gap-1.5 max-sm:h-11 max-sm:min-w-11" />
                     }
                   >
                     <ChevronsUpIcon /> Steer
-                    <Kbd className="hidden sm:inline-flex">{MOD}↵</Kbd>
+                    {/* The name is "Steer"; the tooltip explains it. The shortcut differs per OS, so it stays out of the name. */}
+                    <Kbd aria-hidden className="hidden text-foreground/80 sm:inline-flex">
+                      {MOD}↵
+                    </Kbd>
                   </TooltipTrigger>
                   <TooltipContent>
                     Interrupt the agent now, not at its next turn <Kbd>{MOD}↵</Kbd>

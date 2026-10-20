@@ -216,7 +216,7 @@ describe("Composer", () => {
     await waitFor(() => expect(api.calls).toEqual([["message", `${PLAN}/T-0002`, "use cursors", false]]));
     await waitFor(() => expect(box.value).toBe(""));
     fireEvent.change(box, { target: { value: "stop, wrong branch" } });
-    fireEvent.click(screen.getByRole("button", { name: "Steer: interrupt the agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Steer" }));
     fireEvent.click(screen.getByRole("button", { name: "Steer now" }));
     await waitFor(() => expect(api.calls[1]).toEqual(["message", `${PLAN}/T-0002`, "stop, wrong branch", true]));
     await waitFor(() => expect(box.value).toBe(""));
