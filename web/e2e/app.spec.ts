@@ -42,7 +42,7 @@ test("pair, open an agent, type into its terminal, approve its permission", asyn
   await page.getByLabel("Title").fill("e2e plan");
   await page.getByLabel("Repository URL or path").fill(server.repo);
   await page.getByRole("button", { name: "Add", exact: true }).click();
-  await expect(page.getByRole("checkbox", { name: server.repo })).toBeChecked();
+  await expect(page.getByRole("list", { name: "Picked repositories" })).toContainText(server.repo);
   await page.getByLabel("First message for the executor").fill("Plan a small change.");
   await page.getByRole("button", { name: "Create plan" }).click();
 

@@ -15,7 +15,7 @@ import {
   updateKinds,
 } from "../push";
 import { isIos, isStandalone, useInstall } from "../pwa";
-import { AddRepo, useRepos } from "./Board";
+import { AddRepo, useRepos } from "./board/repos";
 import { errText } from "./board/state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

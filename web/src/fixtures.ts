@@ -1,7 +1,7 @@
 // Test fixtures: small, valid wire objects.
 
 import type { Api } from "./api/http";
-import type { AgentView, ChatEntry, ItemView, PlanView, StateView, TaskView, TerminalView } from "./api/types";
+import type { AgentView, ChatEntry, ItemView, PlanView, StateView, TaskDetail, TaskView, TerminalView } from "./api/types";
 
 export const PLAN = "P-20261018-demo";
 
@@ -98,6 +98,10 @@ export function entry(uuid: string, over: Partial<ChatEntry> = {}): ChatEntry {
   return { uuid, ts: 1000, role: "assistant", kind: "text", text: `text ${uuid}`, is_error: false, ...over };
 }
 
+export function detail(t: TaskView, over: Partial<TaskDetail> = {}): TaskDetail {
+  return { task: t, body: "", criteria: [], notes: [], instructions: null, ...over };
+}
+
 /** Every `Api` call, in order, as `[method, ...args]`. */
 export type Call = [string, ...unknown[]];
 
@@ -117,8 +121,15 @@ export function fakeApi(over: Partial<Api> = {}): Api & { calls: Call[] } {
     resumeAgent: rec("resumeAgent", undefined),
     plan: rec("plan", undefined),
     createPlan: rec("createPlan", { id: "P-20261018-new" }),
+    planBody: rec("planBody", { text: "" }),
+    putPlanBody: rec("putPlanBody", undefined),
+    createTask: rec("createTask", { id: "T-0009" }),
+    task: rec("task", detail(task("T-0001"))),
+    patchTask: rec("patchTask", detail(task("T-0001"))),
+    spawnTask: rec("spawnTask", undefined),
     transcript: rec("transcript", { agent: "", entries: [] }),
     entry: rec("entry", entry("full")),
+    createTerminal: rec("createTerminal", terminal(7)),
     repos: rec("repos", { repos: [] }),
     addRepo: rec("addRepo", { path: "/srv/repos/x", base_branch: "main", remote_url: null }),
     devices: rec("devices", { devices: [] }),
