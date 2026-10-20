@@ -1,10 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
-import { ArrowUpIcon, ChevronsUpIcon, MailIcon, SlashIcon } from "lucide-react";
+import { ArrowUpIcon, ChevronsUpIcon, MailIcon } from "lucide-react";
 import type { Api } from "@/api/http";
 import type { StateView } from "@/api/types";
-import { slashMatches } from "@/chat";
-import { cn } from "@/lib/utils";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -80,11 +77,7 @@ export function Composer({ agent, api, queued, readOnly }: ComposerProps) {
   const [steer, setSteer] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // The slash list: the highlighted command, and whether Esc closed it for this word.
-  const [pick, setPick] = useState(0);
-  const [dismissed, setDismissed] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
-  const group = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setText(loadDraft(agent));
@@ -129,20 +122,6 @@ export function Composer({ agent, api, queued, readOnly }: ComposerProps) {
     }
   };
 
-  const matches = slashMatches(text);
-  const slashOpen = !readOnly && !dismissed && !!matches && matches.length > 0;
-  const choice = matches?.[Math.min(pick, (matches?.length ?? 1) - 1)];
-  // Each keystroke offers the list again.
-  useEffect(() => {
-    setDismissed(false);
-    setPick(0);
-  }, [text]);
-
-  const complete = (name: string) => {
-    edit(`${name} `);
-    area.current?.focus();
-  };
-
   const name = agent.slice(agent.indexOf("/") + 1);
   const empty = !text.trim();
   const why = readOnly
@@ -178,7 +157,7 @@ export function Composer({ agent, api, queued, readOnly }: ComposerProps) {
       )}
       <Tooltip disabled={!readOnly}>
         <TooltipTrigger render={<div />}>
-          <InputGroup ref={group}>
+          <InputGroup>
             <InputGroupTextarea
               ref={area}
               aria-label="Message"
@@ -187,31 +166,9 @@ export function Composer({ agent, api, queued, readOnly }: ComposerProps) {
               placeholder={readOnly ? "Read-only device" : `Message ${name}…`}
               disabled={readOnly}
               value={text}
-              role={slashOpen ? "combobox" : undefined}
-              aria-expanded={slashOpen ? true : undefined}
-              aria-controls={slashOpen ? "slash-commands" : undefined}
-              aria-activedescendant={slashOpen && choice ? `slash-${choice.name.slice(1)}` : undefined}
               onChange={(e) => edit(e.target.value)}
               onKeyDown={(e) => {
                 if (e.nativeEvent.isComposing) return;
-                if (slashOpen && choice) {
-                  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-                    e.preventDefault();
-                    const n = matches!.length;
-                    setPick((p) => (Math.min(p, n - 1) + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
-                    return;
-                  }
-                  if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey)) {
-                    e.preventDefault();
-                    complete(choice.name);
-                    return;
-                  }
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    setDismissed(true);
-                    return;
-                  }
-                }
                 if (e.key === "Escape") {
                   e.currentTarget.blur();
                 } else if (e.key === "Enter" && !e.shiftKey) {
@@ -267,39 +224,6 @@ export function Composer({ agent, api, queued, readOnly }: ComposerProps) {
         </TooltipTrigger>
         <TooltipContent>This device is read-only. Pair it with full access to send messages.</TooltipContent>
       </Tooltip>
-      <PopoverPrimitive.Root open={slashOpen} onOpenChange={(o) => !o && setDismissed(true)}>
-        <PopoverPrimitive.Portal>
-          <PopoverPrimitive.Positioner anchor={group} side="top" align="start" sideOffset={6} className="isolate z-50">
-            <PopoverPrimitive.Popup
-              initialFocus={false}
-              finalFocus={false}
-              className="w-72 origin-(--transform-origin) rounded-lg bg-popover p-1 text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-hidden duration-100 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95"
-            >
-              <ul id="slash-commands" role="listbox" aria-label="Commands">
-                {matches?.map((c) => (
-                  <li
-                    key={c.name}
-                    id={`slash-${c.name.slice(1)}`}
-                    role="option"
-                    aria-selected={c === choice}
-                    className={cn(
-                      "flex cursor-default items-baseline gap-2 rounded-md px-2 py-1.5",
-                      c === choice && "bg-accent text-accent-foreground",
-                    )}
-                    // Keep the focus in the textarea.
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => complete(c.name)}
-                  >
-                    <SlashIcon className="size-3 shrink-0 self-center text-muted-foreground" aria-hidden="true" />
-                    <span className="font-mono">{c.name.slice(1)}</span>
-                    <span className="truncate text-xs text-muted-foreground">{c.description}</span>
-                  </li>
-                ))}
-              </ul>
-            </PopoverPrimitive.Popup>
-          </PopoverPrimitive.Positioner>
-        </PopoverPrimitive.Portal>
-      </PopoverPrimitive.Root>
       {error && (
         <p role="alert" className="mt-1 text-xs text-destructive">
           {error}

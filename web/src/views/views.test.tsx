@@ -232,24 +232,16 @@ describe("Composer", () => {
     expect(localStorage.getItem(`cmux.draft.${b}`)).toBeNull();
   });
 
-  it("suggests slash commands, filters them as you type, and completes on Tab", async () => {
-    render(<Composer agent={`${PLAN}/T-0002`} api={fakeApi()} queued={[]} />);
+  it("keeps slash-prefixed messages as plain text without offering native commands", async () => {
+    const api = fakeApi();
+    render(<Composer agent={`${PLAN}/T-0002`} api={api} queued={[]} />);
     const box = screen.getByLabelText("Message") as HTMLTextAreaElement;
-    fireEvent.change(box, { target: { value: "/" } });
-    const list = await screen.findByRole("listbox", { name: "Commands" });
-    expect(list.querySelectorAll('[role="option"]')).toHaveLength(6);
     fireEvent.change(box, { target: { value: "/co" } });
-    await waitFor(() =>
-      expect(screen.getAllByRole("option").map((o) => o.textContent?.split(/\s/)[0])).toEqual(["compactSummarize", "costShow"]),
-    );
-    fireEvent.keyDown(box, { key: "ArrowDown" });
-    expect(screen.getByRole("option", { selected: true }).textContent).toContain("cost");
-    fireEvent.keyDown(box, { key: "Tab" });
-    expect(box.value).toBe("/cost ");
-    await waitFor(() => expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull());
-    // Not at the start: no list.
-    fireEvent.change(box, { target: { value: "run /co" } });
     expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull();
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect(box.value).toBe("/co");
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(api.calls).toEqual([["message", `${PLAN}/T-0002`, "/co", false]]));
   });
 
   it("says why it is disabled on a read-only device", () => {
